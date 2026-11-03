@@ -1,0 +1,9 @@
+{
+  "name": "AI IQ 300 - Otonom AI Komuta Merkezi",
+  "short_name": "AI IQ 300",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#17171a",
+  "theme_color": "#2563eb",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

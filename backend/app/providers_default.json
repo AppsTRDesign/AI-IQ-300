@@ -1,0 +1,210 @@
+{
+  "lmstudio": {
+    "name": "LM Studio",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:1234/v1",
+    "enabled": true,
+    "local": true
+  },
+  "ollama": {
+    "name": "Ollama",
+    "kind": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "enabled": true,
+    "local": true
+  },
+  "xai": {
+    "name": "xAI / Grok",
+    "kind": "openai",
+    "base_url": "https://api.x.ai/v1",
+    "enabled": true,
+    "local": false
+  },
+  "sambanova": {
+    "name": "SambaNova",
+    "kind": "openai",
+    "base_url": "https://api.sambanova.ai/v1",
+    "enabled": true,
+    "local": false
+  },
+  "fireworks": {
+    "name": "Fireworks AI",
+    "kind": "openai",
+    "base_url": "https://api.fireworks.ai/inference/v1",
+    "enabled": true,
+    "local": false
+  },
+  "litellm": {
+    "name": "LiteLLM Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": true,
+    "local": false
+  },
+  "deepseek": {
+    "name": "DeepSeek",
+    "kind": "openai",
+    "base_url": "https://api.deepseek.com/v1",
+    "enabled": true,
+    "local": false,
+    "model": "deepseek-chat"
+  },
+  "gemini": {
+    "name": "Google Gemini",
+    "kind": "openai",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "enabled": true,
+    "local": false
+  },
+  "groq": {
+    "name": "Groq",
+    "kind": "openai",
+    "base_url": "https://api.groq.com/openai/v1",
+    "enabled": true,
+    "local": false
+  },
+  "mistral": {
+    "name": "Mistral",
+    "kind": "openai",
+    "base_url": "https://api.mistral.ai/v1",
+    "enabled": true,
+    "local": false
+  },
+  "cerebras": {
+    "name": "Cerebras",
+    "kind": "openai",
+    "base_url": "https://api.cerebras.ai/v1",
+    "enabled": true,
+    "local": false
+  },
+  "together": {
+    "name": "Together",
+    "kind": "openai",
+    "base_url": "https://api.together.xyz/v1",
+    "enabled": true,
+    "local": false
+  },
+  "huggingface": {
+    "name": "Hugging Face",
+    "kind": "openai",
+    "base_url": "https://router.huggingface.co/v1",
+    "enabled": true,
+    "local": false
+  },
+  "openai": {
+    "name": "OpenAI / ChatGPT API",
+    "kind": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "enabled": true,
+    "local": false
+  },
+  "ollama_cloud": {
+    "name": "Ollama Cloud",
+    "kind": "ollama",
+    "base_url": "https://ollama.com",
+    "enabled": true,
+    "local": false,
+    "model": "glm-5.3-flash"
+  },
+  "bedrock": {
+    "name": "Amazon Bedrock · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "anthropic_gateway": {
+    "name": "Anthropic · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "baseten": {
+    "name": "Baseten · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "vertex": {
+    "name": "GCP Vertex AI · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "minimax": {
+    "name": "MiniMax · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "moonshot": {
+    "name": "Moonshot · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "poe": {
+    "name": "Poe · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "requesty": {
+    "name": "Requesty · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "unbound": {
+    "name": "Unbound · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "vercel": {
+    "name": "Vercel AI Gateway · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "zai": {
+    "name": "Z.ai · Gateway",
+    "kind": "openai",
+    "base_url": "http://127.0.0.1:4000/v1",
+    "enabled": false,
+    "local": false
+  },
+  "openrouter": {
+    "name": "OpenRouter",
+    "kind": "openai",
+    "base_url": "https://openrouter.ai/api/v1",
+    "enabled": true,
+    "local": false,
+    "model": "nvidia/nemotron-3.5-super-vl:free"
+  },
+  "anthropic": {
+    "name": "Anthropic",
+    "kind": "anthropic",
+    "base_url": "https://api.anthropic.com/v1",
+    "enabled": true,
+    "local": false
+  },
+  "evren": {
+    "name": "Evren API",
+    "kind": "openai",
+    "base_url": "https://evren-llmapi.ssyz.org.tr/v1",
+    "enabled": true,
+    "local": false,
+    "model": "deepseek-v4.1-flash",
+    "streaming": false
+  }
+}

@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic tokens: components use bg-bg, bg-panel, text-fg, text-muted, border-line... and never raw grays,
+   so light/dark is a single variable swap. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-elev: var(--elev);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-line: var(--line);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-code: var(--code);
+  --color-danger: var(--danger);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+:root {
+  --bg: #ffffff; --panel: #f7f7f8; --elev: #ffffff; --fg: #18181b; --muted: #52525b; --subtle: #a1a1aa;
+  --line: #e4e4e7; --hover: #efeff1; --active: #e6e6ea; --accent: #2563eb; --accent-fg: #ffffff;
+  --accent-soft: #eff4ff; --code: #fafafa; --danger: #dc2626; --ok: #16a34a; --warn: #d97706;
+  color-scheme: light;
+}
+.dark {
+  --bg: #17171a; --panel: #1e1e22; --elev: #26262b; --fg: #ececf1; --muted: #a1a1aa; --subtle: #71717a;
+  --line: #2f2f35; --hover: #2a2a30; --active: #33333a; --accent: #4f8cff; --accent-fg: #ffffff;
+  --accent-soft: #1d2a44; --code: #1b1b1f; --danger: #f87171; --ok: #4ade80; --warn: #fbbf24;
+  color-scheme: dark;
+}
+
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothing: antialiased; overflow: hidden; }
+* { scrollbar-width: thin; scrollbar-color: var(--active) transparent; }
+::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+.prose-chat { line-height: 1.65; }
+.prose-chat p { margin: 0.45rem 0; }
+.prose-chat ul { list-style: disc; padding-left: 1.4rem; margin: 0.4rem 0; }
+.prose-chat ol { list-style: decimal; padding-left: 1.4rem; margin: 0.4rem 0; }
+.prose-chat h1 { font-size: 1.35rem; font-weight: 650; margin: 1rem 0 0.4rem; }
+.prose-chat h2 { font-size: 1.18rem; font-weight: 650; margin: 0.9rem 0 0.35rem; }
+.prose-chat h3 { font-size: 1.04rem; font-weight: 650; margin: 0.8rem 0 0.3rem; }
+.prose-chat :not(pre) > code { background: var(--hover); padding: 0.1rem 0.35rem; border-radius: 5px; font-size: 0.88em; font-family: var(--font-mono); }
+.prose-chat a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-chat table { border-collapse: collapse; margin: 0.5rem 0; display: block; overflow-x: auto; }
+.prose-chat td, .prose-chat th { border: 1px solid var(--line); padding: 4px 10px; }
+.prose-chat blockquote { border-left: 3px solid var(--line); padding-left: 0.8rem; color: var(--muted); }
+
+/* Colorized (Monaco) code inside chat */
+.code-colorized { font-family: var(--font-mono); font-size: 12.5px; line-height: 19px; white-space: pre; }
+
+/* Thinking shimmer */
+.shimmer {
+  background: linear-gradient(90deg, var(--subtle) 0%, var(--fg) 45%, var(--subtle) 90%);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shimmer 1.8s linear infinite;
+}
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.orbit { animation: spin 1.4s cubic-bezier(.5,.1,.5,.9) infinite; transform-origin: 50% 50%; }
+.orbit-rev { animation: spin 2.2s linear infinite reverse; transform-origin: 50% 50%; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pulse-dot { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+.fade-in { animation: fadein .18s ease-out; }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* Range slider */
+input[type="range"].slider { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; background: var(--active); outline: none; }
+input[type="range"].slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); box-shadow: 0 1px 4px rgb(0 0 0 / .3); cursor: pointer; }
+input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); cursor: pointer; }
