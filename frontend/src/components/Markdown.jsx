@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, Sparkles } from "lucide-react";
 import { useStore } from "../lib/store";
-import { docKind, fileType } from "../lib/fileTypes";
+import { docKind, fileType, isImage, isWebPage } from "../lib/fileTypes";
 import CodeBlock from "./CodeBlock";
 
 // Heuristic: a user message pasted as raw code (no fences) is framed as code too.
@@ -32,12 +32,16 @@ const COMPONENTS = {
     const content = String(children).replace(/\n$/, "");
     const isBlock = /language-/.test(className || "") || node?.position?.start.line !== node?.position?.end.line;
     if (!isBlock) {
-      // A generated document's path (`docs/report.xlsx`) is a link that opens the previewer.
-      if (docKind(content) && !/\s/.test(content)) {
+      // A generated file's path (`docs/report.xlsx`, `logo.png`, `site/index.html`) opens its viewer.
+      const viewer = /\s|:\/\//.test(content) ? null : docKind(content) ? "previewFile" : isImage(content) ? "image"
+        : isWebPage(content) ? "page" : null;
+      if (viewer) {
         const ft = fileType(content);
         const Icon = ft.icon;
+        const st = useStore.getState();
+        const open = () => (viewer === "image" ? st.viewImages([content]) : viewer === "page" ? st.browse({ path: content }) : st.previewFile(content));
         return (
-          <button onClick={() => useStore.getState().previewFile(content)} title={content}
+          <button onClick={open} title={content}
             className="mx-0.5 inline-flex translate-y-[1px] items-center gap-1 rounded-md border border-line bg-elev px-1.5 py-px align-middle text-[0.88em] font-medium hover:border-accent hover:text-accent">
             <Icon size={13} style={{ color: ft.color }} />{content}
           </button>
@@ -49,6 +53,10 @@ const COMPONENTS = {
   },
   a({ href, children }) {
     if (href?.startsWith("#mention-")) return <MentionChip token={decodeURIComponent(href.slice(9))} />;
+    // Local dev servers (http://localhost:3000) open in the in-app browser.
+    if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(href || "")) {
+      return <a href={href} onClick={(e) => { e.preventDefault(); useStore.getState().browse({ url: href }); }}>{children}</a>;
+    }
     return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
   },
 };

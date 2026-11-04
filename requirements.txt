@@ -14,5 +14,29 @@ python-docx>=1.1
 openpyxl>=3.1
 reportlab>=4.2
 python-pptx>=1.0
+# Images (logos, charts, edits) from agent scripts
+Pillow>=10.4
 # i18n auto-translation
 deep-translator>=1.11
+# Syntax trees (definitions, impact analysis); grammars download on first use
+tree-sitter>=0.23
+tree-sitter-language-pack>=0.7
+# Spoken replies: Microsoft online neural voices (free, female/male labelled)
+edge-tts>=7.0
+# Real token counting for the context meter (vocabulary bundled in backend/app/tokenizer, no download)
+tiktoken>=0.7
+# Free web search: metasearch over Google, Yahoo, Bing, Yandex, Brave (github.com/deedy5/ddgs)
+ddgs>=9.0
+# Documents for research: PDF text and page images (page-numbered quotes, scanned pages)
+pypdfium2>=4.30
+# OCR of scanned pages and images: Windows' built-in OCR engine (offline, keeps Turkish characters)
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
+winrt-Windows.Globalization>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
+# Linux/macOS: Tesseract is used when installed; otherwise RapidOCR (onnxruntime 1.21+ crashes on some older CPUs)
+rapidocr-onnxruntime>=1.4; sys_platform != "win32"
+onnxruntime>=1.17,<1.21; sys_platform != "win32"

@@ -1,6 +1,23 @@
 import { create } from "zustand";
 import { api, setErrorTranslator } from "./api";
-import { docKind } from "./fileTypes";
+import { docKind, isImage } from "./fileTypes";
+
+// The device's position for map searches (the browser asks the user's permission once; Wi-Fi/GPS through the OS).
+function answerLocation(id) {
+  const send = (body) => api.post(`/api/location/${id}`, body).catch(() => {});
+  if (!navigator.geolocation) { send({ error: "geolocation not supported" }); return; }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => send({ lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+    (err) => send({ error: err.code === 1 ? "permission denied" : err.code === 3 ? "timeout" : "position unavailable" }),
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 120000 },
+  );
+}
+
+const readB64 = (file) => new Promise((res) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(",")[1]);
+  r.readAsDataURL(file);
+});
 
 // First start: the browser/OS language if a translation exists, otherwise English.
 export function detectLanguage(available) {
@@ -261,6 +278,18 @@ export const useStore = create((set, get) => ({
     set((st) => ({ sessionId: s.id, sessions: [s, ...st.sessions] }));
     return s.id;
   },
+  // Uploads files into the chat; images keep a base64 copy for vision models. replaceAt swaps an existing attachment.
+  async addAttachments(files, replaceAt = -1) {
+    const sid = await get().ensureSession();
+    for (const f of files) {
+      try {
+        const meta = await api.upload(`/api/sessions/${sid}/upload`, f);
+        const b64 = meta.kind === "image" ? await readB64(f) : undefined;
+        const item = { ...meta, b64, mime: f.type || undefined };
+        set((s) => ({ attachments: replaceAt >= 0 ? s.attachments.map((x, i) => (i === replaceAt ? item : x)) : [...s.attachments, item] }));
+      } catch (e) { get().notify(e.message, "error"); }
+    }
+  },
   async refreshSessions() { set({ sessions: await api.get("/api/sessions") }); },
 
   modelCaps(id = get().currentModel()) {
@@ -317,8 +346,11 @@ export const useStore = create((set, get) => ({
     finally { set({ compressing: false }); }
   },
   previewFile: (path, size) => set({ dialog: { type: "preview", path, size } }),
+  viewImages: (paths, index = 0) => set({ dialog: { type: "images", paths, index } }),
+  browse: (target) => set({ dialog: { type: "browser", ...target } }), // { path } in the working folder or { url }
   async openFile(path) {
     if (docKind(path)) return get().previewFile(path); // office/PDF documents open in the previewer
+    if (isImage(path)) return get().viewImages([path]);
     const { content } = await api.get(get().fileApi(`/file?path=${encodeURIComponent(path)}`));
     get().openBuffer({ id: path, path, content, saved: content });
   },
@@ -377,6 +409,10 @@ export const useStore = create((set, get) => ({
         continue;
       }
       if (e.topic === "model") { modelStatus = { model: p.model, state: e.type, message: p.message }; continue; }
+      if (e.type === "location.request") { // the model asked where the user is (map search "near me")
+        if (Date.now() / 1000 - e.ts < 20) answerLocation(p.request_id); // never for replayed old requests
+        continue;
+      }
       if (e.topic !== "run") continue;
       if (e.type.startsWith("approval.")) {
         const sid = Object.keys(runs).find((k) => runs[k].id === p.run_id);
@@ -392,9 +428,13 @@ export const useStore = create((set, get) => ({
         if (runs[sid]) { if (runs === s.runs) runs = { ...runs }; delete runs[sid]; }
         if (sid === s.sessionId) {
           messages = [...messages, { id: `run-${p.run_id}`, role: "assistant", content: p.text,
-            meta: { steps: p.steps, todos: p.todos, status: p.status, error: s.runs[sid]?.error, errorCode: s.runs[sid]?.errorCode } }];
+            meta: { steps: p.steps, todos: p.todos, outputs: p.outputs, timing: p.timing, changes: p.changes, status: p.status, error: s.runs[sid]?.error, errorCode: s.runs[sid]?.errorCode } }];
           context = p.context_used;
           setTimeout(() => get().loadContext(), 0); // refresh the detailed context stats
+          const pr = s.prefs;  // spoken replies: only answers of a run seen live here (not history replays)
+          if (pr.voiceReply && s.runs[sid] && p.status === "ok" && p.text) {
+            import("./speech").then((sp) => sp.speak(`run-${p.run_id}`, p.text, sp.speechOpts(pr)));
+          }
         }
         refresh = true;
         continue;
@@ -413,7 +453,8 @@ export const useStore = create((set, get) => ({
       else if (e.type === "step_remove") run.steps = run.steps.filter((x) => x.id !== p.step_id);
       else if (e.type === "error") { run.error = p.message; run.errorCode = p.code; }
       else if (e.type === "step") {
-        if (p.step.status === "done" && ["write_file", "delete_file", "make_doc"].includes(p.step.data?.tool)) fsTick += 1;
+        if (p.step.status === "done" && ["write_file", "edit_file", "delete_file", "make_doc"].includes(p.step.data?.tool)) fsTick += 1;
+        if (p.step.status === "done" && p.step.data?.tool === "save_catalog") get().loadCatalog(); // new skill/agent shows at once
         const i = run.steps.findIndex((x) => x.id === p.step.id);
         run.steps = i < 0 ? [...run.steps, p.step] : run.steps.map((x, j) => (j === i ? p.step : x));
       }

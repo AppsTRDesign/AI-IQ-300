@@ -56,3 +56,8 @@ export const isTextFile = (name = "") => TEXT_EXT.has(name.split(".").pop().toLo
 // Documents with an in-app preview (components/DocPreview.jsx).
 const DOC_KINDS = { xlsx: "sheet", xls: "sheet", ods: "sheet", docx: "word", pdf: "pdf", pptx: "slides" };
 export const docKind = (name = "") => DOC_KINDS[name.split(".").pop().toLowerCase()] || null;
+
+// Images open in the image viewer, web pages in the in-app browser (components/MediaViewer.jsx).
+const ext = (name = "") => name.split(".").pop().toLowerCase();
+export const isImage = (name) => CATEGORY.image.includes(ext(name));
+export const isWebPage = (name) => ["html", "htm"].includes(ext(name));

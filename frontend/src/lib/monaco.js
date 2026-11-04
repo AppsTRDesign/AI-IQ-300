@@ -1,4 +1,5 @@
-// Bundle Monaco locally (no CDN) so the IDE works offline.
+// Bundle Monaco locally (no CDN) so the IDE works offline. Loaded on demand (editor, code colors),
+// so the chat opens without parsing the 3 MB editor first.
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
@@ -17,15 +18,8 @@ self.MonacoEnvironment = {
   },
 };
 loader.config({ monaco });
+// The app theme is set before Monaco loads; apply it now, and let later theme switches find this instance.
+monaco.editor.setTheme(document.documentElement.classList.contains("dark") ? "vs-dark" : "vs");
+window.__aiiqMonaco = monaco;
 
-const EXT = {
-  js: "javascript", jsx: "javascript", mjs: "javascript", ts: "typescript", tsx: "typescript", py: "python",
-  php: "php", html: "html", htm: "html", css: "css", scss: "scss", json: "json", md: "markdown", sql: "sql",
-  sh: "shell", bash: "shell", ps1: "powershell", bat: "bat", cmd: "bat", yml: "yaml", yaml: "yaml", xml: "xml",
-  java: "java", cs: "csharp", cpp: "cpp", c: "c", go: "go", rs: "rust", rb: "ruby", kt: "kotlin", vue: "html",
-};
-const ALIAS = { py: "python", js: "javascript", ts: "typescript", sh: "shell", ps: "powershell", pwsh: "powershell",
-  cmd: "bat", batch: "bat", yml: "yaml", "c#": "csharp", "c++": "cpp", jsx: "javascript", tsx: "typescript" };
-
-export const languageForPath = (p = "") => EXT[p.split(".").pop().toLowerCase()] || "plaintext";
-export const normalizeLanguage = (l = "") => ALIAS[l.toLowerCase()] || l.toLowerCase() || "plaintext";
+export { monaco };

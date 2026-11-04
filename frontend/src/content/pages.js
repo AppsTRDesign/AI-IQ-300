@@ -1,67 +1,12 @@
-// Long-form Guide and About content (TR/EN). Other languages fall back to English.
+// About page content (TR/EN; the Guide lives in guide.js). Other languages fall back to English.
 export const AUTHOR = {
   name: "Onur Öztaş",
   github: "https://github.com/AppsTRDesign",
   site: "https://wplugins.shop",
 };
-export const VERSION = "0.6.0";
+export const VERSION = "0.8.3";
 
 const tr = {
-  guide: {
-    title: "Rehber",
-    intro: "AI IQ 300'ü birkaç dakikada verimli kullanmak için bilmeniz gereken her şey.",
-    sections: [
-      { icon: "rocket", title: "1. Hızlı başlangıç", items: [
-        "install.bat ile kurun, run.bat ile başlatın. Uygulama http://127.0.0.1:8300 adresinde açılır.",
-        "Ayarlar > Sağlayıcılar'dan bir model kaynağı hazırlayın: yerel Ollama/LM Studio anahtar istemez; bulut API'leri için anahtarı girip Test'e basın.",
-        "Mesaj kutusunun altındaki model seçiciden çalışmak istediğiniz modeli seçin. Yerel modele geçince diğer yerel modeller bellekten boşaltılır.",
-      ] },
-      { icon: "folder", title: "2. Projeler ve sohbetler", items: [
-        "Sol menüde + ile proje oluşturun; bilgisayarınızdan bir klasör seçebilir veya yeni klasör açabilirsiniz. Ajanın tüm çıktıları o klasöre yazılır.",
-        "Projesiz sohbetler workspace/ klasöründe çalışır. Her sohbetin oturum kaydı chat/<id>-session/ altında tutulur ve sohbet silinince tamamen silinir.",
-        "Sohbet ve projelere sağ tıklayarak sabitleyebilir, yeniden adlandırabilir, arşivleyebilir veya silebilirsiniz.",
-      ] },
-      { icon: "bot", title: "3. Ajanlar (@) ve yetenekler (/)", items: [
-        "Varsayılan asistan sohbete göre davranır: sohbet ederseniz sohbet eder, iş isterseniz araçlarla gerçekten yapar.",
-        "@coder, @tester, @debugger, @planner yazarak rolü değiştirin. /webapp, /docs, /git gibi yetenekler talimat ekler.",
-        "Yetenek yazmanız şart değil: model, isteğinize uyan yeteneği kendisi seçip yükler.",
-        "Yetenekler ve Ajanlar sayfalarından yenilerini oluşturabilir, Monaco ile düzenleyebilir, dosyadan veya GitHub adresinden içe aktarabilirsiniz.",
-      ] },
-      { icon: "wrench", title: "4. Araçlar ve otonom çalışma", items: [
-        "Model; dosya yazma/okuma, PowerShell/CMD/Python/Node/PHP komutları, arka plan süreçleri, web araştırması, tarayıcıda görsel test ve Word/Excel/PDF/PPT üretimi yapabilir.",
-        "Komut hata verirse hata ayıklayıcı rolü devreye girer, hatayı okuyup düzeltir ve yeniden dener.",
-        "Arka planda olan her şey tek bir adım grubunda toplanır; iş sürerken yalnızca o anki adım görünür, tıklayınca hepsi açılır.",
-        "Çok adımlı işlerde model gerektiğinde canlı bir yapılacaklar listesi açar ve maddeleri ilerledikçe işaretler.",
-        "Uzun görevler bitene kadar sürer; model bir sonraki adımı söyleyip durursa devam ettirilir. Yarıda kalan işi \"devam et\" ile kaldığı yerden sürdürebilirsiniz.",
-        "Artı menüsü: dosya ve klasör yükleme, Hedef modu (hedefe ulaşana kadar kendi başına çalışır), Plan modu, Çizim ekranı (çizip resim olarak gönderin) ve belge kısayolları.",
-      ] },
-      { icon: "shield", title: "5. İzin modları ve güvenlik", items: [
-        "Onay iste: proje dışı dosya ve internet işlemlerinden önce sorar. Benim için onayla: yalnızca riskli işlemleri sorar. Tam erişim: sınırsız erişim.",
-        "rm -rf, format, os.remove gibi yıkıcı komutlar tam erişimde bile onay ister; disk biçimlendirme gibi işlemler hiç çalıştırılmaz.",
-        "Komutlar bilgisayarınızda doğrudan çalışır; filtre bir yalıtım (sandbox) değildir. Gerçek kontrol onay modudur.",
-      ] },
-      { icon: "gauge", title: "6. Bağlam yönetimi", items: [
-        "Mesaj kutusundaki halka bağlam doluluğunu gösterir; tıklayınca hangi kalemin ne kadar yer kapladığını, çıktıları ve arka plan görevlerini görürsünüz.",
-        "Bağlam ayarlanan eşiğe (varsayılan %80) ulaşınca eski mesajlar otomatik özetlenir; Şimdi sıkıştır ile elle de yapabilirsiniz.",
-        "Bağlam iş sürerken de canlı sayılır; uzun görevlerde eski dosya içerikleri kırpılır ya da adımlar özetlenir, böylece görev kopmaz.",
-        "Yerel modellerde bağlam boyutunu model seçicideki boyut etiketinden veya Ayarlar'dan ayarlayın; ikisi anında senkron kalır."
-      ] },
-      { icon: "files", title: "7. Dosyalar ve zaman makinesi", items: [
-        "Dosyalar bölümü klasör ağacı, türe göre filtre, önizleme, yükleme, yeniden adlandırma ve sağ tık menüsü olan tam bir dosya yöneticisidir.",
-        "Proje klasörlerinde her çalışmadan sonra otomatik git anlık görüntüsü alınır; Zaman makinesi ile istediğiniz noktaya geri dönebilirsiniz.",
-        "Üretilen Word, Excel, PDF ve PowerPoint belgeleri sohbette kart olarak görünür; karta tıklayınca uygulama içinde önizlenir.",
-      ] },
-      { icon: "globe", title: "8. Web araştırması", items: [
-        "research aracı birden çok arama motorunu birleştirir, en iyi kaynakları paralel okur ve kaynak adresleriyle özetler.",
-        "Bot korumasıyla erişimi engelleyen siteler açıkça raporlanır; model başka kaynaklara yönelir ve uydurmaz. Daha güçlü sonuç için Ayarlar > Web'den Brave, Tavily veya SearXNG ekleyebilirsiniz.",
-      ] },
-      { icon: "help", title: "9. Sık sorulanlar", items: [
-        "Model listesi boş: sağlayıcı etkin mi, anahtar kayıtlı mı? Ayarlar > Sağlayıcılar > Test sonucunu kontrol edin.",
-        "EVREN 403 veriyor: kullanım şartlarını Test > Şartları oku ve kabul et ile onaylayın.",
-        "Arayüz eski görünüyor: güncellemeden sonra tarayıcıda bir kez Ctrl+F5 yapın.",
-      ] },
-    ],
-  },
   about: {
     title: "Hakkımızda",
     tagline: "Yerel ve bulut yapay zekâ modelleriyle çalışan, kendi kendine kod yazan, test eden ve çalıştıran otonom AI komuta merkezi.",
@@ -69,15 +14,29 @@ const tr = {
     what: "AI IQ 300; bilgisayarınızda çalışan, ChatGPT/Claude tarzı sade bir sohbet arayüzüne sahip bir yazılım geliştirme ve otomasyon merkezidir. Ona bir hedef verirsiniz; klasörleri ve dosyaları oluşturur, komutları çalıştırır, hataları ayıklar, uygulamayı tarayıcıda test eder ve sonucu size raporlar. Verileriniz, siz bulut sağlayıcı seçmedikçe bilgisayarınızdan çıkmaz.",
     features_title: "Öne çıkan yetenekler",
     features: [
-      ["Çoklu model", "Ollama, LM Studio, OpenAI, Anthropic, Gemini, OpenRouter, Groq, DeepSeek, EVREN ve 25+ sağlayıcı; tek tıkla geçiş."],
+      ["Çoklu model", "Ollama, LM Studio, OpenAI, Anthropic, Gemini, OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, DeepSeek, EVREN ve 25+ sağlayıcı; tek tıkla geçiş."],
       ["Gerçek araç kullanımı", "Native function calling + evrensel ayrıştırıcı: araç çağrıları güvenilir çalışır, ham sözdizimi sohbete sızmaz."],
       ["Çoklu ajan", "Asistan, Planlayıcı, Kodlayıcı, Hata ayıklayıcı ve Test uzmanı rolleri; hata olursa otomatik hata ayıklama döngüsü."],
       ["Kesintisiz görevler", "Uzun işler bitene kadar sürer; canlı adım grubu, yapılacaklar listesi ve otomatik yetenek seçimi."],
-      ["Akıllı bağlam", "Görev sürerken canlı sayım, görev içi kırpma/özetleme, eşik bazlı sıkıştırma ve kalıcı oturum özetleri."],
+      ["Akıllı bağlam", "Gerçek token sayımı (gömülü tokenizer + sağlayıcının kendi sayısı, araç tanımları dahil), model düşünürken ve yazarken canlı sayaç, görev içi kırpma/özetleme (yapılan adımların kesin listesiyle, tekrar ve uydurma yok), eşik bazlı sıkıştırma ve kalıcı oturum özetleri."],
       ["Güvenlik", "Üç kademeli izin modu, yıkıcı komutlar için akıllı güvenlik çiti, kısıtlı alt süreç ortamı."],
       ["Profesyonel IDE", "Monaco editör, dosya yöneticisi, süreç paneli, git zaman makinesi, gece/gündüz teması, tam mobil uyum."],
-      ["Web araştırması", "Çok motorlu arama, gerçek tarayıcıyla sayfa okuma, engel tespiti ve kaynaklı özetler."],
+      ["Web araştırması", "Önce sizin API'leriniz (Google, Yandex, Bing, Brave, Tavily, SearXNG), yoksa ücretsiz ddgs ile Google/Yahoo/Bing/Yandex/Brave paralel arama, sonuç birleştirme, arka plan tarayıcısı, yapısal veri ve arşiv kopyasıyla sayfa okuma, kaynaklı özetler."],
+      ["Sürüme uygun komutlar", "İşletim sistemi derlemesini, kabukları ve araç sürümlerini bilerek komut yazar; argv ile kabuksuz çalıştırma, heredoc yönlendirme, hazır olunca dönen arka plan süreçleri."],
+      ["Belge araştırması", "PDF, Word, Excel, PowerPoint, OpenDocument, CSV ve resimleri sayfa numaralı alıntılarla okur; taranmış sayfalarda yerleşik OCR."],
+      ["İnceleme kartı ve süre", "Bir görevin klasörde yaptığı tüm değişiklikler (komutlar dahil) farklarıyla; görevin süresinin model, araç ve uygulama arasındaki dağılımı."],
+      ["Harita ve mekânlar", "Semt, adres veya koordinat çevresinde mekân arama (OpenStreetMap ücretsiz; Google/Yandex Places ile puan ve yorum), etkileşimli harita, mekân karşılaştırma, pazar ve rakip analizi, ürün kataloğu."],
       ["Belge üretimi ve önizleme", "Word, Excel, PDF ve PowerPoint üretir; belgeler sohbette kart olarak açılır ve uygulama içinde önizlenir."],
+      ["Çoklu model ve kotalar", "Kota dolunca otomatik model değişimi, ajan başına model, modelin başka modele iş vermesi; 5 saatlik ve haftalık kota takibi."],
+      ["Proje hafızası", "Proje başına kurallar (AIIQ.md) ve genel kurallar her sohbete eklenir; \"bunu hatırla\" denince model kuralı kendisi kaydeder."],
+      ["Akıllı kod düzenleme", "Kısmi dosya düzenleme, proje içi kod arama ve fonksiyon/sınıf haritası; büyük projelerde bile hızlı değişiklik."],
+      ["Onaydan önce fark", "Onay isteyen her dosya değişikliğinde eklenecek ve silinecek satırları önceden görürsünüz."],
+      ["Model profilleri", "Model başına düşünme, görsel girdi, akış, araç çağrı biçimi, sıcaklık ve çıktı uzunluğu ayarı."],
+      ["Çaba ayarı", "Düşünme çabası modelin API bilgisinden gelen gerçek seviyelerle ayarlanır; desteklemeyen modellere talimatla iletilir."],
+      ["MCP istemcisi", "GitHub, PostgreSQL, dosya sistemi gibi MCP sunucularını bağlayın; araçları modele otomatik sunulur."],
+      ["Söz dizimi ağacı", "Tree-sitter ile kesin tanımlar ve etki analizi: bir değişikliğin hangi dosyaları etkileyeceğini önceden görür."],
+      ["Ajan takımları", "Büyük işleri parçalara bölüp farklı bulut modellerde çalıştırır: bağımsız parçalar aynı anda, birbirine bağlı parçalar aşama aşama (1. takımın çıktısı 2. takıma). Üyeler mesajlaşır, ortak görev listesi kullanır; canlı görev panosu."],
+      ["Ses ile yönetim", "Cevapları sesli okuma ve sesli komutlar: \"gönder\", \"durdur\", \"onayla\", \"reddet\", \"yeni sohbet\"."],
       ["Çizim ve ekler", "Çizim ekranı, dosya ve klasör yükleme, hedef ve plan modları."],
     ],
     adv_title: "Avantajlar",
@@ -89,12 +48,11 @@ const tr = {
     ],
     roadmap_title: "Yol haritası",
     roadmap: [
-      "Kısmi dosya düzenleme ve proje içi kod arama (yerel modellerde çok daha hızlı değişiklik)",
-      "Tree-sitter ile fonksiyon/sınıf haritası: değişikliğin etkileyeceği dosyaları önceden görme",
-      "MCP istemcisi: GitHub, PostgreSQL ve binlerce hazır MCP sunucusunu araç olarak bağlama",
-      "Onaydan önce değişiklik farkı (diff) görünümü ve proje başına kalıcı kurallar",
       "İsteğe bağlı Docker (WSL2) sandbox ile yalıtılmış komut çalıştırma",
-      "Bulut modellerde paralel ajan takımları ve görev panosu; sesli yanıt",
+      "Tam zaman çizelgeli video düzenleyici (ffmpeg): kırpma, kesme, birleştirme, yazı ve logo, müzik, geçişler, format dönüştürme; altyazı konuşmadan otomatik (faster-whisper) veya verilen metinden; sohbette önizleme",
+      "Güçlü resim üretimi: varsayılan ücretsiz Pollinations (FLUX), anahtar girilirse Hugging Face, Together, OpenAI, Gemini, Stability; istenen format ve ölçüyü (hikâye, kapak, A4, banner) algılama, yazıların resmin üstüne keskin basılması",
+      "Stok resim ve video servisleri: Pexels, Pixabay, Unsplash, Openverse, Wikimedia (ücretsiz) ve Shutterstock, Getty, Adobe Stock, Storyblocks (ücretli; her indirmede fiyatıyla onay); lisans ve kaynak kaydı",
+
     ],
     dev_title: "Geliştirici",
     dev_desc: "Yazılım geliştirici; WordPress eklentileri, yapay zekâ araçları ve otomasyon çözümleri üretiyor.",
@@ -102,61 +60,6 @@ const tr = {
 };
 
 const en = {
-  guide: {
-    title: "Guide",
-    intro: "Everything you need to use AI IQ 300 productively in a few minutes.",
-    sections: [
-      { icon: "rocket", title: "1. Quick start", items: [
-        "Install with install.bat and start with run.bat. The app opens at http://127.0.0.1:8300.",
-        "Set up a model source in Settings > Providers: local Ollama/LM Studio need no key; for cloud APIs enter the key and press Test.",
-        "Pick the model from the selector under the message box. Switching to a local model unloads other local models from memory.",
-      ] },
-      { icon: "folder", title: "2. Projects and chats", items: [
-        "Create a project with + in the sidebar; choose a folder on your computer or create a new one. All agent output is written there.",
-        "Chats without a project work in workspace/. Every chat keeps its session record in chat/<id>-session/, deleted completely with the chat.",
-        "Right-click chats and projects to pin, rename, archive or delete them.",
-      ] },
-      { icon: "bot", title: "3. Agents (@) and skills (/)", items: [
-        "The default assistant adapts to the conversation: it chats when you chat and does the work with tools when you ask for it.",
-        "Type @coder, @tester, @debugger or @planner to switch roles. Skills such as /webapp, /docs or /git add instructions.",
-        "You don't have to type a skill: the model picks and loads the one that matches your request.",
-        "Create new ones on the Skills and Agents pages, edit them with Monaco, or import them from a file or a GitHub URL.",
-      ] },
-      { icon: "wrench", title: "4. Tools and autonomous work", items: [
-        "The model can write/read files, run PowerShell/CMD/Python/Node/PHP commands, start background processes, research the web, test UIs in a browser and produce Word/Excel/PDF/PPT files.",
-        "When a command fails, the debugger role reads the error, fixes it and retries.",
-        "Everything that happens in the background is grouped under one header; while a task runs only the current step shows, and a click opens them all.",
-        "For multi-step work the model opens a live to-do list when needed and ticks items off as it goes.",
-        "Long tasks run to the end; a model that announces the next step and stops is made to continue. Type \"continue\" to resume an interrupted task where it stopped.",
-        "Plus menu: upload files and folders, Goal mode (works on its own until the goal is reached), Plan mode, the Drawing pad (sketch and send it as an image) and document shortcuts.",
-      ] },
-      { icon: "shield", title: "5. Permission modes and safety", items: [
-        "Ask for approval: asks before external file and internet actions. Approve for me: asks only for risky actions. Full access: unrestricted.",
-        "Destructive commands such as rm -rf, format or os.remove always ask, even in full access; disk formatting never runs.",
-        "Commands run directly on your computer; the filter is not a sandbox. The approval mode is the real control.",
-      ] },
-      { icon: "gauge", title: "6. Context management", items: [
-        "The ring in the message box shows context usage; click it to see which category uses how much, plus outputs and background tasks.",
-        "Old messages are summarized automatically at the threshold (default 80%); use Compress now to do it manually.",
-        "Context is counted live while a task runs; in long tasks old file bodies are trimmed or steps summarized so the task does not break.",
-        "For local models, set the context size from the size chip in the model picker or in Settings; both stay in sync instantly."
-      ] },
-      { icon: "files", title: "7. Files and time machine", items: [
-        "Files is a full file manager: folder tree, type filters, preview, upload, rename and right-click menus.",
-        "Project folders get an automatic git snapshot after each run; restore any point with the Time machine.",
-        "Generated Word, Excel, PDF and PowerPoint files appear as cards in the chat; click one to preview it inside the app.",
-      ] },
-      { icon: "globe", title: "8. Web research", items: [
-        "The research tool merges several search engines, reads the best sources in parallel and summarizes with source URLs.",
-        "Sites that block automated access are reported clearly; the model moves on to other sources instead of guessing. Add Brave, Tavily or SearXNG in Settings > Web for stronger results.",
-      ] },
-      { icon: "help", title: "9. FAQ", items: [
-        "Model list is empty: is the provider enabled and the key saved? Check Settings > Providers > Test.",
-        "EVREN returns 403: accept the terms via Test > Read & accept terms.",
-        "The UI looks outdated: press Ctrl+F5 once after an update.",
-      ] },
-    ],
-  },
   about: {
     title: "About",
     tagline: "An autonomous AI command center that writes, tests and runs code with local and cloud AI models.",
@@ -164,15 +67,29 @@ const en = {
     what: "AI IQ 300 is a software development and automation hub that runs on your computer behind a clean ChatGPT/Claude-style chat. Give it a goal: it creates folders and files, runs commands, debugs errors, tests the app in a browser and reports back. Your data never leaves your computer unless you choose a cloud provider.",
     features_title: "Highlights",
     features: [
-      ["Multi-model", "Ollama, LM Studio, OpenAI, Anthropic, Gemini, OpenRouter, Groq, DeepSeek, EVREN and 25+ providers; one-click switching."],
+      ["Multi-model", "Ollama, LM Studio, OpenAI, Anthropic, Gemini, OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, DeepSeek, EVREN and 25+ providers; one-click switching."],
       ["Real tool use", "Native function calling + a universal parser: tool calls work reliably and raw syntax never leaks into the chat."],
       ["Multi-agent", "Assistant, Planner, Coder, Debugger and Tester roles; automatic debugging loop on failures."],
       ["Uninterrupted tasks", "Long jobs run to the end, with live grouped steps, a to-do list and automatic skill selection."],
-      ["Smart context", "Live counting during tasks, in-task trimming/summarizing, threshold compression and persistent session summaries."],
+      ["Smart context", "Real token counting (bundled tokenizer + the provider's own count, tool definitions included), a live meter while the model thinks and writes, in-task trimming/summarizing (with an exact list of the steps already done, so nothing is repeated or invented), threshold compression and persistent session summaries."],
       ["Safety", "Three permission modes, a smart fence for destructive commands and a restricted child-process environment."],
       ["Pro IDE", "Monaco editor, file manager, process panel, git time machine, light/dark themes, fully responsive."],
-      ["Web research", "Multi-engine search, real-browser page reading, block detection and cited summaries."],
+      ["Web research", "Your APIs first (Google, Yandex, Bing, Brave, Tavily, SearXNG), else free ddgs search over Google/Yahoo/Bing/Yandex/Brave in parallel; result fusion, a background browser, structured data and archived copies for reading pages, cited summaries."],
+      ["Version-aware commands", "Writes commands knowing the OS build, the shells and the tool versions; argv runs without a shell, heredocs are routed, background processes return when ready."],
+      ["Document research", "Reads PDF, Word, Excel, PowerPoint, OpenDocument, CSV and images with page-numbered quotes; built-in OCR for scanned pages."],
+      ["Review card and timing", "Every change a task made in its folder (commands included) with diffs; where the task's time went between model, tools and the app."],
+      ["Maps and places", "Find places around a district, address or coordinates (free OpenStreetMap; ratings and reviews with Google/Yandex Places), interactive maps, place comparison, market and competitor analysis, product catalogs."],
       ["Documents with preview", "Generates Word, Excel, PDF and PowerPoint files; they appear as cards and preview inside the app."],
+      ["Multi-model and quotas", "Automatic model switch on quota, per-agent models, models handing work to each other; 5-hour and weekly quota tracking."],
+      ["Project memory", "Per-project rules (AIIQ.md) and global rules are added to every chat; say \"remember this\" and the model saves the rule itself."],
+      ["Smart code editing", "Partial file edits, project-wide code search and a function/class map: fast changes even in big projects."],
+      ["Diff before approval", "For every file change that needs approval you see the lines to be added and removed beforehand."],
+      ["Model profiles", "Per-model thinking, image input, streaming, tool-call format, temperature and output length."],
+      ["Effort setting", "Reasoning effort uses the real levels from the model's API data; models without it get an instruction."],
+      ["MCP client", "Connect MCP servers such as GitHub, PostgreSQL or the file system; their tools are offered to the model."],
+      ["Syntax trees", "Exact definitions and impact analysis with Tree-sitter: see which files a change affects beforehand."],
+      ["Agent teams", "Splits big jobs into parts on different cloud models: independent parts at the same time, dependent parts stage by stage (team 1's output goes to team 2). Members message each other and share a task list; live task board."],
+      ["Voice control", "Answers read aloud and spoken commands: \"send\", \"stop\", \"approve\", \"deny\", \"new chat\"."],
       ["Drawing and attachments", "Drawing pad, file and folder upload, goal and plan modes."],
     ],
     adv_title: "Advantages",
@@ -184,12 +101,11 @@ const en = {
     ],
     roadmap_title: "Roadmap",
     roadmap: [
-      "Partial file edits and project-wide code search (much faster changes with local models)",
-      "Tree-sitter function/class map: see which files a change will affect before making it",
-      "MCP client: connect GitHub, PostgreSQL and thousands of ready MCP servers as tools",
-      "Diff view before approval and persistent per-project rules",
       "Optional Docker (WSL2) sandbox for isolated command execution",
-      "Parallel agent teams and a task board for cloud models; spoken replies",
+      "Full timeline video editor (ffmpeg): trim, cut, join, text and logo, music, transitions, format conversion; subtitles automatic from speech (faster-whisper) or from given text; preview in the chat",
+      "Stronger image generation: free Pollinations (FLUX) by default, Hugging Face, Together, OpenAI, Gemini, Stability with a key; detects the wanted format and size (story, cover, A4, banner) and prints text sharply over the image",
+      "Stock image and video services: Pexels, Pixabay, Unsplash, Openverse, Wikimedia (free) and Shutterstock, Getty, Adobe Stock, Storyblocks (paid; approval with the price on every download); licence and source recorded",
+
     ],
     dev_title: "Developer",
     dev_desc: "Software developer building WordPress plugins, AI tools and automation solutions.",

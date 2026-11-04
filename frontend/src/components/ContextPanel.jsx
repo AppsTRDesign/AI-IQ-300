@@ -72,7 +72,7 @@ function ContextPanel() {
 
   return (
     <div className="relative">
-      <button onClick={() => setOpen(!open)} title={t("context")} className="grid h-8 w-8 place-items-center rounded-full hover:bg-hover">
+      <button onClick={() => setOpen(!open)} title={t("context")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full hover:bg-hover">
         <svg width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
           <circle cx="9" cy="9" r={R} fill="none" stroke="var(--line)" strokeWidth="2.4" />
           {pct > 0 && <circle cx="9" cy="9" r={R} fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round"

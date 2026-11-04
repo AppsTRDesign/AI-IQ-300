@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { PenLine, X } from "lucide-react";
+import { useT } from "../lib/store";
 import { fileType, formatSize } from "../lib/fileTypes";
 
 // Small shared UI primitives.
@@ -107,13 +108,20 @@ export function Toggle({ checked, onChange, disabled }) {
 
 export const inputCls = "w-full rounded-xl border border-line bg-bg px-3 py-2 text-[13px] outline-none transition placeholder:text-subtle focus:border-accent focus:ring-2 focus:ring-accent/20";
 
-export function FileChip({ file, onRemove, compact }) {
+export function FileChip({ file, onRemove, onEdit, compact }) {
+  const t = useT();
   const ft = fileType(file.name);
   const Icon = ft.icon;
   return (
-    <div className={`group relative flex shrink-0 items-center gap-2 rounded-xl border border-line bg-elev ${compact ? "px-2 py-1" : "w-44 p-2"}`}>
+    <div className={`group relative flex shrink-0 items-center gap-2 rounded-xl border border-line bg-elev ${compact ? "px-2 py-1" : "w-44 p-2"} ${onEdit ? "cursor-pointer transition hover:border-accent/60" : ""}`}
+      onClick={onEdit} title={onEdit ? t("draw_edit_hint") : undefined}>
       {file.kind === "image" && file.b64 && !compact
-        ? <img src={`data:image/png;base64,${file.b64}`} className="h-9 w-9 rounded-lg object-cover" alt="" />
+        ? (
+          <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-lg">
+            <img src={`data:${file.mime || "image/png"};base64,${file.b64}`} className="h-full w-full object-cover" alt="" />
+            {onEdit && <span className="absolute inset-0 grid place-items-center bg-black/45 text-white opacity-0 transition group-hover:opacity-100"><PenLine size={14} /></span>}
+          </div>
+        )
         : (
           <div className={`grid shrink-0 place-items-center rounded-lg text-white ${compact ? "h-6 w-6" : "h-9 w-9"}`} style={{ background: ft.color }}>
             <Icon size={compact ? 13 : 17} />
@@ -124,7 +132,7 @@ export function FileChip({ file, onRemove, compact }) {
         {!compact && <div className="text-[11px] text-subtle">{ft.label} · {formatSize(file.size)}</div>}
       </div>
       {onRemove && (
-        <button onClick={onRemove} className="absolute -right-1.5 -top-1.5 hidden rounded-full bg-fg p-0.5 text-bg group-hover:block"><X size={11} /></button>
+        <button onClick={(e) => { e.stopPropagation(); onRemove(); }} title={t("remove")} className="absolute -right-1.5 -top-1.5 hidden rounded-full bg-fg p-0.5 text-bg group-hover:block"><X size={11} /></button>
       )}
     </div>
   );

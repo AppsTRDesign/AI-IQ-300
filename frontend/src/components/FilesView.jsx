@@ -2,11 +2,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight, Download, FilePlus2, Folder, FolderOpen, FolderPlus, HardDrive, History, LayoutGrid, List, Loader2,
   PanelLeft, Pencil, RefreshCw, Search, SquareArrowOutUpRight, Trash2, Upload, X,
-  Maximize2,
+  Maximize2, Globe,
 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
-import { CATEGORIES, docKind, fileCategory, fileType, formatSize, isTextFile } from "../lib/fileTypes";
+import { CATEGORIES, docKind, fileCategory, fileType, formatSize, isImage, isTextFile, isWebPage } from "../lib/fileTypes";
 import { DocBody } from "./DocPreview";
 import { ContextMenu, MenuItem, MenuSep, Modal } from "./ui";
 import CodeBlock from "./CodeBlock";
@@ -61,7 +61,7 @@ function Preview({ item, onClose }) {
         <button onClick={onClose} className="rounded-lg p-1 text-subtle hover:bg-hover"><X size={16} /></button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {cat === "image" && <img src={raw} alt={item.name} className="mx-auto max-h-72 rounded-xl border border-line bg-bg object-contain" />}
+        {cat === "image" && <button onClick={() => st.viewImages([item.path])} className="block w-full"><img src={raw} alt={item.name} className="mx-auto max-h-72 cursor-zoom-in rounded-xl border border-line bg-bg object-contain" /></button>}
         {docKind(item.name) && <div className="h-80"><DocBody key={`${item.path}:${item.mtime}`} path={item.path} /></div>}
         {text != null && text !== "" && <CodeBlock code={text.length > 60000 ? text.slice(0, 60000) + "\n…" : text} language={item.ext} path={item.path} />}
         {text === "" && <div className="text-xs text-subtle">{t("empty_file")}</div>}
@@ -73,6 +73,8 @@ function Preview({ item, onClose }) {
         </dl>
       </div>
       <div className="flex gap-2 border-t border-line p-3">
+        {isImage(item.name) && <button onClick={() => st.viewImages([item.path])} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><Maximize2 size={14} /> {t("view_image")}</button>}
+        {isWebPage(item.name) && <button onClick={() => st.browse({ path: item.path })} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><Globe size={14} /> {t("open_browser")}</button>}
         {docKind(item.name) && <button onClick={() => st.previewFile(item.path, item.size)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><Maximize2 size={14} /> {t("preview")}</button>}
         {isTextFile(item.name) && <button onClick={() => st.openFile(item.path)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><SquareArrowOutUpRight size={14} /> {t("open_editor")}</button>}
         <a href={raw + "&download=true"} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-line py-2 text-[13px] font-medium hover:bg-hover"><Download size={14} /> {t("download")}</a>
@@ -307,6 +309,7 @@ export default function FilesView() {
           {menu.it ? (
             <>
               <MenuItem icon={menu.it.dir ? FolderOpen : SquareArrowOutUpRight} label={t(menu.it.dir ? "open" : "preview")} onClick={() => openItem(menu.it)} />
+              {!menu.it.dir && isWebPage(menu.it.name) && <MenuItem icon={Globe} label={t("open_browser")} onClick={() => st.browse({ path: menu.it.path })} />}
               {!menu.it.dir && isTextFile(menu.it.name) && <MenuItem icon={SquareArrowOutUpRight} label={t("open_editor")} onClick={() => st.openFile(menu.it.path)} />}
               {menu.it.dir && <MenuItem icon={FilePlus2} label={t("new_file_here")} onClick={() => startCreate("newfile", menu.it.path)} />}
               {menu.it.dir && <MenuItem icon={FolderPlus} label={t("new_folder_here")} onClick={() => startCreate("mkdir", menu.it.path)} />}

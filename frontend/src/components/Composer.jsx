@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowUp, Bot, Check, ChevronDown, Chrome, Cpu, Cloud, FileSpreadsheet, FileText, FileType2, FolderGit2, FolderUp, ListTodo, Loader2, Mic,
-  Paperclip, PenTool, Plus, Presentation, RefreshCw, Search, Settings2, Shield, ShieldCheck, ShieldAlert, SlidersHorizontal, Sparkles, Square, Target,
+  ArrowUp, Bot, Camera, Check, ChevronDown, Chrome, Cpu, Cloud, FileSpreadsheet, FileText, FileType2, FolderGit2, FolderUp, ListTodo, Loader2, Mic,
+  Paperclip, PenTool, Plus, Presentation, RefreshCw, Search, Settings2, Shield, ShieldCheck, ShieldAlert, SlidersHorizontal, Sparkles, Square, Target, Gauge, AudioLines,
 } from "lucide-react";
 import { loc, useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
@@ -10,12 +10,6 @@ import { FileChip, MenuItem, MenuSep, Popover } from "./ui";
 import ContextPanel from "./ContextPanel";
 import DrawingDialog from "./DrawingDialog";
 import { CapIcons } from "./Caps";
-
-const readB64 = (file) => new Promise((res) => {
-  const r = new FileReader();
-  r.onload = () => res(String(r.result).split(",")[1]);
-  r.readAsDataURL(file);
-});
 
 const PERMS = [
   { id: "ask", key: "perm_ask", icon: Shield },
@@ -39,7 +33,7 @@ const PermissionMenu = memo(function PermissionMenu() {
   return (
     <div className="relative">
       <button onClick={() => setOpen(!open)}
-        className={`flex h-8 items-center gap-1 rounded-full px-2.5 text-[13px] hover:bg-hover ${mode === "full" ? "text-warn" : "text-muted"}`}>
+        className={`flex h-8 shrink-0 items-center gap-1 rounded-full px-2 text-[13px] hover:bg-hover sm:px-2.5 ${mode === "full" ? "text-warn" : "text-muted"}`}>
         <cur.icon size={15} /><span className="hidden sm:inline">{t(cur.key)}</span><ChevronDown size={13} />
       </button>
       {open && (
@@ -48,6 +42,45 @@ const PermissionMenu = memo(function PermissionMenu() {
           {PERMS.map((p, i) => (
             <MenuItem key={p.id} label={t(p.key)} desc={t(p.key + "_desc")} onClick={() => set(p.id)} shortcut={String(i + 1)}
               right={mode === p.id && <Check size={15} className="mt-0.5 shrink-0 text-accent" />} />
+          ))}
+        </Popover>
+      )}
+    </div>
+  );
+});
+
+// ---------- reasoning effort ----------
+// Levels come from the model's API data (router.effort_spec); "prompt" models get an instruction instead.
+const EffortMenu = memo(function EffortMenu() {
+  const t = useT();
+  const model = useStore((s) => s.prefs.model || s.settings?.active_model || "");
+  const caps = useStore((s) => s.modelCaps(model));
+  const prof = useStore((s) => s.settings?.model_profiles?.[model]) || {};
+  const [open, setOpen] = useState(false);
+  const levels = caps?.efforts || [];
+  if (!model || !levels.length) return null;
+  const cur = levels.includes(prof.effort) ? prof.effort : "";
+  const set = async (effort) => {
+    setOpen(false);
+    const st = useStore.getState();
+    try {
+      await api.put("/api/models/profile", { thinking: "auto", vision: "auto", streaming: "auto", tools: "auto", ...prof, model, effort: effort || null });
+      await st.refreshSettings();
+      st.loadProviderModels(model.split(":")[0]);
+    } catch (e) { st.notify(t("profile_save_failed"), "error", e.message); }
+  };
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(!open)} title={t("effort")}
+        className={`flex h-8 shrink-0 items-center gap-1 rounded-full px-1.5 text-[12.5px] hover:bg-hover sm:px-2 ${open ? "bg-hover text-fg" : cur ? "text-accent" : "text-muted"}`}>
+        <Gauge size={14} /><span className="hidden sm:inline">{t(cur ? `effort_${cur}` : "effort_auto")}</span><ChevronDown size={12} className="hidden sm:block" />
+      </button>
+      {open && (
+        <Popover onClose={() => setOpen(false)} className="bottom-full right-0 mb-2 w-[290px]">
+          <div className="px-2.5 pb-1 pt-1.5 text-xs leading-snug text-subtle">{t(caps.effort_via === "prompt" ? "effort_desc_prompt" : "effort_desc_api")}</div>
+          {["", ...levels].map((l) => (
+            <MenuItem key={l || "auto"} label={t(l ? `effort_${l}` : "effort_auto")} desc={l ? null : t("effort_auto_desc")} onClick={() => set(l)}
+              right={cur === l && <Check size={15} className="mt-0.5 shrink-0 text-accent" />} />
           ))}
         </Popover>
       )}
@@ -103,8 +136,8 @@ const ModelPicker = memo(function ModelPicker() {
     || (local ? Math.min(m.default_ctx || 32768, m.context || Infinity) : m.context);
 
   return (
-    <div className="relative min-w-0">
-      <button onClick={() => setOpen(!open)} className={`flex h-8 max-w-[150px] items-center gap-1 rounded-full px-2.5 text-[13px] hover:bg-hover sm:max-w-[240px] ${open ? "bg-hover text-fg" : "text-muted"}`}>
+    <div className="relative min-w-0 max-w-[150px] shrink sm:max-w-[240px]">
+      <button onClick={() => setOpen(!open)} className={`flex h-8 max-w-full items-center gap-1 rounded-full px-2 text-[13px] hover:bg-hover sm:px-2.5 ${open ? "bg-hover text-fg" : "text-muted"}`}>
         {switching ? <Loader2 size={13} className="shrink-0 animate-spin text-accent" /> : null}
         <span className="truncate">{short}</span>
         {ctx?.model === model && ctx.current && <span className="hidden shrink-0 font-mono text-[10.5px] text-subtle sm:inline">{formatTokens(ctx.current)}</span>}
@@ -212,7 +245,7 @@ export default function Composer() {
   const folderInput = useRef(null);
   const [listening, setListening] = useState(false);
   const [sel, setSel] = useState(0);
-  const [drag, setDrag] = useState(false);
+  const [editing, setEditing] = useState(null); // index of the attached image open in the editor
   const fileInput = useRef(null);
   const ta = useRef(null);
   const st = useStore.getState();
@@ -235,25 +268,17 @@ export default function Composer() {
     if (override == null) setText("");
   };
   const insert = (name) => { setText((x) => x.replace(/([@/])([\w-]*)$/, `$1${name} `)); ta.current?.focus(); };
-  const addFiles = async (files) => {
-    const sid = await st.ensureSession();
-    for (const f of files) {
-      try {
-        const meta = await api.upload(`/api/sessions/${sid}/upload`, f);
-        const b64 = meta.kind === "image" ? await readB64(f) : undefined;
-        useStore.setState((s) => ({ attachments: [...s.attachments, { ...meta, b64 }] }));
-      } catch (e) { st.notify(e.message, "error"); }
-    }
-  };
+  const addFiles = (files) => st.addAttachments(files);
   // A whole folder goes into the chat's working folder with its structure; the message mentions where it is.
   const addFolder = async (files) => {
     if (!files.length) return;
     const sid = await st.ensureSession();
-    const top = files[0].webkitRelativePath.split("/")[0];
+    const rel = (f) => f.relPath || f.webkitRelativePath;
+    const top = rel(files[0]).split("/")[0];
     const id = st.notify(t("uploading_folder", { name: top, n: files.length }), "busy");
     let ok = 0;
     for (const f of files) {
-      const dir = f.webkitRelativePath.split("/").slice(0, -1).join("/");
+      const dir = rel(f).split("/").slice(0, -1).join("/");
       try { await api.upload(`/api/sessions/${sid}/fs/upload?path=${encodeURIComponent(dir)}`, f); ok += 1; } catch {}
     }
     st.dismiss(id);
@@ -262,6 +287,14 @@ export default function Composer() {
     setText((x) => `${x ? x + " " : ""}${t("folder_ref", { name: top })} `);
     ta.current?.focus();
   };
+  // Files and folders dropped anywhere on the chat (ChatView's drop zone) arrive here.
+  const dropRef = useRef(null);
+  dropRef.current = ({ files, folders }) => { if (files.length) addFiles(files); for (const f of folders) addFolder(f); };
+  useEffect(() => {
+    const on = (e) => dropRef.current(e.detail);
+    addEventListener("aiiq:drop", on);
+    return () => removeEventListener("aiiq:drop", on);
+  }, []);
   const onKeyDown = (e) => {
     if (mention) {
       if (e.key === "ArrowDown") { e.preventDefault(); return setSel((sel + 1) % mention.items.length); }
@@ -282,15 +315,62 @@ export default function Composer() {
   };
   const prefix = (p) => { setText((x) => p + x); setMenu(false); ta.current?.focus(); };
 
+  // Voice task control (lib/voiceControl): commands run the app, other speech is dictated into the box.
+  const [voice, setVoice] = useState("off");
+  const vc = useRef(null);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const onVoice = useRef(null);
+  onVoice.current = ({ cmd, text: said }) => {
+    const s = useStore.getState();
+    const sid = s.sessionId;
+    const full = [textRef.current, said].filter(Boolean).join(" ").trim();
+    if (!cmd) { if (said) setText(full); return; }
+    const done = (key) => s.notify(t(key), "ok");
+    if (cmd === "send") {
+      if (!full) return s.notify(t("voice_nothing_to_send"), "warn");
+      if (running) return s.notify(t("voice_busy"), "warn");
+      setText("");
+      s.send(full, { planMode, goalMode });
+      return done("voice_cmd_send");
+    }
+    if (cmd === "stop") { if (running) { s.cancelRun(); done("voice_cmd_stop"); } return; }
+    if (cmd === "approve" || cmd === "deny") {
+      const a = sid && s.runs[sid]?.approvals?.[0];
+      if (!a) return s.notify(t("voice_no_approval"), "warn");
+      s.answerApproval(sid, a, cmd === "approve");
+      return done(cmd === "approve" ? "voice_cmd_approve" : "voice_cmd_deny");
+    }
+    if (cmd === "new") { s.newChat(); return done("voice_cmd_new"); }
+    if (cmd === "clear") return setText("");
+    if (cmd === "read") {
+      const m = [...(s.messages || [])].reverse().find((x) => x.role === "assistant" && x.content);
+      if (m) import("../lib/speech").then((sp) => sp.speak(m.id, m.content, sp.speechOpts(s.prefs)));
+      return;
+    }
+    if (cmd === "quiet") return import("../lib/speech").then((sp) => sp.stopSpeech());
+    if (cmd === "off") vc.current?.disable();
+  };
+  useEffect(() => () => vc.current?.dispose(), []);
+  const toggleVoice = async () => {
+    if (voice !== "off") return vc.current?.disable();
+    const { createVoiceControl } = await import("../lib/voiceControl");
+    vc.current?.dispose();
+    vc.current = createVoiceControl({ lang: lang || "tr", onResult: (r) => onVoice.current(r),
+      onState: (x) => { setVoice(x === "denied" ? "off" : x); if (x === "denied") st.notify(t("mic_denied"), "error"); } });
+    if (!vc.current) return st.notify(t("mic_unsupported"), "error");
+    vc.current.enable();
+    st.notify(t("voice_on_hint"), "info");
+  };
+
   return (
     <div className="mx-auto w-full max-w-3xl px-2.5 pb-[max(10px,env(safe-area-inset-bottom))] sm:px-4 sm:pb-5">
-      <div onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
-        onDrop={(e) => { e.preventDefault(); setDrag(false); addFiles([...e.dataTransfer.files]); }}
-        className={`relative rounded-[26px] border bg-elev shadow-[0_2px_12px_rgb(0_0_0/0.06)] transition focus-within:shadow-[0_4px_20px_rgb(0_0_0/0.09)] ${drag ? "border-accent ring-4 ring-accent/15" : "border-line"}`}>
+      <div className="relative rounded-[26px] border border-line bg-elev shadow-[0_2px_12px_rgb(0_0_0/0.06)] transition focus-within:shadow-[0_4px_20px_rgb(0_0_0/0.09)]">
         {attachments.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-3 pt-3">
             {attachments.map((a, i) => (
-              <FileChip key={i} file={a} onRemove={() => useStore.setState((s) => ({ attachments: s.attachments.filter((_, j) => j !== i) }))} />
+              <FileChip key={i} file={a} onEdit={a.kind === "image" && a.b64 ? () => setEditing(i) : undefined}
+                onRemove={() => useStore.setState((s) => ({ attachments: s.attachments.filter((_, j) => j !== i) }))} />
             ))}
           </div>
         )}
@@ -320,6 +400,8 @@ export default function Composer() {
                 <MenuItem icon={Target} label={t("goal")} desc={t("goal_desc")} onClick={() => { setGoalMode(!goalMode); setMenu(false); ta.current?.focus(); }} right={goalMode && <Check size={14} className="mt-0.5 text-accent" />} />
                 <MenuItem icon={ListTodo} label={t("plan_mode")} desc={t("plan_mode_desc")} onClick={() => { setPlanMode(!planMode); setMenu(false); ta.current?.focus(); }} right={planMode && <Check size={14} className="mt-0.5 text-accent" />} />
                 <MenuItem icon={PenTool} label={t("drawing")} desc={t("drawing_desc")} onClick={() => { setDrawing(true); setMenu(false); }} />
+                <div className="min-[420px]:hidden"><MenuItem icon={AudioLines} label={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")} onClick={() => { setMenu(false); toggleVoice(); }} /></div>
+                <MenuItem icon={Camera} label={t("web_shot")} desc={t("web_shot_desc")} onClick={() => prefix(t("web_shot_prefix"))} />
                 <MenuSep />
                 <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("plugins")}</div>
                 <MenuItem icon={FileText} label={t("documents")} onClick={() => prefix("/docs Word: ")} />
@@ -332,17 +414,25 @@ export default function Composer() {
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { addFiles([...e.target.files]); e.target.value = ""; }} />
           <input ref={folderInput} type="file" multiple hidden webkitdirectory="" directory="" onChange={(e) => { addFolder([...e.target.files]); e.target.value = ""; }} />
           {drawing && <DrawingDialog onClose={() => setDrawing(false)} onSend={(f) => addFiles([f])} />}
+          {editing != null && attachments[editing] && (
+            <DrawingDialog image={attachments[editing]} onClose={() => setEditing(null)}
+              onSend={(f) => st.addAttachments([f], editing)} />
+          )}
           <PermissionMenu />
           {planMode && <button onClick={() => setPlanMode(false)} className="flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-xs font-medium text-accent"><ListTodo size={12} />{t("plan_mode")} ✕</button>}
           {goalMode && <button onClick={() => setGoalMode(false)} className="flex items-center gap-1 rounded-full bg-violet-500/12 px-2.5 py-0.5 text-xs font-medium text-violet-600 dark:text-violet-300"><Target size={12} />{t("goal")} ✕</button>}
           <div className="flex-1" />
           <ModelPicker />
+          <EffortMenu />
           <ContextPanel />
-          <button onClick={mic} className={`grid h-8 w-8 place-items-center rounded-full hover:bg-hover ${listening ? "text-danger" : "text-muted"}`}><Mic size={17} /></button>
+          <button onClick={toggleVoice} title={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")}
+            className={`h-8 w-8 shrink-0 place-items-center rounded-full hover:bg-hover ${voice === "on" ? "grid bg-accent-soft text-accent" : "hidden text-muted min-[420px]:grid"}`}>
+            <AudioLines size={17} className={voice === "on" ? "animate-pulse" : ""} /></button>
+          <button onClick={mic} title={t("dictate")} className={`grid h-8 w-8 shrink-0 place-items-center rounded-full hover:bg-hover ${listening ? "text-danger" : "text-muted"}`}><Mic size={17} /></button>
           {running ? (
-            <button onClick={st.cancelRun} title={t("stop")} className="grid h-8 w-8 place-items-center rounded-full bg-fg text-bg"><Square size={11} fill="currentColor" /></button>
+            <button onClick={st.cancelRun} title={t("stop")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-fg text-bg"><Square size={11} fill="currentColor" /></button>
           ) : (
-            <button onClick={() => submit()} disabled={!text.trim()} className="grid h-8 w-8 place-items-center rounded-full bg-accent text-accent-fg transition disabled:opacity-35"><ArrowUp size={17} /></button>
+            <button onClick={() => submit()} disabled={!text.trim()} title={t("send")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition disabled:opacity-35"><ArrowUp size={17} /></button>
           )}
         </div>
       </div>

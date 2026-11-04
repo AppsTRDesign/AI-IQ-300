@@ -4,7 +4,7 @@ const KNOWN = new Set([
   "missing_credentials", "auth", "forbidden", "terms", "payment", "quota", "rate_limit", "context_length", "no_tools",
   "model_not_found", "not_found", "bad_request", "too_large", "timeout", "unavailable", "overloaded", "server",
   "bad_gateway", "moderation", "disabled", "unknown_provider", "bad_model", "empty", "internal", "load_failed",
-  "provider", "http", "request",
+  "provider", "http", "request", "network", "unknown_kind", "plan_required",
 ]);
 
 export function errorText(t, code, message) {

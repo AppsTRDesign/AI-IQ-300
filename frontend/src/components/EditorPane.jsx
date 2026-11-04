@@ -1,8 +1,10 @@
 import { useEffect } from "react";
 import Editor from "@monaco-editor/react";
-import { Save, X } from "lucide-react";
+import { Globe, Save, X } from "lucide-react";
+import { isWebPage } from "../lib/fileTypes";
 import { useStore, useT } from "../lib/store";
-import { languageForPath } from "../lib/monaco";
+import { languageForPath } from "../lib/languages";
+import "../lib/monaco";
 
 // Full Monaco editor with tabs. Ctrl+S saves files that belong to the session workspace.
 export default function EditorPane() {
@@ -33,6 +35,10 @@ export default function EditorPane() {
           );
         })}
         <div className="flex-1" />
+        {tab?.path && isWebPage(tab.path) && (
+          <button onClick={async () => { if (tab.content !== tab.saved) await saveBuffer(tab.id); useStore.getState().browse({ path: tab.path }); }}
+            title={t("open_browser")} className="px-2 text-muted hover:text-fg"><Globe size={15} /></button>
+        )}
         {tab?.path && (
           <button onClick={() => saveBuffer(tab.id)} title={t("save")} className="px-2 text-muted hover:text-fg"><Save size={15} /></button>
         )}

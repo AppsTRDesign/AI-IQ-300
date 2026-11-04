@@ -1,8 +1,7 @@
 import { memo, useEffect, useState } from "react";
-import * as monaco from "monaco-editor";
 import { Check, Copy, SquareArrowOutUpRight } from "lucide-react";
 import { useStore, useT } from "../lib/store";
-import { normalizeLanguage } from "../lib/monaco";
+import { normalizeLanguage } from "../lib/languages";
 
 // Chat code frame. Uses Monaco's tokenizer (colorize) instead of a full editor instance per block:
 // no workers, no remounting while streaming, so the chat never flickers. The editor button opens real Monaco.
@@ -15,7 +14,8 @@ function CodeBlock({ code, language, path }) {
   useEffect(() => {
     let alive = true;
     const timer = setTimeout(() => {
-      monaco.editor.colorize(code, lang, { tabSize: 2 }).then((h) => alive && setHtml(h)).catch(() => {});
+      import("../lib/monaco").then(({ monaco }) => monaco.editor.colorize(code, lang, { tabSize: 2 }))
+        .then((h) => alive && setHtml(h)).catch(() => {});
     }, 60); // coalesce streaming updates
     return () => { alive = false; clearTimeout(timer); };
   }, [code, lang]);

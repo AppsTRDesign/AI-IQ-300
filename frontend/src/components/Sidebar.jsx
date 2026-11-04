@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import {
   Archive, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, Loader2, MoreHorizontal, PanelLeftClose, Pencil,
-  Pin, PinOff, SquarePen, Trash2, ChevronsDownUp, MessageSquarePlus, ExternalLink,
+  Pin, PinOff, SquarePen, Trash2, ChevronsDownUp, MessageSquarePlus, ExternalLink, BookMarked,
 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
@@ -75,6 +75,7 @@ const ProjectRow = memo(function ProjectRow({ p, chats, expanded, selected, sess
         <ContextMenu {...menu} onClose={() => setMenu(null)}>
           <MenuItem icon={MessageSquarePlus} label={t("new_chat")} shortcut="N" onClick={() => st.newChat(p.id)} />
           <MenuItem icon={Pencil} label={t("rename")} shortcut="R" onClick={() => setEditing(true)} />
+          <MenuItem icon={BookMarked} label={t("project_rules")} onClick={() => useStore.setState({ dialog: { type: "rules", projectId: p.id } })} />
           <MenuItem icon={ExternalLink} label={t("open_folder")} onClick={() => api.post(`/api/projects/${p.id}/reveal`).catch(() => {})} />
           <MenuItem icon={ChevronsDownUp} label={t("collapse_all")} onClick={() => useStore.setState({ expanded: {} })} />
           <MenuSep />

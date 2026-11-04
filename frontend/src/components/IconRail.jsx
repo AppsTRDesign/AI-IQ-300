@@ -15,7 +15,7 @@ export default function IconRail({ mobile }) {
   const st = useStore.getState();
   const go = (id) => {
     if (id === "home") return st.newChat();
-    if (id === "sessions") { if (!mobile) st.toggle("projectsOpen"); return st.setView("chat"); }
+    if (id === "sessions") { if (!mobile) st.toggle(innerWidth >= 1024 ? "projectsOpen" : "sidebarOpen"); return st.setView("chat"); }
     st.setView(id);
   };
   const btn = (active) => `grid h-9 w-9 place-items-center rounded-xl transition ${active ? "bg-active text-fg" : "text-muted hover:bg-hover hover:text-fg"}`;

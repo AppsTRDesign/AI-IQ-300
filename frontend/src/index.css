@@ -78,3 +78,37 @@ body { margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothin
 input[type="range"].slider { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; background: var(--active); outline: none; }
 input[type="range"].slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); box-shadow: 0 1px 4px rgb(0 0 0 / .3); cursor: pointer; }
 input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); cursor: pointer; }
+
+/* blinking caret after text that is still being written */
+.caret::after { content: ""; display: inline-block; width: 0.45em; height: 1em; margin-left: 2px; vertical-align: -0.15em;
+  border-radius: 1px; background: currentColor; opacity: 0.5; animation: caret-blink 1s steps(2, start) infinite; }
+@keyframes caret-blink { to { visibility: hidden; } }
+
+/* Chat-wide drop zone */
+.drop-in { animation: dropin .16s ease-out; }
+@keyframes dropin { from { opacity: 0; } to { opacity: 1; } }
+.drop-in > div { animation: dropcard .22s cubic-bezier(.2,.9,.3,1.2); }
+@keyframes dropcard { from { transform: scale(.97); } to { transform: none; } }
+
+/* Jump-to-latest button */
+.jump-in { animation: jumpin .18s ease-out; }
+@keyframes jumpin { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* Work notes (text the model writes between tool calls): small muted prose, not a chat reply. */
+.note-md { font-size: 13px; color: var(--muted); }
+.note-md .prose-chat { line-height: 1.55; }
+.note-md .prose-chat h1, .note-md .prose-chat h2, .note-md .prose-chat h3 { font-size: 13.5px; margin: 0.5rem 0 0.2rem; color: var(--fg); opacity: 0.85; }
+.note-md .prose-chat p { margin: 0.25rem 0; }
+.note-md .prose-chat ul, .note-md .prose-chat ol { margin: 0.2rem 0; }
+.note-tail { display: flex; flex-direction: column; justify-content: flex-end; max-height: 11rem; overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem); mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem); }
+
+/* Guide (wiki) articles: roomier than chat answers, tables full width. */
+.guide-md .prose-chat { font-size: 14px; line-height: 1.7; }
+.guide-md .prose-chat h2 { font-size: 1.1rem; margin: 1.4rem 0 0.5rem; scroll-margin-top: 1rem; }
+.guide-md .prose-chat h2:first-child { margin-top: 0; }
+.guide-md .prose-chat table { display: table; width: 100%; font-size: 13px; }
+@media (max-width: 640px) { .guide-md .prose-chat table { display: block; } }
+.guide-md .prose-chat th { background: var(--hover); text-align: left; font-weight: 600; }
+.guide-md .prose-chat blockquote { background: var(--hover); border-left-color: var(--accent); border-radius: 0 10px 10px 0; padding: 0.5rem 0.9rem; margin: 0.8rem 0; }
+.guide-md .prose-chat li { margin: 0.2rem 0; }
