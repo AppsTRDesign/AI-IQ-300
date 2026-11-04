@@ -17,13 +17,13 @@ def op_hash(op: dict) -> str:
     return hashlib.sha256(json.dumps(op, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-async def request(run_id: str, op: dict, category: str, reasons: list[str]) -> bool:
+async def request(run_id: str, op: dict, category: str, reasons: list[str], preview: dict | None = None) -> bool:
     aid = uuid.uuid4().hex[:12]
     digest = op_hash(op)
     fut = asyncio.get_running_loop().create_future()
     _pending[aid] = (fut, digest, run_id)
     bus.publish("run", "approval.request", {"run_id": run_id, "approval_id": aid, "hash": digest, "op": op,
-                                            "category": category, "reasons": reasons})
+                                            "category": category, "reasons": reasons, "preview": preview})
     try:
         return await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
     except asyncio.TimeoutError:

@@ -3,7 +3,7 @@
     "name": "LM Studio",
     "kind": "openai",
     "base_url": "http://127.0.0.1:1234/v1",
-    "enabled": true,
+    "enabled": false,
     "local": true
   },
   "ollama": {
@@ -17,35 +17,35 @@
     "name": "xAI / Grok",
     "kind": "openai",
     "base_url": "https://api.x.ai/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "sambanova": {
     "name": "SambaNova",
     "kind": "openai",
     "base_url": "https://api.sambanova.ai/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "fireworks": {
     "name": "Fireworks AI",
     "kind": "openai",
     "base_url": "https://api.fireworks.ai/inference/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "litellm": {
     "name": "LiteLLM Gateway",
     "kind": "openai",
     "base_url": "http://127.0.0.1:4000/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "deepseek": {
     "name": "DeepSeek",
     "kind": "openai",
     "base_url": "https://api.deepseek.com/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false,
     "model": "deepseek-chat"
   },
@@ -53,56 +53,70 @@
     "name": "Google Gemini",
     "kind": "openai",
     "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "groq": {
     "name": "Groq",
     "kind": "openai",
     "base_url": "https://api.groq.com/openai/v1",
-    "enabled": true,
+    "enabled": false,
+    "local": false
+  },
+  "nvidia": {
+    "name": "NVIDIA NIM",
+    "kind": "openai",
+    "base_url": "https://integrate.api.nvidia.com/v1",
+    "enabled": false,
+    "local": false
+  },
+  "cloudflare": {
+    "name": "Cloudflare Workers AI",
+    "kind": "cloudflare",
+    "account_id": "",
+    "enabled": false,
     "local": false
   },
   "mistral": {
     "name": "Mistral",
     "kind": "openai",
     "base_url": "https://api.mistral.ai/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "cerebras": {
     "name": "Cerebras",
     "kind": "openai",
     "base_url": "https://api.cerebras.ai/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "together": {
     "name": "Together",
     "kind": "openai",
     "base_url": "https://api.together.xyz/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "huggingface": {
     "name": "Hugging Face",
     "kind": "openai",
     "base_url": "https://router.huggingface.co/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "openai": {
     "name": "OpenAI / ChatGPT API",
     "kind": "openai",
     "base_url": "https://api.openai.com/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "ollama_cloud": {
     "name": "Ollama Cloud",
     "kind": "ollama",
     "base_url": "https://ollama.com",
-    "enabled": true,
+    "enabled": false,
     "local": false,
     "model": "glm-5.3-flash"
   },
@@ -187,7 +201,7 @@
     "name": "OpenRouter",
     "kind": "openai",
     "base_url": "https://openrouter.ai/api/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false,
     "model": "nvidia/nemotron-3.5-super-vl:free"
   },
@@ -195,14 +209,14 @@
     "name": "Anthropic",
     "kind": "anthropic",
     "base_url": "https://api.anthropic.com/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false
   },
   "evren": {
     "name": "Evren API",
     "kind": "openai",
     "base_url": "https://evren-llmapi.ssyz.org.tr/v1",
-    "enabled": true,
+    "enabled": false,
     "local": false,
     "model": "deepseek-v4.1-flash",
     "streaming": false

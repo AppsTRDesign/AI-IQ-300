@@ -168,3 +168,86 @@ async def git_rollback(root: Path, sha: str) -> str | None:
     if code != 0:
         raise RuntimeError(out)
     return await git_snapshot(root, f"rollback to {sha}")
+
+
+OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".html", ".htm"}
+
+
+def output_files(root: Path) -> dict[str, float]:
+    """Images and web pages in root with their mtimes (bounded walk, dependency folders skipped).
+    Taken before and after a task: the difference is what the task produced, also files written by scripts."""
+    found: dict[str, float] = {}
+    seen = 0
+
+    def walk(d: Path, depth: int) -> None:
+        nonlocal seen
+        if depth > 5 or seen > 4000:
+            return
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            return
+        for p in entries:
+            seen += 1
+            if p.name in IGNORED or p.name.startswith("."):
+                continue
+            try:
+                if p.is_dir():
+                    walk(p, depth + 1)
+                elif p.suffix.lower() in OUTPUT_EXTS:
+                    found[p.relative_to(root).as_posix()] = p.stat().st_mtime
+            except OSError:
+                continue
+
+    if root.is_dir():
+        walk(root, 0)
+    return found
+
+
+def new_outputs(before: dict[str, float], root: Path, limit: int = 12) -> list[str]:
+    """Files created or changed since the `before` snapshot, newest first."""
+    after = output_files(root)
+    changed = [(m, p) for p, m in after.items() if before.get(p) != m]
+    return [p for _, p in sorted(changed, reverse=True)[:limit]]
+
+
+# --- project memory ----------------------------------------------------------------------------------------
+# Lasting rules of a project ("use Tailwind", "answer in English", "PHP 8.2, no frameworks") live in AIIQ.md at the
+# project root: visible, editable in any editor and versioned with the project. Every chat of the project gets them.
+RULES_FILE = "AIIQ.md"
+RULES_MAX = 6000
+
+
+def rules_path(project: dict) -> Path:
+    return Path(project["path"]) / RULES_FILE
+
+
+def read_rules(project: dict | None) -> str:
+    if not project:
+        return ""
+    try:
+        return rules_path(project).read_text(encoding="utf-8", errors="replace")[:RULES_MAX]
+    except OSError:
+        return ""
+
+
+def write_rules(project: dict, text: str) -> None:
+    p = rules_path(project)
+    text = text.strip()
+    if not text:
+        p.unlink(missing_ok=True)
+        return
+    p.write_text(text[:RULES_MAX] + "\n", encoding="utf-8")
+
+
+RULES_HEADING = {"tr": "# Proje kuralları", "en": "# Project rules"}
+
+
+def add_rule(text: str, rule: str, heading: str = "") -> str:
+    """Append one bullet, skipping exact duplicates; a fresh file gets the heading (in the user's language)."""
+    rule = " ".join(rule.split()).lstrip("-* ").strip()
+    lines = text.strip().splitlines()
+    if any(l.lstrip("-* ").strip().lower() == rule.lower() for l in lines):
+        return text
+    head = [heading, ""] if heading and not lines else []
+    return "\n".join(head + lines + [f"- {rule}"]) + "\n"

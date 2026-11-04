@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -26,23 +28,39 @@ from .process_manager import manager
 async def lifespan(app: FastAPI):
     # Processes from a previous backend instance are no longer supervised: mark them as such.
     db.execute("UPDATE processes SET state='orphaned' WHERE state IN ('queued','running','cancelling')")
+    from .tools import syntax
+    syntax.warm()  # tree-sitter grammars load in the background (first run downloads them)
+    from . import hostinfo
+    hostinfo.warm()  # OS build, shells and tool versions for the system prompt, detected once in the background
+    from . import mcp_client
+    if mcp_client.servers_cfg():  # connected MCP servers start in the background (Settings shows their state)
+        asyncio.create_task(mcp_client.ensure())
     yield
     for run_id in list(orchestrator.RUNS):
         await orchestrator.cancel_run(run_id)
     await manager.shutdown()
+    from . import mcp_client
+    await mcp_client.shutdown()
 
 
 app = FastAPI(title="AI IQ 300", lifespan=lifespan)
 
 
-def _origin_ok(origin: str | None) -> bool:
-    return origin is None or origin in load_settings()["allowed_origins"]
+LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
+
+
+def _origin_ok(origin: str | None, host: str | None = None) -> bool:
+    """Allowed origins from settings, plus the app's own page on a loopback address at whatever port it runs on.
+    Only loopback names count for the same-origin case, so a DNS-rebinding page cannot pass as the app."""
+    if origin is None or origin in load_settings()["allowed_origins"]:
+        return True
+    return bool(host) and origin == f"http://{host}" and host.rsplit(":", 1)[0] in LOOPBACK
 
 
 @app.middleware("http")
 async def origin_guard(request: Request, call_next):
     # Blocks cross-site browser requests to the control API (backend binds to loopback by default).
-    if request.url.path.startswith("/api") and not _origin_ok(request.headers.get("origin")):
+    if request.url.path.startswith("/api") and not _origin_ok(request.headers.get("origin"), request.headers.get("host")):
         return JSONResponse({"detail": "origin not allowed"}, status_code=403)
     return await call_next(request)
 
@@ -92,6 +110,32 @@ def remove_project(pid: str):
     db.execute("DELETE FROM sessions WHERE project_id=?", (pid,))
     db.execute("DELETE FROM projects WHERE id=?", (pid,))
     return {"ok": True}
+
+
+class RulesIn(BaseModel):
+    text: str = ""
+
+
+@app.get("/api/projects/{pid}/rules")
+def get_project_rules(pid: str):
+    proj = workspace.get_project(pid)
+    if not proj:
+        raise fail(404, "project_not_found", "Project not found")
+    return {"text": workspace.read_rules(proj), "path": str(workspace.rules_path(proj))}
+
+
+@app.put("/api/projects/{pid}/rules")
+def put_project_rules(pid: str, body: RulesIn):
+    proj = workspace.get_project(pid)
+    if not proj:
+        raise fail(404, "project_not_found", "Project not found")
+    if len(body.text) > workspace.RULES_MAX:
+        raise fail(400, "rules_too_long", f"Rules are limited to {workspace.RULES_MAX} characters")
+    try:
+        workspace.write_rules(proj, body.text)
+    except OSError as e:
+        raise fail(500, "rules_write_failed", str(e))
+    return {"text": workspace.read_rules(proj), "path": str(workspace.rules_path(proj))}
 
 
 @app.post("/api/projects/{pid}/reveal")
@@ -202,7 +246,7 @@ async def session_context(sid: str, model: str):
         for row in db.query("SELECT meta FROM messages WHERE session_id=? AND role='assistant' ORDER BY id DESC", (sid,)):
             for st in json.loads(row["meta"] or "{}").get("steps", []):
                 d = st.get("data") or {}
-                if d.get("tool") in ("write_file", "make_doc") and d.get("path") and st.get("status") == "done":
+                if d.get("tool") in ("write_file", "edit_file", "make_doc") and d.get("path") and st.get("status") == "done":
                     outputs.setdefault(d["path"], {"path": d["path"], "ts": st.get("ts")})
     tasks = [p for p in manager.list() if str(p.get("owner", "")).startswith(f"{sid}:")]
     return {**info, "used": used, "summarized": bool(sess.get("summary")), "stats": stats,
@@ -242,6 +286,7 @@ async def delete_session(sid: str):
 class ChatIn(BaseModel):
     text: str
     model: str | None = None
+    account_id: str | None = None  # Cloudflare Workers AI
     permission_mode: str | None = None
     plan_mode: bool = False
     goal_mode: bool = False
@@ -324,6 +369,28 @@ def _resolve(sid: str, path: str, project_id: str | None = None) -> Path:
         return policy.resolve_in(_root(sid, project_id), path)
     except PermissionError as e:
         raise to_http(e, 403)
+
+
+def _find_file(sid: str, path: str, project_id: str | None = None) -> Path:
+    """A file the model mentioned: the exact path, else the one file under the working folder whose path ends
+    with it (models often write `report.xlsx` for `multitask/report.xlsx`). Newest wins when several match."""
+    p = _resolve(sid, path, project_id)
+    if p.is_file() or not path.strip() or ".." in path:
+        return p
+    root = _root(sid, project_id).resolve()
+    tail = re.sub(r"^(\./)+", "", Path(path.replace("\\", "/")).as_posix())
+    best, seen = None, 0
+    for d, dirs, names in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in HIDDEN_DIRS and not x.startswith(".")]
+        for n in names:
+            seen += 1
+            if n == Path(tail).name:
+                c = Path(d) / n
+                if c.relative_to(root).as_posix().endswith(tail) and (best is None or c.stat().st_mtime > best.stat().st_mtime):
+                    best = c
+        if seen > 20_000:
+            break
+    return best or p
 
 
 @app.get("/api/sessions/{sid}/files")
@@ -441,17 +508,28 @@ async def fs_upload(sid: str, file: UploadFile, path: str = "", project_id: str 
 
 @app.get("/api/sessions/{sid}/fs/raw")
 def fs_raw(sid: str, path: str, project_id: str | None = None, download: bool = False):
-    p = _resolve(sid, path, project_id)
+    p = _find_file(sid, path, project_id)
     if not p.is_file():
         raise HTTPException(404)
     return FileResponse(p, filename=p.name if download else None,
                         content_disposition_type="attachment" if download else "inline")
 
 
+@app.get("/api/sessions/{sid}/fs/preview")
+def fs_preview(sid: str, path: str, project_id: str | None = None):
+    """A web page from the working folder, served on the separate preview origin (assets load relatively)."""
+    p = _find_file(sid, path, project_id)
+    if not p.is_file():
+        raise fail(404, "file_not_found", "File not found")
+    from . import preview_server
+    root = _root(sid, project_id).resolve()
+    return {"url": preview_server.url_for(root, p.resolve().relative_to(root).as_posix())}
+
+
 @app.get("/api/sessions/{sid}/fs/slides")
 def fs_slides(sid: str, path: str, project_id: str | None = None):
     """PowerPoint preview: every slide's title, text lines and notes (browsers cannot render .pptx)."""
-    p = _resolve(sid, path, project_id)
+    p = _find_file(sid, path, project_id)
     if not p.is_file() or p.suffix.lower() != ".pptx":
         raise fail(404, "file_not_found", "File not found")
     from pptx import Presentation
@@ -526,8 +604,11 @@ async def web_search_test(q: str):
     """Settings > Web: try the configured search engines with a query."""
     from .tools import web
     t0 = time.perf_counter()
-    results, engines = await web.search(q)
-    return {"engines": engines, "count": len(results), "ms": int((time.perf_counter() - t0) * 1000), "results": results[:5]}
+    web._CACHE.pop(" ".join(q.split()).lower(), None)  # a test always asks the engines
+    report: dict = {}
+    results, engines = await web.search(q, report=report)
+    return {"engines": engines, "count": len(results), "ms": int((time.perf_counter() - t0) * 1000), "results": results[:8],
+            "report": report}
 
 
 @app.get("/api/models/providers")
@@ -558,6 +639,40 @@ async def activate_model(body: ModelIn):
     return {"ok": True}
 
 
+class ProfileIn(BaseModel):
+    model: str
+    thinking: str = "auto"
+    vision: str = "auto"
+    streaming: str = "auto"
+    tools: str = "auto"
+    temperature: float | None = None
+    max_tokens: int | None = None
+    effort: str | None = None
+
+
+@app.put("/api/models/profile")
+def put_model_profile(body: ProfileIn):
+    """Model profile: per-model thinking / vision / streaming / tool-call overrides and sampling limits.
+    Everything on 'auto' (and no numbers) removes the profile."""
+    if ":" not in body.model:
+        raise fail(400, "bad_model", "Model id must be 'provider:model'")
+    data = body.model_dump()
+    for k, choices in router.PROFILE_CHOICES.items():
+        if data[k] not in choices:
+            raise fail(400, "bad_profile", f"{k} must be one of {', '.join(choices)}")
+    if body.temperature is not None and not 0 <= body.temperature <= 2:
+        raise fail(400, "bad_profile", "temperature must be between 0 and 2")
+    if body.effort is not None and body.effort not in router.EFFORT_LEVELS:
+        raise fail(400, "bad_profile", f"effort must be one of {', '.join(router.EFFORT_LEVELS)}")
+    if body.max_tokens is not None and not 1 <= body.max_tokens <= 1_000_000:
+        raise fail(400, "bad_profile", "max_tokens must be between 1 and 1000000")
+    prof = {k: v for k, v in data.items() if k != "model" and v not in ("auto", None)}
+    save_settings({"model_profiles": {body.model: None}})  # replace, do not merge with the old profile
+    if prof:
+        save_settings({"model_profiles": {body.model: prof}})
+    return {"model": body.model, "profile": prof}
+
+
 @app.put("/api/models/context")
 async def set_model_context(body: ModelIn):
     info = await router.context_info(body.model)
@@ -566,22 +681,50 @@ async def set_model_context(body: ModelIn):
     return {**info, "current": n}
 
 
+# ---------- spoken replies (edge-tts) ----------
+@app.get("/api/tts/voices")
+async def tts_voices(lang: str = ""):
+    from . import tts
+    try:
+        return {"ok": True, "voices": await tts.voices(lang)}
+    except tts.TTSError as e:
+        return {"ok": False, "voices": [], "error": str(e)}
+
+
+class TTSIn(BaseModel):
+    text: str
+    voice: str
+    rate: float = 1.0
+
+
+@app.post("/api/tts")
+async def tts_speak(body: TTSIn):
+    from . import tts
+    try:
+        audio = await tts.synthesize(body.text, body.voice, body.rate)
+    except tts.TTSError as e:
+        bad_input = str(e) in ("nothing to read", "unknown voice")
+        raise fail(400 if bad_input else 502, "tts_failed", str(e))
+    return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
 # ---------- providers ----------
 class ProviderIn(BaseModel):
     name: str
     kind: str = "openai"
-    base_url: str
+    base_url: str = ""
     enabled: bool = True
     local: bool = False
     streaming: bool = True
     auth_header: str | None = None
     model: str | None = None
+    account_id: str | None = None  # Cloudflare Workers AI
 
 
 @app.put("/api/providers/{pid}")
 def put_provider(pid: str, body: ProviderIn):
     import re
-    if not re.fullmatch(r"[a-z0-9_-]{1,40}", pid) or body.kind not in ("openai", "ollama", "anthropic", "gemini"):
+    if not re.fullmatch(r"[a-z0-9_-]{1,40}", pid) or body.kind not in ("openai", "ollama", "anthropic", "gemini", "cloudflare"):
         raise fail(400, "invalid_provider", "Invalid provider id or protocol")
     router.invalidate_models(pid)
     return save_settings({"providers": {pid: body.model_dump(exclude_none=True)}})
@@ -638,6 +781,106 @@ async def test_provider(pid: str):
         return {"ok": False, "code": "error", "error": f"{type(e).__name__}: {e}"}
 
 
+@app.get("/api/usage")
+async def get_usage():
+    """Quota screen: per-provider usage in the 5-hour and weekly windows with reset times, configured limits,
+    cooldowns after quota/rate errors and the providers' own rate-limit headers; plus pool availability."""
+    from .llm import usage
+    settings = load_settings()
+    mm = settings.get("multi_model") or {}
+    pool = []
+    for e in router.pool() if mm.get("enabled") else []:
+        ok, why = router.availability(e["model"])
+        pool.append({**e, "available": ok, "reason": why, "cooldown": usage.cooldown(e["model"]),
+                     "limit": usage.over_limit(e["model"], mm.get("limits") or {}),
+                     "headroom": round(usage.headroom(e["model"], mm.get("limits") or {}), 3)})
+    # Shown: providers with usage, cooldowns or limits, plus cloud providers ready to use (key set).
+    ready = {pid for pid, cfg in settings["providers"].items() if not cfg.get("local") and router.usable(pid, cfg)}
+    return {"providers": usage.snapshot(settings["providers"], mm.get("limits") or {}, ready), "pool": pool,
+            "now": time.time()}
+
+
+@app.post("/api/usage/clear")
+def clear_usage_cooldowns(model: str | None = None):
+    """'Try again now': forget the cooldown of a model (or all) after the user topped up or a limit reset."""
+    from .llm import usage
+    usage.clear(model)
+    return {"ok": True}
+
+
+# ---------- MCP servers ----------
+class McpIn(BaseModel):
+    name: str
+    transport: str = "stdio"
+    command: str = ""
+    args: list[str] = []
+    cwd: str = ""
+    url: str = ""
+    enabled: bool = True
+    env: dict[str, str] | None = None  # None: keep the saved values
+    headers: dict[str, str] | None = None
+
+
+def _mcp_view() -> dict:
+    from . import mcp_client
+    st = mcp_client.status()
+    out = {}
+    for sid, cfg in (load_settings().get("mcp_servers") or {}).items():
+        sec = mcp_client.secret_parts(sid)
+        out[sid] = {**{k: v for k, v in cfg.items() if k not in ("env", "headers")},
+                    "env_keys": sorted(sec.get("env") or {}), "header_keys": sorted(sec.get("headers") or {}),
+                    **st.get(sid, {"running": False, "error": None, "tools": []})}
+    return out
+
+
+@app.get("/api/mcp")
+def mcp_list():
+    return _mcp_view()
+
+
+@app.put("/api/mcp/{sid}")
+async def mcp_put(sid: str, body: McpIn):
+    import json as _json
+    import re
+    from . import mcp_client
+    if not re.fullmatch(r"[a-z0-9_-]{1,32}", sid) or body.transport not in ("stdio", "http"):
+        raise fail(400, "invalid_mcp", "Invalid server id or transport")
+    if body.transport == "stdio" and not body.command.strip():
+        raise fail(400, "invalid_mcp", "A command is required for stdio servers")
+    if body.transport == "http" and not re.match(r"https?://", body.url):
+        raise fail(400, "invalid_mcp", "An http(s) URL is required")
+    cfg = body.model_dump(exclude={"env", "headers"})
+    save_settings({"mcp_servers": {sid: None}})
+    save_settings({"mcp_servers": {sid: cfg}})
+    if body.env is not None or body.headers is not None:
+        sec = mcp_client.secret_parts(sid)
+        if body.env is not None:
+            sec["env"] = {k.strip(): v for k, v in body.env.items() if k.strip()}
+        if body.headers is not None:
+            sec["headers"] = {k.strip(): v for k, v in body.headers.items() if k.strip()}
+        set_secret(f"mcp_{sid}", _json.dumps(sec) if (sec.get("env") or sec.get("headers")) else None)
+    await mcp_client.restart(sid) if body.enabled else await mcp_client.ensure()
+    return _mcp_view().get(sid)
+
+
+@app.delete("/api/mcp/{sid}")
+async def mcp_delete(sid: str):
+    from . import mcp_client
+    save_settings({"mcp_servers": {sid: None}})
+    set_secret(f"mcp_{sid}", None)
+    await mcp_client.ensure()
+    return {"ok": True}
+
+
+@app.post("/api/mcp/{sid}/restart")
+async def mcp_restart(sid: str):
+    from . import mcp_client
+    if sid not in (load_settings().get("mcp_servers") or {}):
+        raise fail(404, "not_found", "Unknown MCP server")
+    await mcp_client.restart(sid)
+    return _mcp_view().get(sid)
+
+
 @app.get("/api/settings")
 def get_settings():
     return {**load_settings(), "secrets": secret_status()}
@@ -661,7 +904,11 @@ class SecretIn(BaseModel):
 @app.put("/api/secrets")
 def put_secret(body: SecretIn):
     set_secret(body.name, body.value)
-    router.invalidate_models(body.name.removesuffix("_api_key"))
+    pid = body.name.removesuffix("_api_key")
+    # Cloud providers ship disabled; saving a key for one turns it on.
+    if body.value and pid != body.name and (cfg := load_settings()["providers"].get(pid)) and not cfg.get("enabled"):
+        save_settings({"providers": {pid: {"enabled": True}}})
+    router.invalidate_models(pid)
     return secret_status()
 
 
@@ -812,7 +1059,7 @@ def save_language(code: str, body: dict):
 # ---------- events websocket ----------
 @app.websocket("/ws/events")
 async def events_ws(ws: WebSocket):
-    if not _origin_ok(ws.headers.get("origin")):
+    if not _origin_ok(ws.headers.get("origin"), ws.headers.get("host")):
         await ws.close(code=4403)
         return
     await ws.accept()
@@ -831,9 +1078,51 @@ async def events_ws(ws: WebSocket):
         bus.unsubscribe(q)  # disconnect does not stop runs or processes
 
 
+@app.post("/api/location/{request_id}")
+def location_answer(request_id: str, body: dict):
+    """The app's answer to a location request: {lat, lon, accuracy} or {error}."""
+    from . import location
+    return {"ok": location.answer(request_id, body)}
+
+
+def _pct(values: list[float], q: float) -> int | None:
+    v = sorted(x for x in values if x is not None)
+    return int(v[min(len(v) - 1, int(q * len(v)))]) if v else None
+
+
+@app.get("/api/perf")
+def perf(last: int = 100):
+    """Where chats spend their time, over the latest tasks: first answer, preparation, waiting for the model's first
+    token, model total, tools (per tool), team runs, side calls and the app's own overhead (p50 / p95 / max)."""
+    rows = list(orchestrator.PERF)[-max(1, min(last, 300)):]
+    keys = ("total_ms", "first_ms", "prep_ms", "model_wait_ms", "slowest_wait_ms", "model_ms", "tools_ms", "team_ms",
+            "side_ms", "retry_ms", "overhead_ms")
+    out = {"tasks": len(rows), "statuses": {}}
+    for k in keys:
+        vals = [r.get(k) for r in rows if r.get(k) is not None and (k != "team_ms" or r.get(k))]
+        out[k] = {"p50": _pct(vals, 0.5), "p95": _pct(vals, 0.95), "max": int(max(vals)) if vals else None}
+    tools: dict[str, dict] = {}
+    for r in rows:
+        out["statuses"][r["status"]] = out["statuses"].get(r["status"], 0) + 1
+        for name, t in (r.get("tools") or {}).items():
+            x = tools.setdefault(name, {"calls": 0, "ms": 0, "max_ms": 0, "failed": 0})
+            x["calls"] += t["n"]
+            x["ms"] += t["ms"]
+            x["max_ms"] = max(x["max_ms"], t["max_ms"])
+            x["failed"] += t["failed"]
+    out["tools"] = {k: {**v, "avg_ms": int(v["ms"] / v["calls"])} for k, v in sorted(tools.items(), key=lambda kv: -kv[1]["ms"])}
+    by_model: dict[str, list] = {}
+    for r in rows:
+        by_model.setdefault(r.get("model") or "?", []).append(r.get("first_ms"))
+    out["first_ms_by_model"] = {m: {"p50": _pct(v, 0.5), "p95": _pct(v, 0.95), "tasks": len(v)} for m, v in by_model.items()}
+    return out
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "runs": list(orchestrator.RUNS), "processes": len(manager.procs)}
+    p = perf(50)
+    return {"ok": True, "runs": list(orchestrator.RUNS), "processes": len(manager.procs),
+            "perf": {k: p[k] for k in ("tasks", "first_ms", "model_wait_ms", "tools_ms", "overhead_ms")}}
 
 
 # ---------- frontend ----------

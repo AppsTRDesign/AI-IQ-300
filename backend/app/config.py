@@ -29,6 +29,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "agent": {"max_iterations": 60, "max_debug_attempts": 5, "command_timeout": 300},
     "allowed_origins": ["http://127.0.0.1:8300", "http://localhost:8300", "http://localhost:5173", "http://127.0.0.1:5173"],
     "context": {"compress_threshold": 80, "num_ctx": {}, "keep_recent": 6},
+    # Multi-model (cloud only): pool [{model, tags}], per-agent models, per-provider 5 h / weekly limits.
+    "rules": "",  # global rules: added to every chat (project rules live in <project>/AIIQ.md)
+    "multi_model": {"enabled": False, "auto_switch": True, "delegate": True, "pool": [], "agents": {}, "limits": {}},
+    # Model profiles: per-model overrides {model_id: {thinking, vision, streaming, tools, temperature, max_tokens}}.
+    "model_profiles": {},
+    # MCP servers: {id: {name, transport: stdio|http, command, args, env, cwd, url, headers, enabled}}
+    "mcp_servers": {},
     "providers": json.loads((Path(__file__).parent / "providers_default.json").read_text(encoding="utf-8")),
 }
 
@@ -51,6 +58,8 @@ def _read(path: Path) -> dict:
 
 def _clean(s: dict) -> dict:
     s["providers"] = {k: v for k, v in s["providers"].items() if v}  # None = removed by user
+    s["model_profiles"] = {k: v for k, v in (s.get("model_profiles") or {}).items() if v}
+    s["mcp_servers"] = {k: v for k, v in (s.get("mcp_servers") or {}).items() if v}
     defaults = DEFAULT_SETTINGS["providers"]
     for pid, cfg in s["providers"].items():
         # Migrate settings saved by older versions: the separate 'evren' adapter became OpenAI-compatible,
@@ -58,7 +67,7 @@ def _clean(s: dict) -> dict:
         if cfg.get("kind") == "evren":
             cfg["kind"] = "openai"
             cfg.pop("auth_header", None)
-        if not cfg.get("base_url") and pid in defaults:
+        if not cfg.get("base_url") and defaults.get(pid, {}).get("base_url"):  # Cloudflare has no fixed URL
             cfg["base_url"] = defaults[pid]["base_url"]
     return s
 

@@ -18,14 +18,21 @@ MAX_SIZE = 200_000
 
 
 def _parse(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
-    meta: dict = {"name": path.stem, "title": path.stem, "description": ""}
+    return _parse_text(path.read_text(encoding="utf-8"), path.stem)
+
+
+def _parse_text(text: str, stem: str = "") -> dict:
+    nm = re.search(r"^name:\s*([\w.-]+)", text, re.M)
+    stem = stem or (nm.group(1) if nm else "")
+    meta: dict = {"name": stem, "title": stem, "description": ""}
     m = re.match(r"---\r?\n(.*?)\r?\n---\r?\n?(.*)", text, re.S)
     if m:
         for line in m.group(1).splitlines():
             k, _, v = line.partition(":")
             if re.fullmatch(r"(title|description)(_[a-z]{2,3})?", k.strip()):
                 meta[k.strip()] = v.strip().strip('"')
+            elif k.strip() == "tools":  # optional: only these tools are offered while this agent/skill is in use
+                meta["tools"] = [t for t in re.split(r"[,\s]+", v.strip().strip("[]")) if t]
         text = m.group(2)
     meta["prompt"] = text.strip()
     return meta
@@ -61,6 +68,25 @@ def read(kind: str, name: str) -> str:
     if not p.is_file():
         raise FileNotFoundError(name)
     return p.read_text(encoding="utf-8")
+
+
+def validate(kind: str, content: str) -> dict:
+    """Checks a generated agent/skill file: frontmatter with name, title, description and a real instruction body."""
+    m = FRONT.match(content.replace("\r\n", "\n"))
+    if not m:
+        raise AppError("invalid_item", "The file must start with a --- frontmatter --- block")
+    tmp = _parse_text(content)
+    missing = [k for k in ("name", "title", "description") if not re.search(rf"^{k}:\s*\S", m.group(1), re.M)]
+    if missing:
+        raise AppError("invalid_item", "Missing frontmatter fields: " + ", ".join(missing))
+    if not NAME_RE.fullmatch(tmp["name"]):
+        raise AppError("invalid_item_name", "name may contain only lowercase letters, digits, - and _")
+    if len(tmp["prompt"]) < 120:
+        raise AppError("invalid_item", "The instructions under the frontmatter are too short (min 120 characters)")
+    from ..tools.registry import TOOLS
+    if unknown := [t for t in tmp.get("tools") or [] if t not in TOOLS]:
+        raise AppError("invalid_item", f"Unknown tools: {', '.join(unknown)}. Valid: {', '.join(sorted(TOOLS))}")
+    return tmp
 
 
 def template(kind: str, name: str) -> str:

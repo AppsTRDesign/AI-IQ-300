@@ -26,6 +26,7 @@ def _decode(line: bytes) -> str:
 
 MAX_CONCURRENT = 8
 TAIL_LINES = 400
+KEEP_FINISHED = 60  # finished processes kept in memory (with their output tail) for the process panel
 TERMINAL = ("exited", "failed", "timed_out", "cancelled")
 
 
@@ -43,6 +44,9 @@ class ProcInfo:
     proc: asyncio.subprocess.Process | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     cancel_requested: bool = False
+    background: bool = False
+    started_mono: float = field(default_factory=time.monotonic)
+    last_output: float = 0.0  # monotonic time of the latest output line
 
     def public(self) -> dict:
         return {"id": self.id, "argv": self.argv, "cwd": self.cwd, "owner": self.owner, "state": self.state,
@@ -65,12 +69,16 @@ class ProcessManager:
         )
 
     async def start(self, argv: list[str], cwd: str, env: dict[str, str], owner: str = "user",
-                    timeout: float | None = None) -> ProcInfo:
+                    timeout: float | None = None, background: bool = False) -> ProcInfo:
         self._sem = self._sem or asyncio.Semaphore(MAX_CONCURRENT)
-        info = ProcInfo(id=uuid.uuid4().hex[:12], argv=argv, cwd=cwd, owner=owner)
+        info = ProcInfo(id=uuid.uuid4().hex[:12], argv=argv, cwd=cwd, owner=owner, background=background)
+        finished = [k for k, p in self.procs.items() if p.state in TERMINAL]
+        for k in finished[:max(0, len(finished) - KEEP_FINISHED)]:  # oldest first (insertion order)
+            del self.procs[k]
         self.procs[info.id] = info
         self._persist(info)
-        await self._sem.acquire()
+        if not background:  # dev servers run for hours: they must not take the slots of short commands
+            await self._sem.acquire()
         kwargs: dict = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x00000200 | 0x08000000  # NEW_PROCESS_GROUP | CREATE_NO_WINDOW
@@ -81,7 +89,8 @@ class ProcessManager:
                 *argv, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **kwargs)
         except Exception as e:
-            self._sem.release()
+            if not background:
+                self._sem.release()
             info.state, info.exit_code = "failed", -1
             info.tail.append(f"[spawn error] {e}")
             self._persist(info)
@@ -105,6 +114,7 @@ class ProcessManager:
             self._line(info, name, _decode(buf))
 
     def _line(self, info: ProcInfo, name: str, line: str) -> None:
+        info.last_output = time.monotonic()
         info.tail.append(f"[stderr] {line}" if name == "stderr" else line)
         self._emit(info, "log", stream=name, line=line)
 
@@ -127,7 +137,8 @@ class ProcessManager:
             info.state = "cancelled"
         elif info.state == "running":
             info.state = "exited" if p.returncode == 0 else "failed"
-        self._sem.release()
+        if not info.background:
+            self._sem.release()
         self._persist(info)
         self._emit(info, "exit", state=info.state, exit_code=info.exit_code)
         info.done.set()

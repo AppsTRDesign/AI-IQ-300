@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -96,9 +97,15 @@ SAFE_ENV_KEYS = {"PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMS
                  "HOME", "LANG", "TERM", "OS"}
 
 
+VENV_BIN = str(Path(sys.executable).parent) if sys.prefix != sys.base_prefix else ""
+
+
 def minimal_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Child processes get a minimal environment; host API keys are not inherited."""
     env = {k: v for k, v in os.environ.items() if k.upper() in SAFE_ENV_KEYS}
     env["PYTHONIOENCODING"] = "utf-8"
+    if VENV_BIN:  # python/pip in commands use the app's environment (Pillow, docx, openpyxl... are there)
+        env["PATH"] = VENV_BIN + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = sys.prefix
     env.update(extra or {})
     return env
