@@ -304,7 +304,7 @@ See the in-app **Guide** for details.
 
 ## 🏗️ Architecture
 
-> Folder layout and the full feature history: [PROJECT_STATE.md](../PROJECT_STATE.md) · [Türkçe](../PROJECT_STATE.tr.md)
+> Folder layout and the full feature history: [PROJECT_STATE.md](PROJECT_STATE.md) · [Türkçe](PROJECT_STATE.tr.md)
 
 ```
 backend/   FastAPI · agent orchestrator · agent teams · provider adapters · MCP client · Tree-sitter · process manager · policy
@@ -930,8 +930,8 @@ v0.6: uninterrupted orchestration, live to-do list, goal mode, automatic skill d
 
 The full project state (vision, architecture and folder layout, every completed feature by version, open tasks, key decisions, next step) is kept in two languages:
 
-- 🇬🇧 **English:** [PROJECT_STATE.md](../PROJECT_STATE.md)
-- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md)
+- 🇬🇧 **English:** [PROJECT_STATE.md](PROJECT_STATE.md)
+- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md)
 
 **Now:** v0.12.0 is complete (no false "done": plain-text tool calls are run, the requested file is checked on disk; `system_info` and the right-tool hint for weak models; full-text chat search; model report card; LM Studio memory guard; a test suite in the repo). v0.11.0 is complete (full audit: no stalls, nothing forgotten after drops and model switches, half-size first prompt, RAM / VRAM guard that keeps the model loaded, exact reconnects). v0.10.7 is complete (bulk select and delete, every ability from the first message, tool detection in 14 languages, no-split writing). v0.10.6 is complete (professional web design with real stock photos, pages tested for JS errors and broken images, a context meter anchored on the provider's real counts, no local-window overflow, Markdown-rendered live answers). v0.10.5: context from real token counts, vision model on screenshots, settings audit. v0.10.4: Settings, local GPU tuning, live sync, MCP from npm / PyPI / GitHub, automatic tool setup and eight new skills were all tested live.
 

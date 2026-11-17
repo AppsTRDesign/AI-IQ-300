@@ -304,7 +304,7 @@ Ayrıntılı kullanım için uygulamadaki **Rehber** bölümüne bakın.
 
 ## 🏗️ Mimari
 
-> Klasör yapısı ve tam özellik geçmişi: [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md) · [English](../PROJECT_STATE.md)
+> Klasör yapısı ve tam özellik geçmişi: [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md) · [English](PROJECT_STATE.md)
 
 ```
 backend/   FastAPI · ajan orkestratörü · ajan takımları · sağlayıcı adaptörleri · MCP istemcisi · Tree-sitter · süreç yöneticisi · politika
@@ -930,8 +930,8 @@ v0.6: kesintisiz orkestrasyon, canlı yapılacaklar listesi, hedef modu, otomati
 
 Projenin tam durumu iki dilde tutuluyor: vizyon, mimari ve klasör yapısı, sürüm sürüm tamamlanan tüm özellikler, açık görevler, önemli kararlar ve sonraki adım.
 
-- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md)
-- 🇬🇧 **English:** [PROJECT_STATE.md](../PROJECT_STATE.md)
+- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md)
+- 🇬🇧 **English:** [PROJECT_STATE.md](PROJECT_STATE.md)
 
 **Şu an:** v0.12.0 tamamlandı (yalan "bitti" yok: düz metin araç çağrıları çalıştırılır, istenen dosya diskte denetlenir; zayıf modellere `system_info` ve doğru araç ipucu; sohbetlerde tam metin araması; model karnesi; LM Studio bellek koruması; depoda test paketi). v0.11.0 tamamlandı (kapsamlı tarama: tıkanma yok, kopma ve model değişiminde unutma yok, yarı boyutta ilk istem, modeli kapatmayan RAM / VRAM koruması, eksiksiz yeniden bağlanma). v0.10.7 tamamlandı (toplu seçme ve silme, ilk mesajda tüm yetenekler, 14 dilde araç algılama, bölmeden yazım). v0.10.6 tamamlandı (gerçek stok fotoğraflarla profesyonel web tasarımı, JS hatası ve kırık görsel için test edilen sayfalar, sağlayıcının gerçek sayılarına çapalı bağlam sayacı, yerel pencerede taşma yok, Markdown olarak akan canlı yanıt). v0.10.5: gerçek token verisiyle bağlam, ekran görüntülerinde görsel model, ayar denetimi. v0.10.4: Ayarlar, yerel GPU ayarları, canlı senkron, npm / PyPI / GitHub'dan MCP, otomatik araç kurulumu ve sekiz yeni beceri canlı test edildi.
 
