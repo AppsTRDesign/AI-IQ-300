@@ -29,6 +29,27 @@ if [ "$NODE_MAJOR" -lt 20 ]; then
 fi
 command -v git >/dev/null 2>&1 || echo "[UYARI/WARN] git bulunamadi; zaman makinesi (git) calismaz / time machine disabled: https://git-scm.com/downloads"
 
+# Optional system tools the agent uses (video, git, GitHub CLI, PHP + Composer). Installed when missing; a failure
+# only prints a note (the app also fetches ffmpeg and Composer by itself: backend/app/toolchain.py).
+install_tool() {  # $1 command, $2 brew formula, $3 apt package, $4 dnf package
+  command -v "$1" >/dev/null 2>&1 && { echo "[OK] $1"; return 0; }
+  echo "$1 kuruluyor / installing..."
+  if command -v brew >/dev/null 2>&1; then brew install "$2" && return 0
+  elif command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y "$3" && return 0
+  elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y "$4" && return 0
+  elif command -v pacman >/dev/null 2>&1; then sudo pacman -S --noconfirm "$3" && return 0
+  fi
+  echo "[UYARI/WARN] $1 kurulamadi / could not be installed"
+}
+if [ "${AIIQ_SKIP_SYSTEM_TOOLS:-0}" != "1" ]; then
+  command -v apt-get >/dev/null 2>&1 && ! command -v brew >/dev/null 2>&1 && sudo apt-get update -y >/dev/null 2>&1 || true
+  install_tool ffmpeg ffmpeg ffmpeg ffmpeg-free || true
+  install_tool git git git git || true
+  install_tool gh gh gh gh || true
+  install_tool php php php-cli php-cli || true
+  install_tool composer composer composer composer || true
+fi
+
 echo "Python: $($PY --version) | Node: $(node --version)"
 [ -d .venv ] || "$PY" -m venv .venv
 .venv/bin/python -m pip install --upgrade pip

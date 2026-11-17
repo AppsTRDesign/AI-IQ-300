@@ -18,6 +18,18 @@ if not defined PY (
 where node >nul 2>nul || (echo [HATA] Node.js bulunamadi. & exit /b 1)
 for /f "delims=" %%v in ('node --version') do echo Node %%v
 
+rem Optional system tools the agent uses (video, git, GitHub, PHP/Composer): installed with winget when missing.
+rem A failure only prints a note; the app also fetches ffmpeg and Composer by itself (backend/app/toolchain.py).
+where winget >nul 2>nul
+if %errorlevel%==0 (
+  call :tool ffmpeg Gyan.FFmpeg
+  call :tool git Git.Git
+  call :tool gh GitHub.cli
+  call :tool php PHP.PHP.8.4
+) else (
+  echo [UYARI] winget yok: ffmpeg, git, gh, php elle kurulabilir. Uygulama ffmpeg ve Composer'i kendisi indirir.
+)
+
 if not exist .venv (
   echo Sanal ortam olusturuluyor...
   %PY% -m venv .venv || exit /b 1
@@ -35,3 +47,10 @@ popd
 echo.
 echo Kurulum tamamlandi. Baslatmak icin: run.bat
 endlocal
+exit /b 0
+
+:tool
+where %1 >nul 2>nul && (echo [OK] %1 & exit /b 0)
+echo %1 kuruluyor (winget %2)...
+winget install --id %2 --exact --silent --accept-source-agreements --accept-package-agreements --scope user >nul 2>nul || winget install --id %2 --exact --silent --accept-source-agreements --accept-package-agreements >nul 2>nul || echo [UYARI] %1 kurulamadi; elle kurabilirsiniz.
+exit /b 0

@@ -1,35 +1,142 @@
-# AI IQ 300 - backend dependencies (Python 3.12)
-fastapi>=0.115,<1.0
-uvicorn[standard]>=0.32,<1.0
-httpx>=0.27,<1.0
-pydantic>=2.9,<3.0
-python-multipart>=0.0.12
-# Browser tests / visual feedback
-playwright>=1.48,<2.0
-# Screenshots (desktop) - only used on explicit request
-mss>=9.0
-pyautogui>=0.9.54
-# Document generation
-python-docx>=1.1
-openpyxl>=3.1
-reportlab>=4.2
-python-pptx>=1.0
-# Images (logos, charts, edits) from agent scripts
-Pillow>=10.4
-# i18n auto-translation
-deep-translator>=1.11
-# Syntax trees (definitions, impact analysis); grammars download on first use
-tree-sitter>=0.23
-tree-sitter-language-pack>=0.7
-# Spoken replies: Microsoft online neural voices (free, female/male labelled)
+# =============================================================================
+# AI IQ 300 - Backend Dependencies & Capabilities Manifest (Python 3.12)
+# =============================================================================
+# Everything below is installed in the app's Python environment and can be used
+# from the `run` tool (shell=python). Prefer the designated tool or library over
+# reinventing it.
+#
+# QUICK GUIDE - which tool for which job (read this first):
+#   Report / PDF / Word / PowerPoint / Excel  -> the make_doc TOOL, not a script.
+#       Write HTML (best looking: KPI cards, bar charts, callouts, tables) or
+#       Markdown; make_doc renders pdf, docx, pptx, xlsx and html with a designed
+#       template, every language and LaTeX math. Do NOT hand-write reportlab /
+#       python-docx / fpdf code for a new document.
+#   Chart or image for a document            -> matplotlib via run, plt.savefig("x.png"),
+#       then ![caption](x.png) in the document. Only files that really exist.
+#   Edit an existing .docx / .xlsx / .pptx   -> python-docx / openpyxl / python-pptx.
+#   Read a PDF / Office file / scanned image -> the read_document tool.
+#   Web facts, prices, news                  -> research / web_search / fetch_url tools.
+#   YouTube and other video sites            -> yt-dlp (search, info, subtitles, download).
+#   Cut / convert / merge video and audio    -> ffmpeg (system CLI).
+#   Tables and statistics                    -> pandas / numpy.
+#   Speech                                   -> edge-tts.
+#
+# Notes:
+#  - Lines with "; sys_platform == ..." are installed only on that OS.
+#  - Version ranges are intentional. Do not loosen upper bounds without testing.
+#  - Files are UTF-8. Charts with Turkish text: matplotlib's default DejaVu Sans
+#    has every Turkish character (ç ğ ı İ ö ş ü).
+# =============================================================================
+
+# =============================================================================
+# 1. MEDIA, VIDEO & AUDIO PROCESSING (System CLI & Python)
+# =============================================================================
+# FFmpeg (System CLI - Executed via shell/subprocess):
+#  - Purpose: Complete video and audio manipulation, transcoding, clipping, merging, and subtitle burning.
+#  - Trim / Cut video (fast, lossless): ffmpeg -ss 00:01:00 -to 00:02:30 -i input.mp4 -c copy output.mp4
+#  - Burn hard subtitles (SRT/ASS) into video: ffmpeg -i input.mp4 -vf "subtitles=subs.srt:force_style='FontName=DejaVu Sans,FontSize=24'" output.mp4
+#  - Extract audio from video (for STT/analysis): ffmpeg -i input.mp4 -vn -acodec libmp3lame -q:a 2 audio.mp3
+#  - Resize / Compress video: ffmpeg -i input.mp4 -vf scale=1280:-2 -crf 23 -preset fast output.mp4
+#  - Merge video + audio: ffmpeg -i video.mp4 -i audio.mp3 -c:v copy -c:a aac output.mp4
+#
+# yt-dlp (Python / CLI):
+#  - Purpose: Search, inspect and download videos, audio, thumbnails, metadata and subtitles from YouTube and 1000+ sites.
+#    This is THE tool for anything on YouTube (research a topic, get a transcript, fetch a clip for ffmpeg).
+#  - Search:     yt-dlp "ytsearch5:QUERY" --flat-playlist --print "%(title)s | %(webpage_url)s | %(duration_string)s"
+#  - Info:       yt-dlp -J URL            (JSON: title, description, chapters, duration, formats)
+#  - Transcript: yt-dlp --write-auto-subs --sub-langs "tr,en" --skip-download -o "%(id)s" URL
+#  - Download:   yt-dlp -f "bv*[height<=720]+ba/b" -o "%(title)s.%(ext)s" URL      (audio only: -x --audio-format mp3)
+#  - Python:     yt_dlp.YoutubeDL(opts).extract_info(url, download=False)
+yt-dlp>=2024.0.0
+#
+# edge-tts (Python):
+#  - Purpose: Free, high-quality neural Text-to-Speech (TTS) using Microsoft Edge's online voices (supports Turkish tr-TR-AhmetNeural / tr-TR-EmelNeural).
+#  - Usage: Generate .mp3 voiceovers for videos, notifications, or spoken agent responses.
 edge-tts>=7.0
-# Real token counting for the context meter (vocabulary bundled in backend/app/tokenizer, no download)
-tiktoken>=0.7
-# Free web search: metasearch over Google, Yahoo, Bing, Yandex, Brave (github.com/deedy5/ddgs)
-ddgs>=9.0
-# Documents for research: PDF text and page images (page-numbered quotes, scanned pages)
+#
+# faster-whisper (Python):
+#  - Purpose: offline speech-to-text on the CPU (int8) for the speech_to_text and inspect_media tools: transcripts
+#    with timestamps and .srt subtitles from any audio or video. The chosen model (tiny/base/small/medium) downloads
+#    once on first use.
+faster-whisper>=1.1
+#
+# static-ffmpeg: ffmpeg + ffprobe for Windows, macOS and Linux without manual setup. The app uses the system ffmpeg
+#  when it is on PATH; otherwise this package downloads a build once and the app adds it to PATH (backend/app/toolchain.py).
+static-ffmpeg>=2.7
+
+# =============================================================================
+# 2. DOCUMENT GENERATION, PARSING & IMAGE EMBEDDING (Python)
+# =============================================================================
+# NEW documents (reports, letters, decks, sheets): call the make_doc tool with
+# HTML or Markdown - it produces the designed PDF / DOCX / PPTX / XLSX / HTML.
+# The libraries below are for EDITING existing files and for special cases only.
+# python-docx: Create, read, and edit Microsoft Word (.docx) files.
+#  - Embedding Images: Use `document.add_picture('image.png', width=Inches(4.5))` to insert images directly into paragraphs.
+python-docx>=1.1
+#
+# openpyxl / XlsxWriter: Read/modify existing Excel (.xlsx) workbooks (openpyxl) or generate high-performance spreadsheets with native charts and styling (XlsxWriter).
+#  - Embedding Images: In openpyxl: `img = Image('image.png'); ws.add_image(img, 'B5')`.
+openpyxl>=3.1
+XlsxWriter>=3.2
+#
+# python-pptx: Create and modify PowerPoint (.pptx) presentation decks.
+#  - Embedding Images: Use `slide.shapes.add_picture('image.png', left, top, width, height)`.
+python-pptx>=1.0
+#
+# reportlab / fpdf2: Generate PDF documents from scratch with embedded TrueType fonts, tables, and images.
+#  - Note: Always register DejaVu Sans TTF from matplotlib to ensure Turkish characters (ç ğ ı İ ö ş ü) render properly.
+#  - Embedding Images (ReportLab): Use `Image('image.png', width=4*inch, height=3*inch)` inside story elements or flowables.
+#  - Embedding Images (fpdf2): Use `pdf.image('image.png', x=10, y=8, w=30)`.
+reportlab>=4.2
+fpdf2>=2.8
+#
+# pypdf: Merge, split, rotate, and manipulate existing PDF pages and metadata.
+pypdf>=4.3
+#
+# pdfplumber / pypdfium2: Extract structured tables, positioned text (pdfplumber), or render PDF pages as high-DPI images for OCR/vision (pypdfium2).
+pdfplumber>=0.11
 pypdfium2>=4.30
-# OCR of scanned pages and images: Windows' built-in OCR engine (offline, keeps Turkish characters)
+#
+# svglib: Convert .svg vector graphics into ReportLab drawings for crisp PDF embedding.
+svglib>=1.5
+#
+# markdown / jinja2: Render dynamic HTML/text templates (jinja2) and convert Markdown to HTML (markdown).
+#  - Markdown / HTML to PDF, DOCX or PPTX: use the make_doc tool (it already does this with a professional template);
+#    do not build your own converter.
+markdown>=3.7
+jinja2>=3.1
+
+# =============================================================================
+# 3. IMAGE PROCESSING & OCR (Python)
+# =============================================================================
+# Pillow (PIL): Basic image creation, resizing, cropping, format conversion, and drawing text overlays (always load DejaVuSans.ttf via ImageFont.truetype).
+Pillow>=10.4
+#
+# opencv-python-headless (cv2): Advanced computer vision, object/face detection, image thresholding, and preprocessing before OCR.
+opencv-python-headless>=4.10,<5  # 5.x ships without the Haar face models (cv2.data)
+#
+# imageio: Read/write animated GIFs and extract/assemble video frames in Python.
+imageio>=2.36
+#
+# fonttools: Inspect .ttf/.otf font files to verify Unicode glyph coverage before rendering documents.
+fonttools>=4.54
+#
+# PROFESSIONAL GRAPHICS: logos, icons, illustrations, banners (fast, no system libraries needed):
+#  - drawsvg: vector drawing (shapes, gradients, paths, text) -> crisp .svg logos; d.save_svg("logo.svg")
+#  - skia-python: Google's Skia 2D engine (Chrome / Android): anti-aliased shapes, gradients, blur/shadow effects,
+#    real font shaping, SVG -> PNG rendering (skia.SVGDOM) and PNG/JPEG/WebP export. Best quality raster drawing.
+#  - vtracer: convert a raster image (PNG/JPG) into a clean vector SVG (logo tracing).
+#  - qrcode: QR codes as PNG/SVG.
+#  Node equivalents (installed with the app, on NODE_PATH): sharp (fast resize/convert/compose), @resvg/resvg-js
+#  (SVG -> PNG), opentype.js (text to vector paths for logos).
+drawsvg>=2.4
+skia-python>=138
+vtracer>=0.6
+qrcode[pil]>=8.0
+#
+# OCR: Extract text from scanned PDFs and screenshots offline with full Turkish character support.
+#  - Windows: winrt-Windows.Media.Ocr
+#  - Linux/macOS: rapidocr-onnxruntime
 winrt-runtime>=2.0; sys_platform == "win32"
 winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
 winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
@@ -37,6 +144,150 @@ winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
 winrt-Windows.Globalization>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
-# Linux/macOS: Tesseract is used when installed; otherwise RapidOCR (onnxruntime 1.21+ crashes on some older CPUs)
 rapidocr-onnxruntime>=1.4; sys_platform != "win32"
 onnxruntime>=1.17,<1.21; sys_platform != "win32"
+
+# =============================================================================
+# 4. WEB RESEARCH, SCRAPING & BROWSER AUTOMATION (Python)
+# =============================================================================
+# ddgs: Perform free web searches across Google, Bing, Brave, DuckDuckGo, and Yandex without API keys.
+ddgs>=9.0
+#
+# httpx: Make fast asynchronous HTTP/REST API requests (`async with httpx.AsyncClient()`).
+httpx>=0.27,<1.0
+#
+# trafilatura: Extract clean main article text from messy web pages (automatically strips ads, menus, and boilerplate).
+trafilatura>=1.12
+#
+# beautifulsoup4 + lxml: Parse raw HTML/XML DOM trees for targeted element extraction.
+beautifulsoup4>=4.12
+lxml>=5.3
+#
+# markdownify: Convert HTML snippets into clean, token-efficient Markdown for LLM context.
+markdownify>=0.13
+#
+# playwright: Full headless/headed Chromium browser automation for JS-heavy websites, logins, clicking, screenshots, and HTML-to-PDF rendering.
+playwright>=1.48,<2.0
+
+# =============================================================================
+# 5. DATA SCIENCE, MATH & CHARTING (Python)
+# =============================================================================
+# pandas / numpy: Tabular data manipulation, CSV/JSON/Excel analysis, filtering, and numerical arrays.
+numpy>=1.26,<3
+pandas>=2.2,<3
+#
+# scipy / scikit-learn / statsmodels: Statistical hypothesis testing, regression, clustering, and ML pipelines.
+scipy>=1.13,<2
+scikit-learn>=1.5,<2
+statsmodels>=0.14,<1
+#
+# sympy: Symbolic mathematics (exact algebra, calculus, equation solving).
+sympy>=1.13,<2
+#
+# matplotlib / seaborn: Generate static statistical charts and plots (PNG/SVG) to embed into reports and PDFs. Also ships bundled DejaVu Sans fonts.
+matplotlib>=3.8,<4
+seaborn>=0.13,<1
+#
+# plotly + kaleido: Generate interactive charts and export them to static high-res images via `fig.write_image()`.
+plotly>=5.22,<7
+kaleido>=1.0
+
+# =============================================================================
+# 6. SYSTEM, DESKTOP & CODEBASE TOOLS (Python)
+# =============================================================================
+# psutil: Monitor system CPU, RAM, disk usage, network stats, and running processes.
+psutil>=6.0
+#
+# paramiko: SSH / SFTP to a server the user gives (run commands, list, read, upload and download files).
+paramiko>=3.5
+#
+# watchfiles: Watch directories for real-time file changes (`tail -f` behavior).
+watchfiles>=0.24
+#
+# pathspec: .gitignore-style path pattern matching (skip node_modules, .venv, etc.).
+pathspec>=0.12
+#
+# send2trash: Safely delete files by moving them to the OS Recycle Bin/Trash instead of permanent deletion.
+send2trash>=1.8
+#
+# GitPython: Programmatically inspect git status, diffs, logs, and create commits.
+GitPython>=3.1
+#
+# python-dateutil / tzdata: Flexible date parsing, arithmetic, and IANA timezone database (required on Windows).
+python-dateutil>=2.9
+tzdata>=2024.2
+#
+# regex: Advanced regular expressions (Unicode properties, fuzzy matching).
+regex>=2024.9
+#
+# tree-sitter + tree-sitter-language-pack: Parse source code into Abstract Syntax Trees (AST) for multi-language code analysis.
+tree-sitter>=0.23
+tree-sitter-language-pack>=0.7
+#
+# pyautogui / mss / pywinauto / pywin32: (Use only when explicitly requested) Desktop screenshots (mss), mouse/keyboard control (pyautogui), native Windows UI/COM/Clipboard (pywinauto, pywin32).
+mss>=9.0
+pyautogui>=0.9.54
+pywin32>=308; sys_platform == "win32"
+scapy>=2.6; sys_platform == "win32"
+pywinauto>=0.6.8; sys_platform == "win32"
+#
+# charset-normalizer: Auto-detect text file encodings (crucial for legacy Turkish cp1254 / iso-8859-9 files before converting to UTF-8).
+charset-normalizer>=3.4
+#
+# deep-translator: Auto-translate text across languages without API keys.
+deep-translator>=1.11
+#
+# tiktoken: Count exact LLM tokens to manage context window limits.
+tiktoken>=0.7
+
+# =============================================================================
+# 7. BACKEND CORE & INFRASTRUCTURE (Python)
+# =============================================================================
+# fastapi + uvicorn + websockets: Core HTTP REST API and real-time bidirectional WebSocket streaming server.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.32,<1.0
+websockets>=13.0
+#
+# pydantic / pydantic-settings / python-dotenv: Strict schema validation and .env configuration management.
+pydantic>=2.9,<3.0
+pydantic-settings>=2.5,<3.0
+python-dotenv>=1.0
+#
+# python-multipart / aiofiles / anyio: Multipart file uploads, non-blocking async file I/O, and async task groups.
+python-multipart>=0.0.12
+aiofiles>=24.1
+anyio>=4.6
+#
+# orjson: Ultra-fast JSON serialization/deserialization for heavy tool payloads.
+orjson>=3.10
+#
+# tenacity: Automatic retry with exponential backoff for unstable network/API calls.
+tenacity>=9.0
+#
+# PyYAML: Read/write YAML config and agent definitions.
+PyYAML>=6.0
+#
+# rich / typer: Formatted terminal logging and CLI subcommand execution.
+rich>=13.9
+typer>=0.12
+
+# =============================================================================
+# 8. TESTING & CODE QUALITY
+# =============================================================================
+pytest>=8.3
+pytest-asyncio>=0.24
+ruff>=0.7
+
+# =============================================================================
+# 9. FRONTEND & NODE.JS ECOSYSTEM REFERENCE (package.json)
+# =============================================================================
+# When building or modifying the frontend UI (React / Electron / Web) or running
+# Node.js scripts, utilize the standard stack packages:
+#  - UI Framework (react, react-dom): Component-based reactive UI rendering.
+#  - Build Tool (vite): Fast dev server and production bundler.
+#  - Styling (tailwindcss, postcss, autoprefixer): Utility-first CSS styling. Always use Tailwind classes for layout, spacing, and dark/light themes.
+#  - Icons (lucide-react): Clean, consistent SVG icons for buttons, tool status badges, and navigation.
+#  - Markdown & Code Rendering (react-markdown, remark-gfm, rehype-highlight / prismjs): Render agent responses with GitHub Flavored Markdown tables, lists, and syntax-highlighted code blocks.
+#  - State & Data Fetching (zustand or axios / native fetch + WebSocket): Manage client state and real-time streaming events from the FastAPI backend.
+#  - Desktop Wrapper (electron, if desktop mode): Bridges Node.js/OS native APIs (file dialogs, system tray, window controls) with the React frontend via IPC (ipcRenderer / ipcMain).
+# =============================================================================
