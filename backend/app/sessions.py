@@ -1,4 +1,5 @@
-"""Per-chat session folders: chat/<session_id>-session/
+"""Per-chat folders: chat/<session_id>/ is the chat's working folder (its files, downloads, outputs) and
+chat/<session_id>/.session/ (hidden in the file view) is the session record:
 
   session.json       metadata (title, project, model, compression stats)
   messages.jsonl     append-only transcript archive
@@ -23,12 +24,13 @@ from .config import DATA_DIR, ROOT
 # chat/ lives next to the app; a separate AIIQ_DATA (tests, portable installs) keeps its chats with its data.
 CHAT_DIR = DATA_DIR / "chat" if os.environ.get("AIIQ_DATA") else ROOT / "chat"
 CHAT_DIR.mkdir(parents=True, exist_ok=True)
+SESSION = ".session"  # the record folder inside each chat folder
 
 
 def path(session_id: str, create: bool = True) -> Path:
     if not re.fullmatch(r"[0-9a-f]{6,32}", session_id or ""):
         raise ValueError("invalid session id")
-    p = CHAT_DIR / f"{session_id}-session"
+    p = CHAT_DIR / session_id / SESSION
     if create:
         p.mkdir(parents=True, exist_ok=True)
     return p
@@ -68,6 +70,7 @@ def state_file(session_id: str) -> Path:
 
 
 def remove(session_id: str) -> None:
-    p = path(session_id, create=False)
-    if p.exists() and CHAT_DIR.resolve() in p.resolve().parents:
+    """Deleting a chat deletes its whole folder: its files and its record."""
+    p = path(session_id, create=False).parent
+    if p.exists() and p.resolve().parent == CHAT_DIR.resolve():
         shutil.rmtree(p, ignore_errors=True)

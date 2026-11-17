@@ -1,0 +1,2051 @@
+{
+  "_comment": "Intent words for languages other than Turkish and English (those two have hand-tuned patterns in orchestrator.py). Each entry is a word start (stems match inflected forms). A language file languages/<code>.json may add its own under the key \"ai_intents\" with the same shape: {\"work\": [\"...\"], ...}.",
+  "continue": {
+    "de": [
+      "weiter",
+      "fortfahren",
+      "fortsetzen",
+      "mach weiter"
+    ],
+    "fr": [
+      "continue",
+      "poursui",
+      "reprend"
+    ],
+    "es": [
+      "continúa",
+      "continua",
+      "sigue",
+      "prosigue",
+      "reanuda"
+    ],
+    "it": [
+      "continua",
+      "prosegui",
+      "riprendi",
+      "vai avanti"
+    ],
+    "pt": [
+      "continua",
+      "continue",
+      "prossiga",
+      "retome"
+    ],
+    "nl": [
+      "ga door",
+      "doorgaan",
+      "verder"
+    ],
+    "ru": [
+      "продолж",
+      "дальше"
+    ],
+    "uk": [
+      "продовж",
+      "далі"
+    ],
+    "ar": [
+      "استمر",
+      "تابع",
+      "أكمل"
+    ],
+    "fa": [
+      "ادامه"
+    ],
+    "zh": [
+      "继续",
+      "繼續"
+    ],
+    "ja": [
+      "続け",
+      "続行"
+    ],
+    "ko": [
+      "계속"
+    ],
+    "hi": [
+      "जारी",
+      "आगे बढ़"
+    ],
+    "el": [
+      "συνέχισε"
+    ],
+    "he": [
+      "המשך"
+    ]
+  },
+  "work": {
+    "de": [
+      "erstell",
+      "schreib",
+      "bau",
+      "installier",
+      "führ",
+      "starte",
+      "such",
+      "lösch",
+      "bearbeit",
+      "änder",
+      "korrigier",
+      "datei",
+      "ordner",
+      "projekt",
+      "dokument",
+      "speicher",
+      "herunterlad",
+      "aktualisier"
+    ],
+    "fr": [
+      "crée",
+      "créer",
+      "écri",
+      "construi",
+      "install",
+      "exécut",
+      "lance",
+      "cherche",
+      "recherch",
+      "supprim",
+      "modifi",
+      "corrig",
+      "fichier",
+      "dossier",
+      "projet",
+      "document",
+      "enregistr",
+      "télécharg",
+      "génèr"
+    ],
+    "es": [
+      "crea",
+      "escrib",
+      "constru",
+      "instal",
+      "ejecut",
+      "busca",
+      "elimin",
+      "borra",
+      "edit",
+      "modific",
+      "corrig",
+      "archivo",
+      "carpeta",
+      "proyecto",
+      "documento",
+      "guarda",
+      "descarg",
+      "genera",
+      "actualiz"
+    ],
+    "it": [
+      "crea",
+      "scriv",
+      "costrui",
+      "install",
+      "esegu",
+      "avvia",
+      "cerca",
+      "elimin",
+      "cancell",
+      "modific",
+      "corregg",
+      "file",
+      "cartella",
+      "progetto",
+      "documento",
+      "salva",
+      "scarica",
+      "genera",
+      "aggiorn"
+    ],
+    "pt": [
+      "cria",
+      "escrev",
+      "constru",
+      "instal",
+      "execut",
+      "busca",
+      "pesquis",
+      "exclu",
+      "apag",
+      "edit",
+      "modific",
+      "corrig",
+      "arquivo",
+      "ficheiro",
+      "pasta",
+      "projeto",
+      "documento",
+      "salv",
+      "baix",
+      "gera",
+      "atualiz"
+    ],
+    "nl": [
+      "maak",
+      "schrijf",
+      "bouw",
+      "installeer",
+      "voer",
+      "start",
+      "zoek",
+      "verwijder",
+      "bewerk",
+      "wijzig",
+      "bestand",
+      "map",
+      "project",
+      "document",
+      "opslaan",
+      "download"
+    ],
+    "ru": [
+      "созда",
+      "напиш",
+      "постро",
+      "установ",
+      "запуст",
+      "выполн",
+      "найд",
+      "поиск",
+      "удал",
+      "измен",
+      "исправ",
+      "файл",
+      "папк",
+      "проект",
+      "документ",
+      "сохран",
+      "скача",
+      "обнов"
+    ],
+    "uk": [
+      "створ",
+      "напиш",
+      "встанов",
+      "запуст",
+      "знайд",
+      "видал",
+      "зміни",
+      "виправ",
+      "файл",
+      "папк",
+      "проєкт",
+      "документ",
+      "збереж"
+    ],
+    "ar": [
+      "أنشئ",
+      "انشئ",
+      "اكتب",
+      "ابن",
+      "ثبت",
+      "شغل",
+      "نفذ",
+      "ابحث",
+      "احذف",
+      "عدل",
+      "صحح",
+      "ملف",
+      "مجلد",
+      "مشروع",
+      "مستند",
+      "احفظ",
+      "حمل",
+      "حدث"
+    ],
+    "fa": [
+      "بساز",
+      "بنویس",
+      "نصب",
+      "اجرا",
+      "جستجو",
+      "حذف",
+      "ویرایش",
+      "فایل",
+      "پوشه",
+      "پروژه",
+      "سند",
+      "ذخیره",
+      "دانلود"
+    ],
+    "zh": [
+      "创建",
+      "建立",
+      "写",
+      "编写",
+      "安装",
+      "运行",
+      "执行",
+      "搜索",
+      "查找",
+      "删除",
+      "编辑",
+      "修改",
+      "修复",
+      "文件",
+      "文件夹",
+      "项目",
+      "文档",
+      "保存",
+      "下载",
+      "生成",
+      "更新"
+    ],
+    "ja": [
+      "作成",
+      "作って",
+      "書いて",
+      "インストール",
+      "実行",
+      "検索",
+      "探して",
+      "削除",
+      "編集",
+      "修正",
+      "ファイル",
+      "フォルダ",
+      "プロジェクト",
+      "ドキュメント",
+      "保存",
+      "ダウンロード",
+      "生成",
+      "更新"
+    ],
+    "ko": [
+      "만들",
+      "작성",
+      "설치",
+      "실행",
+      "검색",
+      "찾아",
+      "삭제",
+      "편집",
+      "수정",
+      "파일",
+      "폴더",
+      "프로젝트",
+      "문서",
+      "저장",
+      "다운로드",
+      "생성",
+      "업데이트"
+    ],
+    "hi": [
+      "बनाओ",
+      "बनाएं",
+      "लिखो",
+      "लिखें",
+      "इंस्टॉल",
+      "चलाओ",
+      "खोजो",
+      "हटाओ",
+      "बदलो",
+      "फ़ाइल",
+      "फाइल",
+      "फ़ोल्डर",
+      "प्रोजेक्ट",
+      "दस्तावेज़",
+      "सहेज",
+      "डाउनलोड"
+    ]
+  },
+  "question": {
+    "de": [
+      "wie",
+      "warum",
+      "was",
+      "welche",
+      "wann",
+      "wer",
+      "wieso"
+    ],
+    "fr": [
+      "comment",
+      "pourquoi",
+      "quel",
+      "quelle",
+      "quand",
+      "qui",
+      "qu'est"
+    ],
+    "es": [
+      "cómo",
+      "como",
+      "por qué",
+      "qué",
+      "cuál",
+      "cuándo",
+      "quién"
+    ],
+    "it": [
+      "come",
+      "perché",
+      "cosa",
+      "quale",
+      "quando",
+      "chi"
+    ],
+    "pt": [
+      "como",
+      "por que",
+      "porque",
+      "o que",
+      "qual",
+      "quando",
+      "quem"
+    ],
+    "nl": [
+      "hoe",
+      "waarom",
+      "wat",
+      "welke",
+      "wanneer",
+      "wie"
+    ],
+    "ru": [
+      "как",
+      "почему",
+      "что",
+      "какой",
+      "когда",
+      "кто"
+    ],
+    "uk": [
+      "як",
+      "чому",
+      "що",
+      "який",
+      "коли",
+      "хто"
+    ],
+    "ar": [
+      "كيف",
+      "لماذا",
+      "ما",
+      "ماذا",
+      "متى",
+      "من",
+      "هل"
+    ],
+    "fa": [
+      "چطور",
+      "چرا",
+      "چه",
+      "کدام",
+      "کی",
+      "آیا"
+    ],
+    "zh": [
+      "怎么",
+      "为什么",
+      "什么",
+      "哪",
+      "何时",
+      "谁",
+      "吗"
+    ],
+    "ja": [
+      "どう",
+      "なぜ",
+      "何",
+      "どの",
+      "いつ",
+      "誰",
+      "ですか"
+    ],
+    "ko": [
+      "어떻게",
+      "왜",
+      "무엇",
+      "뭐",
+      "어느",
+      "언제",
+      "누구"
+    ],
+    "hi": [
+      "कैसे",
+      "क्यों",
+      "क्या",
+      "कौन",
+      "कब"
+    ]
+  },
+  "small_talk": {
+    "de": [
+      "hallo",
+      "guten morgen",
+      "guten tag",
+      "guten abend",
+      "wie geht",
+      "wer bist du",
+      "danke"
+    ],
+    "fr": [
+      "bonjour",
+      "salut",
+      "bonsoir",
+      "comment ça va",
+      "comment vas",
+      "qui es-tu",
+      "merci"
+    ],
+    "es": [
+      "hola",
+      "buenos días",
+      "buenas",
+      "qué tal",
+      "cómo estás",
+      "quién eres",
+      "gracias"
+    ],
+    "it": [
+      "ciao",
+      "buongiorno",
+      "buonasera",
+      "come stai",
+      "chi sei",
+      "grazie"
+    ],
+    "pt": [
+      "olá",
+      "oi",
+      "bom dia",
+      "boa tarde",
+      "boa noite",
+      "tudo bem",
+      "quem é você",
+      "obrigad"
+    ],
+    "nl": [
+      "hallo",
+      "hoi",
+      "goedemorgen",
+      "hoe gaat",
+      "wie ben je",
+      "bedankt",
+      "dank je"
+    ],
+    "ru": [
+      "привет",
+      "здравствуй",
+      "добрый день",
+      "как дела",
+      "кто ты",
+      "спасибо"
+    ],
+    "uk": [
+      "привіт",
+      "добрий день",
+      "як справи",
+      "хто ти",
+      "дякую"
+    ],
+    "ar": [
+      "مرحبا",
+      "السلام عليكم",
+      "اهلا",
+      "أهلا",
+      "كيف حالك",
+      "من أنت",
+      "شكرا"
+    ],
+    "fa": [
+      "سلام",
+      "حالت چطوره",
+      "تو کی هستی",
+      "ممنون",
+      "مرسی"
+    ],
+    "zh": [
+      "你好",
+      "您好",
+      "早上好",
+      "你是谁",
+      "谢谢"
+    ],
+    "ja": [
+      "こんにちは",
+      "おはよう",
+      "こんばんは",
+      "元気",
+      "あなたは誰",
+      "ありがとう"
+    ],
+    "ko": [
+      "안녕",
+      "누구세요",
+      "고마워",
+      "감사합니다"
+    ],
+    "hi": [
+      "नमस्ते",
+      "आप कैसे",
+      "तुम कौन",
+      "धन्यवाद"
+    ]
+  },
+  "web": {
+    "de": [
+      "recherchier",
+      "internet",
+      "suche nach",
+      "aktuell",
+      "preis",
+      "nachricht",
+      "quelle",
+      "neueste"
+    ],
+    "fr": [
+      "recherch",
+      "internet",
+      "actuel",
+      "prix",
+      "actualité",
+      "source",
+      "dernière"
+    ],
+    "es": [
+      "investig",
+      "internet",
+      "actual",
+      "precio",
+      "noticia",
+      "fuente",
+      "último"
+    ],
+    "it": [
+      "ricerc",
+      "internet",
+      "attual",
+      "prezz",
+      "notizi",
+      "fonte",
+      "ultim"
+    ],
+    "pt": [
+      "pesquis",
+      "internet",
+      "atual",
+      "preço",
+      "notícia",
+      "fonte",
+      "último"
+    ],
+    "nl": [
+      "onderzoek",
+      "internet",
+      "actueel",
+      "prijs",
+      "nieuws",
+      "bron",
+      "nieuwste"
+    ],
+    "ru": [
+      "исследу",
+      "интернет",
+      "актуальн",
+      "цен",
+      "новост",
+      "источник",
+      "последн"
+    ],
+    "uk": [
+      "досліди",
+      "інтернет",
+      "актуальн",
+      "цін",
+      "новин",
+      "джерел"
+    ],
+    "ar": [
+      "ابحث",
+      "الإنترنت",
+      "الانترنت",
+      "حالي",
+      "سعر",
+      "أخبار",
+      "مصدر"
+    ],
+    "fa": [
+      "تحقیق",
+      "اینترنت",
+      "قیمت",
+      "اخبار",
+      "منبع"
+    ],
+    "zh": [
+      "搜索",
+      "研究",
+      "网上",
+      "最新",
+      "价格",
+      "新闻",
+      "来源"
+    ],
+    "ja": [
+      "調べ",
+      "検索",
+      "最新",
+      "価格",
+      "ニュース",
+      "情報源"
+    ],
+    "ko": [
+      "조사",
+      "검색",
+      "최신",
+      "가격",
+      "뉴스",
+      "출처"
+    ],
+    "hi": [
+      "खोज",
+      "इंटरनेट",
+      "ताज़ा",
+      "कीमत",
+      "समाचार",
+      "स्रोत"
+    ]
+  },
+  "current": {
+    "de": [
+      "aktuell",
+      "heute",
+      "jetzt",
+      "preis",
+      "kurs",
+      "nachrichten",
+      "wetter",
+      "quelle"
+    ],
+    "fr": [
+      "actuel",
+      "aujourd'hui",
+      "maintenant",
+      "prix",
+      "cours",
+      "actualités",
+      "météo",
+      "source"
+    ],
+    "es": [
+      "actual",
+      "hoy",
+      "ahora",
+      "precio",
+      "cotización",
+      "noticias",
+      "clima",
+      "fuente"
+    ],
+    "it": [
+      "attual",
+      "oggi",
+      "adesso",
+      "prezz",
+      "quotazion",
+      "notizie",
+      "meteo",
+      "fonte"
+    ],
+    "pt": [
+      "atual",
+      "hoje",
+      "agora",
+      "preço",
+      "cotação",
+      "notícias",
+      "clima",
+      "tempo",
+      "fonte"
+    ],
+    "nl": [
+      "actueel",
+      "vandaag",
+      "nu",
+      "prijs",
+      "koers",
+      "nieuws",
+      "weer",
+      "bron"
+    ],
+    "ru": [
+      "сейчас",
+      "сегодня",
+      "текущ",
+      "цена",
+      "курс",
+      "новост",
+      "погод",
+      "источник"
+    ],
+    "uk": [
+      "зараз",
+      "сьогодні",
+      "ціна",
+      "курс",
+      "новини",
+      "погод"
+    ],
+    "ar": [
+      "اليوم",
+      "الآن",
+      "حالي",
+      "سعر",
+      "أسعار",
+      "أخبار",
+      "الطقس",
+      "مصدر"
+    ],
+    "fa": [
+      "امروز",
+      "الان",
+      "قیمت",
+      "نرخ",
+      "اخبار",
+      "هوا"
+    ],
+    "zh": [
+      "今天",
+      "现在",
+      "当前",
+      "最新",
+      "价格",
+      "汇率",
+      "新闻",
+      "天气"
+    ],
+    "ja": [
+      "今日",
+      "現在",
+      "最新",
+      "価格",
+      "為替",
+      "ニュース",
+      "天気"
+    ],
+    "ko": [
+      "오늘",
+      "지금",
+      "현재",
+      "최신",
+      "가격",
+      "환율",
+      "뉴스",
+      "날씨"
+    ],
+    "hi": [
+      "आज",
+      "अभी",
+      "वर्तमान",
+      "कीमत",
+      "दर",
+      "समाचार",
+      "मौसम"
+    ]
+  },
+  "docs": {
+    "de": [
+      "bericht",
+      "tabelle",
+      "präsentation",
+      "folie",
+      "dokument"
+    ],
+    "fr": [
+      "rapport",
+      "tableau",
+      "présentation",
+      "diapositive",
+      "document"
+    ],
+    "es": [
+      "informe",
+      "tabla",
+      "presentación",
+      "diapositiva",
+      "documento",
+      "hoja de cálculo"
+    ],
+    "it": [
+      "rapporto",
+      "tabella",
+      "presentazione",
+      "diapositiv",
+      "documento"
+    ],
+    "pt": [
+      "relatório",
+      "tabela",
+      "apresentação",
+      "slide",
+      "documento",
+      "planilha"
+    ],
+    "nl": [
+      "rapport",
+      "tabel",
+      "presentatie",
+      "dia",
+      "document"
+    ],
+    "ru": [
+      "отчет",
+      "отчёт",
+      "таблиц",
+      "презентац",
+      "слайд",
+      "документ"
+    ],
+    "uk": [
+      "звіт",
+      "таблиц",
+      "презентац",
+      "документ"
+    ],
+    "ar": [
+      "تقرير",
+      "جدول",
+      "عرض تقديمي",
+      "شريحة",
+      "مستند"
+    ],
+    "fa": [
+      "گزارش",
+      "جدول",
+      "ارائه",
+      "اسلاید",
+      "سند"
+    ],
+    "zh": [
+      "报告",
+      "表格",
+      "演示",
+      "幻灯片",
+      "文档"
+    ],
+    "ja": [
+      "レポート",
+      "報告書",
+      "表",
+      "プレゼン",
+      "スライド",
+      "文書"
+    ],
+    "ko": [
+      "보고서",
+      "표",
+      "프레젠테이션",
+      "슬라이드",
+      "문서"
+    ],
+    "hi": [
+      "रिपोर्ट",
+      "तालिका",
+      "प्रस्तुति",
+      "स्लाइड",
+      "दस्तावेज़"
+    ]
+  },
+  "places": {
+    "de": [
+      "in der nähe",
+      "wo ist",
+      "karte",
+      "standort",
+      "restaurant",
+      "hotel",
+      "apotheke",
+      "adresse"
+    ],
+    "fr": [
+      "près",
+      "où est",
+      "carte",
+      "emplacement",
+      "restaurant",
+      "hôtel",
+      "pharmacie",
+      "adresse"
+    ],
+    "es": [
+      "cerca",
+      "dónde",
+      "mapa",
+      "ubicación",
+      "restaurante",
+      "hotel",
+      "farmacia",
+      "dirección"
+    ],
+    "it": [
+      "vicino",
+      "dove",
+      "mappa",
+      "posizione",
+      "ristorante",
+      "albergo",
+      "farmacia",
+      "indirizzo"
+    ],
+    "pt": [
+      "perto",
+      "onde",
+      "mapa",
+      "localização",
+      "restaurante",
+      "hotel",
+      "farmácia",
+      "endereço"
+    ],
+    "nl": [
+      "in de buurt",
+      "waar",
+      "kaart",
+      "locatie",
+      "restaurant",
+      "hotel",
+      "apotheek",
+      "adres"
+    ],
+    "ru": [
+      "рядом",
+      "где",
+      "карт",
+      "местоположен",
+      "ресторан",
+      "отель",
+      "аптек",
+      "адрес"
+    ],
+    "uk": [
+      "поруч",
+      "де",
+      "карт",
+      "ресторан",
+      "аптек",
+      "адрес"
+    ],
+    "ar": [
+      "قريب",
+      "أين",
+      "خريطة",
+      "موقع",
+      "مطعم",
+      "فندق",
+      "صيدلية",
+      "عنوان"
+    ],
+    "fa": [
+      "نزدیک",
+      "کجا",
+      "نقشه",
+      "موقعیت",
+      "رستوران",
+      "هتل",
+      "داروخانه"
+    ],
+    "zh": [
+      "附近",
+      "哪里",
+      "地图",
+      "位置",
+      "餐厅",
+      "酒店",
+      "药店",
+      "地址"
+    ],
+    "ja": [
+      "近く",
+      "どこ",
+      "地図",
+      "場所",
+      "レストラン",
+      "ホテル",
+      "薬局",
+      "住所"
+    ],
+    "ko": [
+      "근처",
+      "어디",
+      "지도",
+      "위치",
+      "식당",
+      "호텔",
+      "약국",
+      "주소"
+    ],
+    "hi": [
+      "पास",
+      "कहाँ",
+      "नक्शा",
+      "स्थान",
+      "रेस्टोरेंट",
+      "होटल",
+      "पता"
+    ]
+  },
+  "memory": {
+    "de": [
+      "merk dir",
+      "immer",
+      "ab jetzt",
+      "regel"
+    ],
+    "fr": [
+      "souviens",
+      "toujours",
+      "désormais",
+      "règle"
+    ],
+    "es": [
+      "recuerda",
+      "siempre",
+      "de ahora en adelante",
+      "regla"
+    ],
+    "it": [
+      "ricorda",
+      "sempre",
+      "d'ora in poi",
+      "regola"
+    ],
+    "pt": [
+      "lembr",
+      "sempre",
+      "a partir de agora",
+      "regra"
+    ],
+    "nl": [
+      "onthoud",
+      "altijd",
+      "vanaf nu",
+      "regel"
+    ],
+    "ru": [
+      "запомни",
+      "всегда",
+      "отныне",
+      "правило"
+    ],
+    "uk": [
+      "запам'ятай",
+      "завжди",
+      "правило"
+    ],
+    "ar": [
+      "تذكر",
+      "دائما",
+      "من الآن",
+      "قاعدة"
+    ],
+    "fa": [
+      "به خاطر بسپار",
+      "همیشه",
+      "قانون"
+    ],
+    "zh": [
+      "记住",
+      "总是",
+      "从现在起",
+      "规则"
+    ],
+    "ja": [
+      "覚えて",
+      "いつも",
+      "これから",
+      "ルール"
+    ],
+    "ko": [
+      "기억해",
+      "항상",
+      "앞으로",
+      "규칙"
+    ],
+    "hi": [
+      "याद रख",
+      "हमेशा",
+      "नियम"
+    ]
+  },
+  "team": {
+    "de": [
+      "team",
+      "parallel",
+      "mehrere agenten",
+      "anderes modell"
+    ],
+    "fr": [
+      "équipe",
+      "parallèle",
+      "plusieurs agents",
+      "autre modèle"
+    ],
+    "es": [
+      "equipo",
+      "paralelo",
+      "varios agentes",
+      "otro modelo"
+    ],
+    "it": [
+      "squadra",
+      "team",
+      "parallelo",
+      "più agenti",
+      "altro modello"
+    ],
+    "pt": [
+      "equipe",
+      "equipa",
+      "paralelo",
+      "vários agentes",
+      "outro modelo"
+    ],
+    "nl": [
+      "team",
+      "parallel",
+      "meerdere agenten",
+      "ander model"
+    ],
+    "ru": [
+      "команд",
+      "параллельн",
+      "несколько агентов",
+      "другая модель"
+    ],
+    "uk": [
+      "команд",
+      "паралельн"
+    ],
+    "ar": [
+      "فريق",
+      "متواز",
+      "عدة وكلاء"
+    ],
+    "fa": [
+      "تیم",
+      "موازی"
+    ],
+    "zh": [
+      "团队",
+      "并行",
+      "多个代理",
+      "另一个模型"
+    ],
+    "ja": [
+      "チーム",
+      "並列",
+      "複数のエージェント"
+    ],
+    "ko": [
+      "팀",
+      "병렬",
+      "여러 에이전트"
+    ],
+    "hi": [
+      "टीम",
+      "समानांतर"
+    ]
+  },
+  "browser": {
+    "de": [
+      "webseite",
+      "klick",
+      "anmelden",
+      "einloggen",
+      "formular",
+      "browser"
+    ],
+    "fr": [
+      "site web",
+      "clique",
+      "connecte",
+      "formulaire",
+      "navigateur"
+    ],
+    "es": [
+      "sitio web",
+      "haz clic",
+      "inicia sesión",
+      "formulario",
+      "navegador"
+    ],
+    "it": [
+      "sito web",
+      "clicca",
+      "accedi",
+      "modulo",
+      "browser"
+    ],
+    "pt": [
+      "site",
+      "clique",
+      "faça login",
+      "formulário",
+      "navegador"
+    ],
+    "nl": [
+      "website",
+      "klik",
+      "inloggen",
+      "formulier",
+      "browser"
+    ],
+    "ru": [
+      "сайт",
+      "нажми",
+      "войди",
+      "форм",
+      "браузер"
+    ],
+    "uk": [
+      "сайт",
+      "натисни",
+      "увійди",
+      "браузер"
+    ],
+    "ar": [
+      "موقع",
+      "انقر",
+      "سجل الدخول",
+      "نموذج",
+      "متصفح"
+    ],
+    "fa": [
+      "سایت",
+      "کلیک",
+      "ورود",
+      "مرورگر"
+    ],
+    "zh": [
+      "网站",
+      "点击",
+      "登录",
+      "表单",
+      "浏览器"
+    ],
+    "ja": [
+      "サイト",
+      "クリック",
+      "ログイン",
+      "フォーム",
+      "ブラウザ"
+    ],
+    "ko": [
+      "사이트",
+      "클릭",
+      "로그인",
+      "양식",
+      "브라우저"
+    ],
+    "hi": [
+      "वेबसाइट",
+      "क्लिक",
+      "लॉग इन",
+      "ब्राउज़र"
+    ]
+  },
+  "run": {
+    "de": [
+      "führ",
+      "ausführ",
+      "starte",
+      "teste",
+      "miss"
+    ],
+    "fr": [
+      "exécut",
+      "lance",
+      "teste",
+      "mesure"
+    ],
+    "es": [
+      "ejecut",
+      "corre",
+      "prueba",
+      "mide"
+    ],
+    "it": [
+      "esegu",
+      "avvia",
+      "testa",
+      "misura"
+    ],
+    "pt": [
+      "execut",
+      "rode",
+      "teste",
+      "meça"
+    ],
+    "nl": [
+      "voer uit",
+      "draai",
+      "test",
+      "meet"
+    ],
+    "ru": [
+      "запуст",
+      "выполн",
+      "протестир",
+      "измер"
+    ],
+    "uk": [
+      "запуст",
+      "виконай",
+      "протестуй"
+    ],
+    "ar": [
+      "شغل",
+      "نفذ",
+      "اختبر"
+    ],
+    "fa": [
+      "اجرا کن",
+      "تست"
+    ],
+    "zh": [
+      "运行",
+      "执行",
+      "测试"
+    ],
+    "ja": [
+      "実行",
+      "動かして",
+      "テスト"
+    ],
+    "ko": [
+      "실행",
+      "테스트"
+    ],
+    "hi": [
+      "चलाओ",
+      "परीक्षण"
+    ]
+  },
+  "change": {
+    "de": [
+      "änder",
+      "bearbeit",
+      "korrigier",
+      "aktualisier",
+      "füg",
+      "entfern"
+    ],
+    "fr": [
+      "modifi",
+      "corrig",
+      "mets à jour",
+      "ajout",
+      "supprim"
+    ],
+    "es": [
+      "modific",
+      "edit",
+      "corrig",
+      "actualiz",
+      "añad",
+      "agreg",
+      "quita"
+    ],
+    "it": [
+      "modific",
+      "corregg",
+      "aggiorn",
+      "aggiung",
+      "rimuov"
+    ],
+    "pt": [
+      "modific",
+      "edit",
+      "corrig",
+      "atualiz",
+      "adicion",
+      "remov"
+    ],
+    "nl": [
+      "wijzig",
+      "bewerk",
+      "corrigeer",
+      "voeg toe",
+      "verwijder"
+    ],
+    "ru": [
+      "измени",
+      "исправ",
+      "обнови",
+      "добав",
+      "удали"
+    ],
+    "uk": [
+      "зміни",
+      "виправ",
+      "онови",
+      "додай",
+      "видали"
+    ],
+    "ar": [
+      "عدل",
+      "صحح",
+      "حدث",
+      "أضف",
+      "احذف"
+    ],
+    "fa": [
+      "تغییر",
+      "اصلاح",
+      "اضافه",
+      "حذف"
+    ],
+    "zh": [
+      "修改",
+      "修复",
+      "更新",
+      "添加",
+      "删除"
+    ],
+    "ja": [
+      "変更",
+      "修正",
+      "更新",
+      "追加",
+      "削除"
+    ],
+    "ko": [
+      "변경",
+      "수정",
+      "업데이트",
+      "추가",
+      "삭제"
+    ],
+    "hi": [
+      "बदल",
+      "ठीक कर",
+      "अपडेट",
+      "जोड़",
+      "हटा"
+    ]
+  },
+  "announce": {
+    "de": [
+      "jetzt werde ich",
+      "als nächstes",
+      "ich werde"
+    ],
+    "fr": [
+      "maintenant je vais",
+      "ensuite je vais",
+      "je vais"
+    ],
+    "es": [
+      "ahora voy a",
+      "a continuación voy",
+      "voy a"
+    ],
+    "it": [
+      "ora vado a",
+      "adesso",
+      "procedo a"
+    ],
+    "pt": [
+      "agora vou",
+      "em seguida vou",
+      "vou "
+    ],
+    "nl": [
+      "nu ga ik",
+      "vervolgens ga ik",
+      "ik ga"
+    ],
+    "ru": [
+      "теперь я",
+      "сейчас я",
+      "далее я"
+    ],
+    "uk": [
+      "тепер я",
+      "зараз я"
+    ],
+    "ar": [
+      "الآن سأ",
+      "سأقوم"
+    ],
+    "fa": [
+      "حالا",
+      "اکنون"
+    ],
+    "zh": [
+      "现在我将",
+      "接下来我",
+      "我将"
+    ],
+    "ja": [
+      "次に",
+      "これから"
+    ],
+    "ko": [
+      "이제",
+      "다음으로"
+    ],
+    "hi": [
+      "अब मैं",
+      "आगे मैं"
+    ]
+  },
+  "translate": {
+    "de": [
+      "übersetz"
+    ],
+    "fr": [
+      "tradui"
+    ],
+    "es": [
+      "traduc"
+    ],
+    "it": [
+      "tradu"
+    ],
+    "pt": [
+      "traduz",
+      "tradução"
+    ],
+    "nl": [
+      "vertaal"
+    ],
+    "ru": [
+      "перевед",
+      "перевод"
+    ],
+    "uk": [
+      "переклад"
+    ],
+    "ar": [
+      "ترجم"
+    ],
+    "fa": [
+      "ترجمه"
+    ],
+    "zh": [
+      "翻译",
+      "翻譯"
+    ],
+    "ja": [
+      "翻訳"
+    ],
+    "ko": [
+      "번역"
+    ],
+    "hi": [
+      "अनुवाद"
+    ]
+  },
+  "lang_words": {
+    "de": [
+      "der",
+      "die",
+      "das",
+      "und",
+      "ist",
+      "nicht",
+      "ich",
+      "du",
+      "bitte",
+      "mit",
+      "für",
+      "ein",
+      "eine",
+      "auf",
+      "wie",
+      "was",
+      "kannst"
+    ],
+    "fr": [
+      "le",
+      "la",
+      "les",
+      "et",
+      "est",
+      "pas",
+      "je",
+      "tu",
+      "vous",
+      "avec",
+      "pour",
+      "une",
+      "des",
+      "sur",
+      "comment",
+      "s'il",
+      "peux"
+    ],
+    "es": [
+      "el",
+      "los",
+      "las",
+      "y",
+      "es",
+      "no",
+      "yo",
+      "tú",
+      "usted",
+      "con",
+      "para",
+      "una",
+      "por",
+      "favor",
+      "puedes",
+      "qué",
+      "cómo"
+    ],
+    "it": [
+      "il",
+      "gli",
+      "e",
+      "è",
+      "non",
+      "io",
+      "tu",
+      "con",
+      "per",
+      "una",
+      "sono",
+      "puoi",
+      "che",
+      "come",
+      "della",
+      "grazie"
+    ],
+    "pt": [
+      "o",
+      "os",
+      "as",
+      "e",
+      "é",
+      "não",
+      "eu",
+      "você",
+      "com",
+      "para",
+      "uma",
+      "por",
+      "favor",
+      "pode",
+      "que",
+      "como"
+    ],
+    "nl": [
+      "de",
+      "het",
+      "en",
+      "is",
+      "niet",
+      "ik",
+      "jij",
+      "je",
+      "met",
+      "voor",
+      "een",
+      "op",
+      "hoe",
+      "wat",
+      "kun",
+      "alsjeblieft"
+    ]
+  },
+  "visual": {
+    "de": [
+      "grafik",
+      "diagramm",
+      "bild",
+      "abbildung"
+    ],
+    "fr": [
+      "graphique",
+      "image",
+      "schéma",
+      "diagramme"
+    ],
+    "es": [
+      "gráfico",
+      "grafico",
+      "imagen",
+      "diagrama"
+    ],
+    "it": [
+      "grafico",
+      "immagine",
+      "diagramma"
+    ],
+    "pt": [
+      "gráfico",
+      "grafico",
+      "imagem",
+      "diagrama"
+    ],
+    "nl": [
+      "grafiek",
+      "afbeelding",
+      "diagram"
+    ],
+    "ru": [
+      "график",
+      "диаграмм",
+      "изображен",
+      "картинк"
+    ],
+    "uk": [
+      "графік",
+      "діаграм",
+      "зображен"
+    ],
+    "ar": [
+      "رسم بياني",
+      "صورة",
+      "مخطط"
+    ],
+    "fa": [
+      "نمودار",
+      "تصویر"
+    ],
+    "zh": [
+      "图表",
+      "图片",
+      "图像"
+    ],
+    "ja": [
+      "グラフ",
+      "画像",
+      "図"
+    ],
+    "ko": [
+      "그래프",
+      "차트",
+      "이미지"
+    ],
+    "hi": [
+      "चार्ट",
+      "ग्राफ",
+      "चित्र"
+    ]
+  },
+  "media": {
+    "de": [
+      "bild",
+      "foto",
+      "video",
+      "audio",
+      "stimme",
+      "vorlesen",
+      "transkri",
+      "untertitel",
+      "sprachausgabe"
+    ],
+    "fr": [
+      "image",
+      "photo",
+      "vidéo",
+      "audio",
+      "voix",
+      "transcri",
+      "sous-titre",
+      "lire à voix haute"
+    ],
+    "es": [
+      "imagen",
+      "foto",
+      "vídeo",
+      "video",
+      "audio",
+      "voz",
+      "transcrib",
+      "subtítulo",
+      "leer en voz alta"
+    ],
+    "it": [
+      "immagine",
+      "foto",
+      "video",
+      "audio",
+      "voce",
+      "trascri",
+      "sottotitol",
+      "leggi ad alta voce"
+    ],
+    "pt": [
+      "imagem",
+      "foto",
+      "vídeo",
+      "áudio",
+      "voz",
+      "transcre",
+      "legenda",
+      "ler em voz alta"
+    ],
+    "nl": [
+      "afbeelding",
+      "foto",
+      "video",
+      "audio",
+      "stem",
+      "voorlezen",
+      "ondertitel",
+      "transcri"
+    ],
+    "ru": [
+      "изображен",
+      "фото",
+      "картинк",
+      "видео",
+      "аудио",
+      "голос",
+      "озвуч",
+      "транскри",
+      "субтитр"
+    ],
+    "uk": [
+      "зображен",
+      "фото",
+      "картинк",
+      "відео",
+      "аудіо",
+      "голос",
+      "озвуч",
+      "субтитр"
+    ],
+    "ar": [
+      "صورة",
+      "فيديو",
+      "صوت",
+      "تفريغ",
+      "اقرأ بصوت"
+    ],
+    "fa": [
+      "تصویر",
+      "عکس",
+      "ویدیو",
+      "صدا",
+      "زیرنویس"
+    ],
+    "zh": [
+      "图片",
+      "图像",
+      "照片",
+      "视频",
+      "音频",
+      "语音",
+      "配音",
+      "字幕",
+      "转录",
+      "朗读"
+    ],
+    "ja": [
+      "画像",
+      "写真",
+      "動画",
+      "音声",
+      "読み上げ",
+      "字幕",
+      "文字起こし"
+    ],
+    "ko": [
+      "이미지",
+      "사진",
+      "동영상",
+      "비디오",
+      "오디오",
+      "음성",
+      "자막",
+      "받아쓰기"
+    ],
+    "hi": [
+      "छवि",
+      "फोटो",
+      "वीडियो",
+      "ऑडियो",
+      "आवाज़",
+      "उपशीर्षक"
+    ]
+  },
+  "design": {
+    "de": [
+      "webseite",
+      "website",
+      "landingpage",
+      "homepage",
+      "gestalte",
+      "entwirf"
+    ],
+    "fr": [
+      "site web",
+      "page web",
+      "landing page",
+      "maquette",
+      "conçois"
+    ],
+    "es": [
+      "sitio web",
+      "página web",
+      "landing",
+      "diseña"
+    ],
+    "it": [
+      "sito web",
+      "pagina web",
+      "landing",
+      "progetta"
+    ],
+    "pt": [
+      "site",
+      "página web",
+      "landing",
+      "crie um site"
+    ],
+    "nl": [
+      "website",
+      "webpagina",
+      "landingspagina",
+      "ontwerp"
+    ],
+    "ru": [
+      "сайт",
+      "веб-страниц",
+      "лендинг",
+      "макет"
+    ],
+    "uk": [
+      "сайт",
+      "вебсторін",
+      "лендінг"
+    ],
+    "ar": [
+      "موقع",
+      "صفحة ويب",
+      "صفحة هبوط"
+    ],
+    "fa": [
+      "سایت",
+      "صفحه وب"
+    ],
+    "zh": [
+      "网站",
+      "网页",
+      "落地页",
+      "着陆页"
+    ],
+    "ja": [
+      "ウェブサイト",
+      "ホームページ",
+      "ランディングページ"
+    ],
+    "ko": [
+      "웹사이트",
+      "홈페이지",
+      "랜딩 페이지"
+    ],
+    "hi": [
+      "वेबसाइट",
+      "वेब पेज",
+      "लैंडिंग पेज"
+    ]
+  }
+}

@@ -272,7 +272,17 @@ def _text(data: bytes, ext: str, lang: str) -> Document:
         rows = list(csv.reader(io.StringIO(text), delimiter="\t" if ext == ".tsv" else (";" if text.count(";") > text.count(",") else ",")))
         lines = ["\t".join(r) for r in rows]
     else:
-        if ext in (".html", ".htm", ".xml"):
+        if ext == ".xml":
+            # Data XML (exchange rates, feeds, exports): every value keeps its field name and attributes
+            # ("Currency CurrencyCode=USD / ForexBuying: 50.15"); bare numbers without names invite guessing.
+            text = re.sub(r"<\?xml[^>]*\?>|<!--.*?-->|<!DOCTYPE[^>]*>", "", text, flags=re.S)
+            text = re.sub(r"</[\w:.-]+\s*>", "\n", text)
+            text = re.sub(r"<([\w:.-]+)((?:\s+[\w:.-]+\s*=\s*\"[^\"]*\")*)\s*/?>",
+                          lambda m: "\n" + m.group(1) + (" " + re.sub(r'"', "", m.group(2).strip()) if m.group(2).strip() else "") + ": ",
+                          text)
+            text = unescape(text)
+            text = "\n".join(l.strip() for l in text.split("\n") if l.strip() and not re.fullmatch(r"[\w:.-]+:", l.strip()) or " " in l.strip() and l.strip().endswith(":"))
+        elif ext in (".html", ".htm"):
             text = re.sub(r"<(script|style)\b.*?</\1>", " ", text, flags=re.S | re.I)
             text = unescape(re.sub(r"<[^>]+>", " ", text))
         elif ext == ".rtf":
@@ -382,7 +392,7 @@ def render(doc: Document, query: str = "", budget: int = 14000) -> str:
     head = f"[{doc.kind}{', ' + doc.title if doc.title else ''}; {len(doc.parts)} parts"
     head += (f"; {'; '.join(doc.notes)}" if doc.notes else "") + "]"
     cite = "Quote with the [label] of the part you used (page, slide, sheet rows, paragraphs, lines)."
-    if query:
+    if query and doc.chars > budget:  # a document that fits is shown whole: passages alone drop needed rows
         found = passages(doc, query)
         if found:
             return "\n\n".join([head, f"Best passages for: {query}. {cite}"] + [f"[{p.label}] {w}" for p, w in found])

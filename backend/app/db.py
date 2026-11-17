@@ -24,13 +24,16 @@ CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY, ts REAL, topic TEXT, 
 
 MIGRATIONS = [("sessions", "summary TEXT"), ("sessions", "summary_upto INTEGER DEFAULT 0"),
               ("sessions", "pinned INTEGER DEFAULT 0"), ("sessions", "archived INTEGER DEFAULT 0"),
-              ("sessions", "context_used INTEGER DEFAULT 0"), ("sessions", "context_stats TEXT")]
+              ("sessions", "context_used INTEGER DEFAULT 0"), ("sessions", "context_stats TEXT"),
+              ("sessions", "unread INTEGER DEFAULT 0"), ("projects", "pinned INTEGER DEFAULT 0"),
+              # 1 = the first words of the first message, 2 = a title the model wrote, 0 = the user's own (never changed)
+              ("sessions", "title_auto INTEGER DEFAULT 1")]
 
 
 def conn() -> sqlite3.Connection:
     c = getattr(_local, "c", None)
     if c is None:
-        c = sqlite3.connect(DB_PATH, check_same_thread=False)
+        c = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15)
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(SCHEMA)
@@ -39,8 +42,71 @@ def conn() -> sqlite3.Connection:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
             except sqlite3.OperationalError:
                 pass  # already exists
+        # Every chat query filters by session: without this index each one read the whole messages table (with the
+        # steps of every answer stored in it), so opening a chat and starting a task got slower as the history grew.
+        c.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, archived)")
+        _fts_setup(c)
+        c.commit()
         _local.c = c
     return c
+
+
+FTS = {"ok": None}  # whether this SQLite build has FTS5 (search falls back to LIKE without it)
+
+
+def _fts_setup(c: sqlite3.Connection) -> None:
+    """Full-text index over message texts, kept in step by triggers; built once for an existing database."""
+    if FTS["ok"] is False:
+        return
+    try:
+        c.executescript("""
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, content='messages', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content); END;
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content); END;
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF content ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content); END;
+""")
+        if FTS["ok"] is None:
+            built = c.execute("SELECT count(*) FROM messages_fts_docsize").fetchone()[0]
+            if not built and c.execute("SELECT 1 FROM messages LIMIT 1").fetchone():
+                c.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        FTS["ok"] = True
+    except sqlite3.OperationalError:
+        FTS["ok"] = False
+
+
+def search(q: str, limit: int = 40) -> list[dict[str, Any]]:
+    """Messages matching every word of q (prefix match), newest first, with a short snippet around the hit."""
+    words = [w for w in "".join(ch if ch.isalnum() else " " for ch in q).split() if w][:8]
+    if not words:
+        return []
+    base = ("SELECT m.id, m.session_id, m.role, m.created, s.title, s.project_id, s.archived, {snip} AS snippet "
+            "FROM {src} JOIN sessions s ON s.id = m.session_id WHERE {cond} ORDER BY m.id DESC LIMIT ?")
+    conn()
+    if FTS["ok"]:
+        match = " ".join(f'"{w}"*' for w in words)
+        sql = base.format(snip="snippet(messages_fts, 0, '[[', ']]', '…', 14)",
+                          src="messages_fts JOIN messages m ON m.id = messages_fts.rowid", cond="messages_fts MATCH ?")
+        try:
+            return query(sql, (match, limit))
+        except sqlite3.OperationalError:
+            pass
+    cond = " AND ".join("m.content LIKE ?" for _ in words)
+    sql = base.format(snip="substr(m.content, 1, 160)", src="messages m", cond=cond)
+    return query(sql, (*[f"%{w}%" for w in words], limit))
+
+
+def checkpoint() -> None:
+    """Folds the write-ahead log into the database file (at shutdown; the log otherwise only grows until its limit)."""
+    try:
+        conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error:
+        pass
 
 
 def execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:

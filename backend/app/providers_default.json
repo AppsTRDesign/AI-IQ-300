@@ -25,7 +25,8 @@
     "kind": "openai",
     "base_url": "https://api.sambanova.ai/v1",
     "enabled": false,
-    "local": false
+    "local": false,
+    "rpm": 20
   },
   "fireworks": {
     "name": "Fireworks AI",
@@ -47,28 +48,32 @@
     "base_url": "https://api.deepseek.com/v1",
     "enabled": false,
     "local": false,
-    "model": "deepseek-chat"
+    "model": "deepseek-chat",
+    "concurrency": 8
   },
   "gemini": {
     "name": "Google Gemini",
     "kind": "openai",
     "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
     "enabled": false,
-    "local": false
+    "local": false,
+    "rpm": 10
   },
   "groq": {
     "name": "Groq",
     "kind": "openai",
     "base_url": "https://api.groq.com/openai/v1",
     "enabled": false,
-    "local": false
+    "local": false,
+    "rpm": 30
   },
   "nvidia": {
     "name": "NVIDIA NIM",
     "kind": "openai",
     "base_url": "https://integrate.api.nvidia.com/v1",
     "enabled": false,
-    "local": false
+    "local": false,
+    "rpm": 40
   },
   "cloudflare": {
     "name": "Cloudflare Workers AI",
@@ -82,14 +87,17 @@
     "kind": "openai",
     "base_url": "https://api.mistral.ai/v1",
     "enabled": false,
-    "local": false
+    "local": false,
+    "rpm": 60,
+    "concurrency": 2
   },
   "cerebras": {
     "name": "Cerebras",
     "kind": "openai",
     "base_url": "https://api.cerebras.ai/v1",
     "enabled": false,
-    "local": false
+    "local": false,
+    "concurrency": 2
   },
   "together": {
     "name": "Together",
@@ -103,7 +111,8 @@
     "kind": "openai",
     "base_url": "https://router.huggingface.co/v1",
     "enabled": false,
-    "local": false
+    "local": false,
+    "concurrency": 2
   },
   "openai": {
     "name": "OpenAI / ChatGPT API",
@@ -118,7 +127,8 @@
     "base_url": "https://ollama.com",
     "enabled": false,
     "local": false,
-    "model": "glm-5.3-flash"
+    "model": "glm-5.3-flash",
+    "concurrency": 1
   },
   "bedrock": {
     "name": "Amazon Bedrock · Gateway",
@@ -203,7 +213,8 @@
     "base_url": "https://openrouter.ai/api/v1",
     "enabled": false,
     "local": false,
-    "model": "nvidia/nemotron-3.5-super-vl:free"
+    "model": "nvidia/nemotron-3.5-super-vl:free",
+    "free_rpm": 20
   },
   "anthropic": {
     "name": "Anthropic",
@@ -218,7 +229,6 @@
     "base_url": "https://evren-llmapi.ssyz.org.tr/v1",
     "enabled": false,
     "local": false,
-    "model": "deepseek-v4.1-flash",
-    "streaming": false
+    "concurrency": 3
   }
 }

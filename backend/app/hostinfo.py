@@ -94,6 +94,7 @@ def _detect() -> dict:
                            ("python", "python3" if not win else "python", "--version"), ("php", "php", "--version"),
                            ("java", "java", "-version"), ("dotnet", "dotnet", "--version"), ("go", "go", "version"),
                            ("rustc", "rustc", "--version"), ("docker", "docker", "--version"), ("composer", "composer", "--version"),
+                           ("ffmpeg", "ffmpeg", "-version"), ("gh", "gh", "--version"),
                            ("winget", "winget", "--version"), ("brew", "brew", "--version"), ("tesseract", "tesseract", "--version")):
         if path := shutil.which(exe):
             probes[name] = [path, arg]
@@ -123,11 +124,31 @@ def warm() -> None:
     threading.Thread(target=info, daemon=True).start()
 
 
-def prompt_section() -> str:
+def refresh() -> None:
+    """Detect again (after the toolchain added ffmpeg / composer to PATH)."""
+    global _INFO
+    with _LOCK:
+        _INFO = None
+    warm()
+
+
+def os_line() -> str:
+    """'Windows 10 Pro (build 19045), AMD64': one short line for every prompt (also small talk)."""
+    o = info()["os"]
+    return f"{o['name']}" + (f" {o['release']}" if o["release"] and o["release"] not in o["name"] else "") \
+        + (f" (build {o['build']})" if o["build"] else "") + f", {o['arch']}"
+
+
+def prompt_section(short: bool = False) -> str:
     i = info()
-    o = i["os"]
-    osline = f"{o['name']}" + (f" {o['release']}" if o["release"] and o["release"] not in o["name"] else "") \
-             + (f" (build {o['build']})" if o["build"] else "") + f", {o['arch']}"
+    osline = os_line()
+    if short:  # the lean prompt: what decides how a command is written, in two lines
+        sh = i["shells"]
+        ps = (("PowerShell 7 (pwsh)" if "pwsh" in sh else "Windows PowerShell 5.1 (no && / ||, no ternary)")
+              if sys.platform == "win32" else "bash")
+        extra = (", cmd" + (", Git Bash" if "bash" in sh else "")) if sys.platform == "win32" else ""
+        return (f"# This computer\nDefault shell: {ps}{extra}; shell=python is the app's Python {i['app_python']}. "
+                f"Installed: {', '.join(i['tools']) or 'nothing detected'} (anything else: install it first).")
     sh = i["shells"]
     shells = []
     if sys.platform == "win32":

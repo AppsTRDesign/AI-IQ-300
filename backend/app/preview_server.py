@@ -40,6 +40,11 @@ class _Handler(SimpleHTTPRequestHandler):
             return None
         return super().send_head()
 
+    def guess_type(self, path):  # text files are UTF-8 (pages without a meta charset showed broken letters)
+        t = super().guess_type(path)
+        return f"{t}; charset=utf-8" if t.startswith("text/") or t in ("application/javascript", "application/json",
+                                                                         "image/svg+xml") else t
+
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")  # edits show up on reload
         super().end_headers()

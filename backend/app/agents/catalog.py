@@ -27,12 +27,18 @@ def _parse_text(text: str, stem: str = "") -> dict:
     meta: dict = {"name": stem, "title": stem, "description": ""}
     m = re.match(r"---\r?\n(.*?)\r?\n---\r?\n?(.*)", text, re.S)
     if m:
+        in_tools = False
         for line in m.group(1).splitlines():
+            if in_tools and (item := re.match(r"\s*-\s*['\"]?([\w-]+)['\"]?\s*$", line)):
+                meta["tools"].append(item.group(1))  # YAML list form: "tools:" then "  - name" lines
+                continue
+            in_tools = False
             k, _, v = line.partition(":")
             if re.fullmatch(r"(title|description)(_[a-z]{2,3})?", k.strip()):
                 meta[k.strip()] = v.strip().strip('"')
             elif k.strip() == "tools":  # optional: only these tools are offered while this agent/skill is in use
-                meta["tools"] = [t for t in re.split(r"[,\s]+", v.strip().strip("[]")) if t]
+                meta["tools"] = [t.strip("'\"") for t in re.split(r"[,\s]+", v.strip().strip("[]")) if t]
+                in_tools = not meta["tools"]
         text = m.group(2)
     meta["prompt"] = text.strip()
     return meta

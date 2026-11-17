@@ -226,17 +226,51 @@ async def _searxng(c: httpx.AsyncClient, q: str, base: str) -> list[dict]:
 def api_engines(query: str) -> list[tuple[str, object]]:
     """The search APIs the user configured (a key, plus an ID where the API needs one): these are used first."""
     cfg = load_settings().get("search", {})
+    off = set(cfg.get("disabled") or [])  # engines switched off in Settings > Web research
+    out = []
+    for name, fn in _api_engines(query, cfg):
+        if name not in off:
+            out.append((name, fn))
+    return out
+
+
+async def test_engine(engine: str, query: str) -> dict:
+    """Settings > Web research > Test: one engine alone, with its own error (no fallback to others)."""
+    cfg = load_settings().get("search", {})
+    table = dict(_api_engines(query, cfg, need_key=False))
+    table.update({"duckduckgo": lambda c: _ddg_any(c, query), "bing": lambda c: _bing(c, query),
+                  "wikipedia": lambda c: _wikipedia(c, query), "wikidata": lambda c: _wikidata(c, query),
+                  **{f"ddgs-{b}": (lambda c, b=b: _ddgs(query, b)) for b in DDGS_BACKENDS}})
+    fn = table.get(engine)
+    if not fn:
+        return {"ok": False, "error": "not configured (key / ID missing)"}
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers=HEADERS) as c:
+            res = await asyncio.wait_for(fn(c), 25)
+    except EngineBlocked:
+        return {"ok": False, "error": "blocked (bot check / rate limit)", "ms": int((time.monotonic() - t0) * 1000)}
+    except httpx.HTTPStatusError as e:
+        return {"ok": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:200]}", "ms": int((time.monotonic() - t0) * 1000)}
+    except Exception as e:  # noqa: BLE001 - shown to the user as the engine's error
+        return {"ok": False, "error": (str(e) or type(e).__name__)[:300], "ms": int((time.monotonic() - t0) * 1000)}
+    return {"ok": bool(res), "count": len(res), "ms": int((time.monotonic() - t0) * 1000),
+            "results": [{"title": r.get("title", ""), "url": r.get("url", "")} for r in res[:5]],
+            **({} if res else {"error": "no results"})}
+
+
+def _api_engines(query: str, cfg: dict, need_key: bool = True) -> list[tuple[str, object]]:
     out = []
     if (key := get_secret("google_search_key")) and cfg.get("google_cx"):
-        out.append(("google", lambda c: _google(c, query, key, cfg["google_cx"])))
+        out.append(("google", lambda c, key=key: _google(c, query, key, cfg["google_cx"])))
     if (key := get_secret("yandex_search_key")) and cfg.get("yandex_folder"):
-        out.append(("yandex", lambda c: _yandex(c, query, key, cfg["yandex_folder"])))
+        out.append(("yandex", lambda c, key=key: _yandex(c, query, key, cfg["yandex_folder"])))
     if key := get_secret("bing_search_key"):
-        out.append(("bing-api", lambda c: _bing_api(c, query, key)))
+        out.append(("bing-api", lambda c, key=key: _bing_api(c, query, key)))
     if key := get_secret("brave_api_key"):
-        out.append(("brave", lambda c: _brave(c, query, key)))
+        out.append(("brave", lambda c, key=key: _brave(c, query, key)))
     if key := get_secret("tavily_api_key"):
-        out.append(("tavily", lambda c: _tavily(c, query, key)))
+        out.append(("tavily", lambda c, key=key: _tavily(c, query, key)))
     if cfg.get("searxng_url"):
         out.append(("searxng", lambda c: _searxng(c, query, cfg["searxng_url"])))
     return out
@@ -316,6 +350,11 @@ async def search(query: str, limit: int = 8, report: dict | None = None) -> tupl
     free = [(f"ddgs-{b}", lambda c, b=b: _ddgs(q, b)) for b in DDGS_BACKENDS] + [
         ("wikipedia", lambda c: _wikipedia(c, q)), ("wikidata", lambda c: _wikidata(c, q))]
     scrapers = [("duckduckgo", lambda c: _ddg_any(c, q)), ("bing", lambda c: _bing(c, q))]
+    off = set((load_settings().get("search") or {}).get("disabled") or [])
+    if off:  # engines the user switched off (Settings > Web research); "ddgs" covers all its back ends
+        keep = lambda n: n not in off and not (n.startswith("ddgs-") and "ddgs" in off)  # noqa: E731
+        free = [e for e in free if keep(e[0])]
+        scrapers = [e for e in scrapers if keep(e[0])]
     apis = api_engines(q)
     # Configured APIs first: when they found enough, nothing else is asked (fast, and their quota is the user's choice).
     lists = await _run(apis, q, report, terms) if apis else []
@@ -435,7 +474,7 @@ async def _archived_raw(url: str) -> tuple[bytes, str, str]:
             snap = (await c.get("https://archive.org/wayback/available", params={"url": url})).json()
             closest = (snap.get("archived_snapshots") or {}).get("closest") or {}
             if not closest.get("available"):
-                return "", ""
+                return b"", "", ""
             ts = closest["timestamp"]
             r = await c.get(re.sub(r"/web/(\d+)/", r"/web/\1id_/", closest["url"], count=1))
             if r.status_code < 400:
@@ -443,6 +482,14 @@ async def _archived_raw(url: str) -> tuple[bytes, str, str]:
     except (httpx.HTTPError, ValueError, KeyError):
         pass
     return b"", "", ""
+
+
+def _js_built(html: str) -> bool:
+    """The page is an app shell filled in by scripts (React/Vue/Next root, many scripts, a 'enable JavaScript'
+    notice), so a browser render shows more than the raw HTML."""
+    head = html[:200_000]
+    return bool(re.search(r'id=["\'](root|app|__next|__nuxt)["\']|<noscript|data-reactroot|ng-version', head, re.I)) \
+        or len(re.findall(r"<script\b", head, re.I)) >= 8
 
 
 def is_blocked(status: int, text: str) -> bool:
@@ -460,6 +507,7 @@ class _WarmBrowser:
     def __init__(self):
         self.lock = asyncio.Lock()
         self.pw = self.browser = None
+        self.ua = UA
         self.last = 0.0
         self.reaper: asyncio.Task | None = None
 
@@ -467,12 +515,19 @@ class _WarmBrowser:
         async with self.lock:
             if not (self.browser and self.browser.is_connected()):
                 from playwright.async_api import async_playwright
+                from .browser import HIDDEN_ARGS
                 self.pw = await async_playwright().start()
-                self.browser = await self.pw.chromium.launch(headless=True)
+                try:  # the full Chromium in its new headless mode (the old headless shell crashed on heavy pages)
+                    self.browser = await self.pw.chromium.launch(headless=True, channel="chromium", args=HIDDEN_ARGS)
+                except Exception:
+                    self.browser = await self.pw.chromium.launch(headless=True, args=HIDDEN_ARGS)
+                major = (self.browser.version or "").split(".")[0]
+                self.ua = re.sub(r"Chrome/[\d.]+", f"Chrome/{major}.0.0.0", UA) if major.isdigit() else UA
             self.last = time.monotonic()
             if not self.reaper or self.reaper.done():
                 self.reaper = asyncio.create_task(self._reap())
-        ctx = await self.browser.new_context(user_agent=UA, locale="tr-TR", viewport={"width": 1280, "height": 900})
+        ctx = await self.browser.new_context(user_agent=self.ua, locale="tr-TR", viewport={"width": 1280, "height": 900},
+                                             extra_http_headers={"Accept-Language": HEADERS["Accept-Language"]})
         await ctx.route("**/*", lambda route: route.abort() if route.request.resource_type in ("image", "media", "font")
                         else route.continue_())
         return ctx
@@ -596,8 +651,9 @@ async def fetch(url: str, max_chars: int = 8000, query: str = "") -> dict:
     else:
         err = ""
     title, text = html_to_text(html) if html else ("", "")
-    # Thin, script-built or blocked pages: try a real browser render once.
-    if not html or is_blocked(status, html) or len(text) < 400:
+    # Thin, script-built or blocked pages: try a real browser render once. A short page that is simply short
+    # (plain HTML, no app shell) or a plain HTTP error is not re-rendered: that cost 1-3 s for nothing.
+    if not html or is_blocked(status, html) or (len(text) < 400 and status < 400 and _js_built(html)):
         try:
             status2, html2 = await asyncio.wait_for(_browser_fetch(url), 40)
             t2, x2 = html_to_text(html2)
@@ -633,8 +689,10 @@ async def fetch(url: str, max_chars: int = 8000, query: str = "") -> dict:
                 "error": "BLOCKED: this site's bot protection refused automated access and no archived copy exists. "
                          "Do not retry this URL; use other sources (search snippets, other sites, official APIs) and "
                          "say the site could not be read."}
-    if not text:
-        return {"ok": False, "url": url, "status": status, "error": err or f"No readable content (HTTP {status})"}
+    if not text or status >= 400:
+        return {"ok": False, "url": url, "status": status,
+                "error": f"HTTP {status}: the page is missing or refused" if status >= 400
+                         else err or f"No readable content (HTTP {status})"}
     facts = structured_data(html)
     meta = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']{40,400})', html, re.I)
     head = (f"[Structured data]\n{facts}\n\n" if facts else "") + (f"{unescape(meta.group(1))}\n\n" if meta else "")
@@ -642,16 +700,46 @@ async def fetch(url: str, max_chars: int = 8000, query: str = "") -> dict:
             "blocked": False}
 
 
+MIN_SOURCE_CHARS = 300  # a page with less readable text is a stub, a parked domain or a cookie wall, not a source
+RESEARCH_DEADLINE = 25  # seconds for reading sources: slow sites are left out instead of holding up the answer
+
+
+def _domain(url: str) -> str:
+    return re.sub(r"^www\.", "", urlparse(url).hostname or "").lower()
+
+
 async def research(query: str, sources: int = 4) -> dict:
-    """Search, then read the top non-blocked sources in parallel; returns excerpts with their URLs."""
+    """Search, then read the top sources in parallel; returns excerpts with their URLs. Sources are spread over
+    different sites (one page per site first), stubs and blocked pages are skipped and replaced by the next
+    results, and reading stops at a deadline with whatever arrived."""
     results, engines = await search(query, limit=10)
-    picked, pages = [], []
+    blocked, pages, failed = [], [], []
     # Documents (PDF, Office, OpenDocument, CSV) are sources too: their passages about the question come with page numbers.
     candidates = [r for r in results if not re.search(r"\.(zip|rar|7z|exe|msi|dmg|iso)(\?|$)", r["url"], re.I)]
-    fetched = await asyncio.gather(*(fetch(r["url"], 3500, query) for r in candidates[: sources + 3]), return_exceptions=True)
-    for r, f in zip(candidates, fetched):
-        if isinstance(f, dict) and f.get("ok") and len(pages) < sources:
-            pages.append({"url": r["url"], "title": f.get("title") or r["title"], "excerpt": f["text"]})
-        elif isinstance(f, dict) and f.get("blocked"):
-            picked.append(r["url"])
-    return {"query": query, "engines": engines, "results": results[:10], "pages": pages, "blocked": picked}
+    seen: set[str] = set()
+    first, later = [], []
+    for r in candidates:  # one page per site first, the rest after (diverse sources, not 3 pages of one site)
+        (first if _domain(r["url"]) not in seen else later).append(r)
+        seen.add(_domain(r["url"]))
+    queue = (first + later)[: sources * 2 + 2]
+    tasks = {asyncio.create_task(fetch(r["url"], 3500, query)): r for r in queue}
+    deadline = time.monotonic() + RESEARCH_DEADLINE
+    try:
+        while tasks and len(pages) < sources and (left := deadline - time.monotonic()) > 0:
+            done, _ = await asyncio.wait(tasks, timeout=left, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                r = tasks.pop(t)
+                f = t.result() if not t.exception() else {"ok": False, "error": str(t.exception())}
+                if f.get("ok") and len(f.get("text", "")) >= MIN_SOURCE_CHARS and len(pages) < sources:
+                    pages.append({"url": r["url"], "title": f.get("title") or r["title"], "excerpt": f["text"],
+                                  "rank": queue.index(r)})
+                elif f.get("blocked"):
+                    blocked.append(r["url"])
+                else:
+                    failed.append(r["url"])
+    finally:
+        for t in tasks:
+            t.cancel()
+    pages.sort(key=lambda p: p.pop("rank"))  # search order (fusion rank), not arrival order
+    return {"query": query, "engines": engines, "results": results[:10], "pages": pages, "blocked": blocked,
+            **({"unreadable": failed} if failed else {})}

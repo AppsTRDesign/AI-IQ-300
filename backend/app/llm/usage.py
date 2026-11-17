@@ -98,7 +98,7 @@ def fail(model_id: str, code: str, message: str = "", reset_at: float | None = N
     elif code == "auth":
         until, key = now + 86400, f"{provider_of(model_id)}:*"
     elif code in ("overloaded", "unavailable"):
-        until, key = reset_at or now + 30, model_id
+        until, key = reset_at or now + 90, model_id  # a busy model rests 90 s: the next tasks start on the fallback
     else:
         return
     with _lock:
@@ -212,6 +212,12 @@ def _num(v) -> int | None:
         return None
 
 
+def reported(url: str) -> dict:
+    """The rate limits a provider's last response reported for this host (requests / tokens: limit, remaining,
+    reset_at), or {} when it reports none."""
+    return _load()["headers"].get(urlsplit(url).netloc) or {}
+
+
 def reset_hint(url: str) -> float | None:
     """When the last response from this host said the limit resets (for cooldowns after a 429)."""
     info = _load()["headers"].get(urlsplit(url).netloc) or {}
@@ -219,6 +225,73 @@ def reset_hint(url: str) -> float | None:
     now = time.time()  # an earlier response's reset time that has already passed says nothing about this error
     times = [t for t in times + [info.get("retry_at")] if t and t > now]
     return max(times) if times else None
+
+
+# --- what the providers' own account endpoints report --------------------------------------------------------
+# OpenRouter GET /api/v1/key (credit limit, usage, free tier, rate limit), DeepSeek GET /user/balance, EVREN
+# GET /v1/quota (credits, level). Fetched for the quota screen, cached for a minute.
+_ACCOUNT: dict[str, tuple[float, dict]] = {}
+
+
+async def account(pid: str, cfg: dict) -> dict | None:
+    from ..config import get_secret
+    from .providers import pooled
+    key = get_secret(f"{pid}_api_key")
+    url = (cfg.get("base_url") or "").rstrip("/")
+    if not key or cfg.get("local"):
+        return None
+    hit = _ACCOUNT.get(pid)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    auth = {"Authorization": f"Bearer {key}"}
+    out: dict | None = None
+    try:
+        async with pooled(timeout=8) as c:
+            if "openrouter.ai" in url:
+                d = (await c.get(f"{url}/key", headers=auth)).json().get("data") or {}
+                out = {"credits_limit": d.get("limit"), "credits_used": d.get("usage"), "credits_left": d.get("limit_remaining"),
+                       "free_tier": d.get("is_free_tier"), "rate": d.get("rate_limit")}
+            elif "deepseek.com" in url:
+                d = (await c.get(re.sub(r"/v1$", "", url) + "/user/balance", headers=auth)).json()
+                infos = d.get("balance_infos") or []
+                out = {"available": d.get("is_available"),
+                       "balance": ", ".join(f"{b.get('total_balance')} {b.get('currency')}" for b in infos) or None}
+            elif "ssyz.org.tr" in url or "evren" in pid:
+                d = (await c.get(re.sub(r"/v1$", "", url) + "/v1/quota", headers=auth)).json()
+                out = {k: d.get(k) for k in ("remaining_cr", "level", "daily_limit", "used_today", "reset_at") if d.get(k) is not None} or d
+    except Exception:  # noqa: BLE001 - the screen simply shows nothing extra
+        out = None
+    _ACCOUNT[pid] = (time.time(), out or {})
+    return out
+
+
+_SENT: dict[str, list[float]] = {}
+
+
+async def pace(pid: str, rpm: int, cancel=None) -> None:
+    """Wait until another request fits the provider's per-minute cap (calls started in the last 60 s)."""
+    import asyncio
+    while True:
+        now = time.time()
+        sent = [t for t in _SENT.get(pid, []) if now - t < 60]
+        if len(sent) < rpm:
+            sent.append(now)
+            _SENT[pid] = sent
+            return
+        wait = 60 - (now - sent[0]) + 0.05
+        if cancel is not None:
+            try:
+                await asyncio.wait_for(cancel.wait(), wait)
+                return
+            except asyncio.TimeoutError:
+                continue
+        await asyncio.sleep(wait)
+
+
+def retry_delay(body: str) -> float | None:
+    """Google (Gemini) puts the wait into the error body: "retryDelay": "34s"."""
+    m = re.search(r'"retryDelay"\s*:\s*"([\d.]+)s"', body or "")
+    return time.time() + float(m.group(1)) if m else None
 
 
 def snapshot(providers: dict, limits: dict, show: set[str] | None = None) -> dict:

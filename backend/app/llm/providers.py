@@ -61,7 +61,7 @@ class pooled:
         return False
 CONTEXT_FIELDS = ("context_length", "context_window", "max_context_length", "max_model_len", "max_input_tokens",
                   "inputTokenLimit", "loaded_context_length")
-KEEP_ALIVE = "30m"  # keep local models resident between turns (no reload latency)
+KEEP_ALIVE = "10m"  # resident between turns (no reload), released after 10 idle minutes (RAM back to the system)
 
 
 class ProviderError(Exception):
@@ -165,11 +165,50 @@ class Provider:
 
 
 async def _sse(resp: httpx.Response) -> AsyncIterator[dict]:
+    """Server-sent events as dicts. A malformed or split line (a proxy cut a chunk, a keep-alive comment) is skipped
+    instead of ending the whole task with an internal JSON error; a 'data:' payload split over several lines is
+    joined until it parses."""
+    buf = ""
     async for line in resp.aiter_lines():
-        if line.startswith("data:"):
+        if line.startswith(":"):  # an SSE keep-alive comment: the server is alive (resets the stall timer)
+            yield {"_ping": True}
+            continue
+        if not line.startswith("data:"):
+            if buf and line.strip() and not line.startswith((":", "event:", "id:", "retry:")):
+                buf += line  # continuation of a payload split by a proxy
+            else:
+                continue
+        else:
             data = line[5:].strip()
-            if data and data != "[DONE]":
-                yield json.loads(data)
+            if not data or data == "[DONE]":
+                buf = ""
+                continue
+            buf = data if not buf else buf + data
+        try:
+            d = json.loads(buf)
+        except json.JSONDecodeError:
+            if len(buf) > 200_000:  # never grows without bound on garbage
+                buf = ""
+            continue
+        buf = ""
+        if isinstance(d, dict):
+            yield d
+
+
+def stream_error(err: Any) -> ProviderError:
+    """An error object sent inside a running stream (OpenRouter, EVREN, gateways: overloaded, rate limited,
+    upstream timeout). Classified like an HTTP error, so busy/overloaded ones are retried instead of ending the task."""
+    text = json.dumps(err, ensure_ascii=False)[:500] if not isinstance(err, str) else err[:500]
+    if re.search(r"repeat limit|repetition|degenerat", text, re.I):
+        # Ollama stopped a reply that repeated one token ("@@@@..."): the model or its runtime backend produced
+        # garbage. Asking the same thing again gives the same garbage; the task loop handles it (see 'degenerate').
+        return ProviderError("degenerate", text)
+    status = 0
+    if isinstance(err, dict):
+        c = err.get("code") or err.get("status")
+        status = c if isinstance(c, int) else int(c) if isinstance(c, str) and c.isdigit() else 0
+    code = classify_error(status or 500, text)
+    return ProviderError(code if code != "http" else "server", text)
 
 
 # Status -> normalized code, following the providers' documented errors (OpenAI, Anthropic, OpenRouter, Gemini,
@@ -186,8 +225,12 @@ BODY_PATTERNS = [  # more specific causes hidden behind generic statuses
     (r"workers paid plan|not available on the workers free plan|requires? (a )?paid plan|upgrade to access|"
      r"paid tier|not available on your plan", "plan_required"),
     (r"terms|şart", "terms"),
+    # "No user query found" (Qwen chat templates in Ollama/llama.cpp): the prompt was longer than num_ctx, the
+    # server cut the oldest messages (the user's request with them) and the template refused the rest.
     (r"context_length_exceeded|maximum context length|prompt is too long|context window|too many tokens|"
-     r"exceeds the context|input is too long", "context_length"),
+     r"exceeds the context|input is too long|no user query found|truncating input|"
+     # Ollama 0.3x / llama.cpp server: "request (9297 tokens) exceeds the available context size (8192 tokens)"
+     r"exceeds the available context|available context size|context size has been exceeded|n_ctx", "context_length"),
     (r"insufficient_quota|exceeded your current quota|quota|credit|balance|kredi|RESOURCE_EXHAUSTED|neurons|"
      r"daily free allocation", "quota"),
     (r"does not support tools|tool(s)? (is|are) not supported|tool_choice|function calling", "no_tools"),
@@ -239,8 +282,10 @@ async def _raise_for(resp: httpx.Response, name: str) -> None:
         body = (await resp.aread()).decode(errors="replace")[:2000]
         code = classify_error(resp.status_code, body)
         from . import usage
-        raise ProviderError(code, f"{name} · HTTP {resp.status_code}: {_error_message(body)}",
-                            usage.reset_hint(str(resp.request.url)) if code in ("rate_limit", "overloaded") else None)
+        when = None
+        if code in ("rate_limit", "overloaded", "quota"):
+            when = usage.retry_delay(body) or usage.reset_hint(str(resp.request.url))
+        raise ProviderError(code, f"{name} · HTTP {resp.status_code}: {_error_message(body)}", when)
 
 
 def _connect_error(name: str, e: Exception) -> ProviderError:
@@ -278,7 +323,9 @@ class OllamaProvider(Provider):
         m = re.search(r"num_ctx\s+(\d+)", d.get("parameters") or "")
         caps = d.get("capabilities")
         families = (d.get("details") or {}).get("families") or []
+        from .memguard import kv_per_token
         return {"context": ctx, "default_ctx": int(m.group(1)) if m else None,
+                "kv_per_token": kv_per_token(d.get("model_info") or {}),
                 "tools": ("tools" in caps) if isinstance(caps, list) else None,
                 "thinking": ("thinking" in caps) if isinstance(caps, list) else None,
                 "vision": ("vision" in caps) if isinstance(caps, list) else ("clip" in families or None)}
@@ -295,7 +342,8 @@ class OllamaProvider(Provider):
     async def load(self, model: str, num_ctx: int | None) -> None:
         body: dict = {"model": model, "keep_alive": KEEP_ALIVE}
         if num_ctx:
-            body["options"] = {"num_ctx": num_ctx}
+            from .memguard import threads
+            body["options"] = {"num_ctx": num_ctx, "num_thread": threads()}
         async with pooled(timeout=httpx.Timeout(600, connect=10)) as c:
             r = await c.post(f"{self.base_url}/api/generate", json=body)
             await _raise_for(r, self.name)
@@ -316,10 +364,12 @@ class OllamaProvider(Provider):
         return out
 
     async def stream(self, model, messages, opts):
-        options = {k: v for k, v in opts.items() if k in ("temperature", "num_ctx", "top_p")}
+        options = {k: v for k, v in opts.items() if k in ("temperature", "num_ctx", "top_p", "repeat_penalty", "repeat_last_n")}
+        from .memguard import threads
+        options.setdefault("num_thread", threads())  # one core left free: no overheating, the PC stays usable
         if opts.get("max_tokens"):
             options["num_predict"] = opts["max_tokens"]
-        body: dict = {"model": model, "messages": self._messages(messages), "stream": opts.get("stream", True),
+        body: dict = {"model": model, "messages": self._messages(messages), "stream": opts.get("stream", self.cfg.get("streaming", True)),
                       "options": options, "keep_alive": KEEP_ALIVE}
         if "think" in opts:  # model profile: thinking on / off
             body["think"] = opts["think"]
@@ -334,9 +384,12 @@ class OllamaProvider(Provider):
                 async for line in r.aiter_lines():
                     if not line.strip():
                         continue
-                    d = json.loads(line)
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # a cut line never ends the task with an internal error
                     if d.get("error"):
-                        raise ProviderError(classify_error(400, d["error"]) if "tool" in d["error"] else "provider", d["error"])
+                        raise ProviderError(classify_error(400, d["error"]) if "tool" in d["error"] else stream_error(d["error"]).code, d["error"])
                     msg = d.get("message", {})
                     if t := msg.get("thinking"):
                         yield {"type": "thinking", "text": t}
@@ -347,7 +400,15 @@ class OllamaProvider(Provider):
                         yield {"type": "tool_call", "id": call.get("id") or uuid.uuid4().hex[:12],
                                "name": fn.get("name", ""), "arguments": _args(fn.get("arguments"))}
                     if d.get("done"):
-                        yield {"type": "usage", "input": d.get("prompt_eval_count"), "output": d.get("eval_count")}
+                        if d.get("done_reason") == "length":
+                            # The output limit (num_predict) or the end of the window stopped the model mid-answer:
+                            # reported like a cloud provider's finish_reason "length", so the task keeps what was
+                            # written and continues it instead of taking a cut answer or a half file as finished.
+                            yield {"type": "truncated", "name": None, "chars": 0, "reason": "length"}
+                        # prompt_eval_count leaves out the prefix Ollama reused from its cache: "partial" tells the
+                        # context meter it is a lower bound, not the prompt's size.
+                        yield {"type": "usage", "input": d.get("prompt_eval_count"), "output": d.get("eval_count"),
+                               "partial": True}
         except httpx.ConnectError as e:
             raise _connect_error(self.name, e)
         yield {"type": "done"}
@@ -434,7 +495,9 @@ class OpenAICompatProvider(Provider):
             if m.get("tool_calls"):
                 out.append({"role": "assistant", "content": m.get("content") or None, "tool_calls": [
                     {"id": c["id"], "type": "function",
-                     "function": {"name": c["name"], "arguments": json.dumps(c["arguments"], ensure_ascii=False)}}
+                     "function": {"name": c["name"], "arguments": json.dumps(c["arguments"], ensure_ascii=False)},
+                     # Gemini: the call's thought signature must come back with it, or the next request fails (400)
+                     **({"extra_content": c["extra"]} if c.get("extra") else {})}
                     for c in m["tool_calls"]]})
                 continue
             if not m.get("images"):
@@ -482,18 +545,27 @@ class OpenAICompatProvider(Provider):
                         for call in msg.get("tool_calls") or []:
                             fn = call.get("function", {})
                             yield {"type": "tool_call", "id": call.get("id") or uuid.uuid4().hex[:12],
-                                   "name": fn.get("name", ""), "arguments": _args(fn.get("arguments"))}
+                                   "name": fn.get("name", ""), "arguments": _args(fn.get("arguments")),
+                                   **({"extra": call["extra_content"]} if call.get("extra_content") else {})}
                     if u := d.get("usage"):
                         yield {"type": "usage", "input": u.get("prompt_tokens"), "output": u.get("completion_tokens"),
                                "reasoning": (u.get("completion_tokens_details") or {}).get("reasoning_tokens")}
                 else:
                     calls: dict[int, dict] = {}
+                    last_usage = None
+                    finish = None
                     async with c.stream("POST", url, json=body, headers=self.headers()) as r:
                         await _raise_for(r, self.name)
                         async for d in _sse(r):
+                            if d.get("_ping"):
+                                yield {"type": "ping"}
+                                continue
                             if d.get("error"):
-                                raise ProviderError("provider", json.dumps(d["error"], ensure_ascii=False)[:500])
-                            for ch in d.get("choices", []):
+                                raise stream_error(d["error"])
+                            for ch in d.get("choices") or []:
+                                finish = ch.get("finish_reason") or finish
+                                if ch.get("error"):
+                                    raise stream_error(ch["error"])
                                 delta = ch.get("delta") or {}
                                 if t := delta.get("reasoning_content") or delta.get("reasoning"):
                                     yield {"type": "thinking", "text": t}
@@ -502,20 +574,35 @@ class OpenAICompatProvider(Provider):
                                 for tc in delta.get("tool_calls") or []:  # arguments arrive in fragments
                                     idx = tc.get("index", len(calls))
                                     new = idx not in calls
-                                    slot = calls.setdefault(idx, {"id": None, "name": "", "args": ""})
+                                    slot = calls.setdefault(idx, {"id": None, "name": "", "args": "", "extra": None})
                                     slot["id"] = tc.get("id") or slot["id"]
+                                    slot["extra"] = tc.get("extra_content") or slot["extra"]
                                     fn = tc.get("function") or {}
                                     slot["name"] += fn.get("name") or ""
                                     slot["args"] += fn.get("arguments") or ""
                                     yield {"type": "tool_call_start" if new else "tool_call_progress",
-                                           "name": slot["name"], "chars": len(slot["args"])}
+                                           "name": slot["name"], "chars": len(slot["args"]), "index": idx,
+                                           "delta": fn.get("arguments") or ""}
                             if u := d.get("usage"):
-                                yield {"type": "usage", "input": u.get("prompt_tokens"),
-                                       "output": u.get("completion_tokens"),
-                                       "reasoning": (u.get("completion_tokens_details") or {}).get("reasoning_tokens")}
+                                # Some providers (Cloudflare) put a per-chunk usage on every chunk (prompt 0,
+                                # 1-2 output tokens): only the last one is the real total, sent once at the end.
+                                last_usage = u
+                    if last_usage:
+                        u = last_usage
+                        yield {"type": "usage", "input": u.get("prompt_tokens"), "output": u.get("completion_tokens"),
+                               "reasoning": (u.get("completion_tokens_details") or {}).get("reasoning_tokens")}
                     for slot in calls.values():
+                        args = _args(slot["args"])
+                        if "_raw" in args and slot["args"].strip():
+                            # The arguments stop mid-JSON: the output limit cut the call (finish_reason "length") or
+                            # the stream ended early. Running it would write a broken file: report it instead.
+                            yield {"type": "truncated", "name": slot["name"], "chars": len(slot["args"]),
+                                   "reason": finish or "cut"}
+                            continue
                         yield {"type": "tool_call", "id": slot["id"] or uuid.uuid4().hex[:12], "name": slot["name"],
-                               "arguments": _args(slot["args"])}
+                               "arguments": args, **({"extra": slot["extra"]} if slot["extra"] else {})}
+                    if finish == "length" and not calls:
+                        yield {"type": "truncated", "name": None, "chars": 0, "reason": "length"}
         except httpx.ConnectError as e:
             raise _connect_error(self.name, e)
         yield {"type": "done"}
@@ -596,6 +683,9 @@ class AnthropicProvider(Provider):
                     c.stream("POST", f"{self.root}/v1/messages", json=body, headers=self.headers()) as r:
                 await _raise_for(r, self.name)
                 async for d in _sse(r):
+                    if d.get("_ping"):
+                        yield {"type": "ping"}
+                        continue
                     t = d.get("type")
                     if t == "content_block_start" and d["content_block"].get("type") in ("thinking", "redacted_thinking"):
                         cb = d["content_block"]
@@ -629,7 +719,7 @@ class AnthropicProvider(Provider):
                     elif t == "message_delta" and (u := d.get("usage")):
                         yield {"type": "usage", "output": u.get("output_tokens")}
                     elif t == "error":
-                        raise ProviderError("provider", json.dumps(d.get("error")))
+                        raise stream_error(d.get("error"))
         except httpx.ConnectError as e:
             raise _connect_error(self.name, e)
         if thinking:  # kept by the caller for the next tool turn
@@ -674,11 +764,20 @@ class GeminiProvider(Provider):
             async with pooled(timeout=TIMEOUT) as c, \
                     c.stream("POST", url, json=body, headers={"x-goog-api-key": self.key()}) as r:
                 await _raise_for(r, self.name)
+                usage = None
                 async for d in _sse(r):
+                    if d.get("_ping"):
+                        yield {"type": "ping"}
+                        continue
                     for cand in d.get("candidates", []):
                         for p in cand.get("content", {}).get("parts", []):
                             if t := p.get("text"):
                                 yield {"type": "text", "text": t}
+                    usage = d.get("usageMetadata") or usage  # every chunk carries the running total; the last wins
+                if usage:  # the real prompt size: context meter and compression follow it
+                    yield {"type": "usage", "input": usage.get("promptTokenCount"),
+                           "output": (usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0),
+                           "reasoning": usage.get("thoughtsTokenCount")}
         except httpx.ConnectError as e:
             raise _connect_error(self.name, e)
         yield {"type": "done"}

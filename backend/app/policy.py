@@ -20,7 +20,7 @@ FORBIDDEN = [
     r"\bbcdedit\b", r"\bvssadmin\s+delete\b", r"\bcipher\s+/w\b", r":\(\)\s*\{\s*:\|:&\s*\};:",
     r"\breg\s+delete\s+hk(lm|ey_local_machine)\b", r"Set-ExecutionPolicy\b.*-Scope\s+LocalMachine",
 ]
-# Destructive / sensitive: always require approval, even in 'full' mode (the smart safety fence).
+# Destructive / sensitive: approval in 'ask' and 'auto' modes; 'full' (Tam erişim) runs them without asking.
 DANGEROUS = [
     r"\brm\s+(-\w*[rf]\w*\s+)+", r"\brmdir\s+/s\b", r"\brd\s+/s\b", r"\bdel\s+(/\w\s+)*.*(/s|/q)",
     r"Remove-Item\b.*-Recurse", r"\bos\.(remove|unlink|rmdir|removedirs)\b", r"\bshutil\.rmtree\b",
@@ -67,7 +67,9 @@ def decide_command(text: str, mode: str) -> Decision:
     if cat == "forbidden":
         return Decision("deny", cat, reasons)
     if cat == "dangerous":
-        return Decision("ask", cat, reasons)
+        # 'full' (Tam erişim) means the user does not want to be asked. Only the system-breaking commands
+        # (FORBIDDEN) stay blocked in every mode.
+        return Decision("allow" if mode == "full" else "ask", cat, reasons)
     if mode in ("full", "auto") or cat == "read":
         # 'auto': routine build/run/install inside the project are within the user's request.
         return Decision("allow", cat, reasons)
@@ -81,10 +83,15 @@ def resolve_in(base: Path, rel: str, allow_outside: bool = False) -> Path:
     target = (p if p.is_absolute() else base / p).resolve()
     if not allow_outside and target != base and base not in target.parents:
         raise PermissionError(f"Path escapes workspace: {rel}")
+    from .config import DATA_DIR
+    if target.name in ("secrets.json", "aiiq.db") and target.parent == DATA_DIR.resolve():
+        raise PermissionError(f"Protected app file (API keys / chat database): {rel}")
     return target
 
 
 def decide_file_write(target: Path, workspace: Path, mode: str) -> Decision:
+    if ".session" in target.parts:  # the chat's own record (messages, summaries): written by the app only
+        return Decision("deny", "session-record", [str(target)])
     ws = workspace.resolve()
     if target == ws or ws in target.parents:
         return Decision("ask" if mode == "ask" else "allow", "write")
@@ -94,15 +101,37 @@ def decide_file_write(target: Path, workspace: Path, mode: str) -> Decision:
 SAFE_ENV_KEYS = {"PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP",
                  "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMFILES",
                  "PROGRAMFILES(X86)", "PROGRAMDATA", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
-                 "HOME", "LANG", "TERM", "OS"}
+                 "HOME", "LANG", "TERM", "OS", "PHPRC", "NODE_PATH"}  # PHPRC / NODE_PATH: set by toolchain.py
 
 
 VENV_BIN = str(Path(sys.executable).parent) if sys.prefix != sys.base_prefix else ""
 
 
+def _fresh_windows_path() -> str | None:
+    """The machine + user PATH as stored now (registry), not as it was when the app started: a program installed by
+    an earlier command (winget, an installer) is found by the next one without restarting the app."""
+    try:
+        import winreg
+    except ImportError:
+        return None
+    parts = []
+    for hive, key in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, r"Environment")):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                parts.append(os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]))
+        except OSError:
+            pass
+    return os.pathsep.join(p for p in parts if p) or None
+
+
 def minimal_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Child processes get a minimal environment; host API keys are not inherited."""
     env = {k: v for k, v in os.environ.items() if k.upper() in SAFE_ENV_KEYS}
+    if sys.platform == "win32" and (fresh := _fresh_windows_path()):
+        known = {p.lower().rstrip("\\") for p in fresh.split(os.pathsep)}
+        old = [p for p in env.get("PATH", "").split(os.pathsep) if p and p.lower().rstrip("\\") not in known]
+        env["PATH"] = os.pathsep.join([fresh, *old])  # registry first, then anything only this process had
     env["PYTHONIOENCODING"] = "utf-8"
     if VENV_BIN:  # python/pip in commands use the app's environment (Pillow, docx, openpyxl... are there)
         env["PATH"] = VENV_BIN + os.pathsep + env.get("PATH", "")

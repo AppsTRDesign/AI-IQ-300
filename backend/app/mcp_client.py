@@ -15,14 +15,15 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 
-import httpx
 
 from .config import get_secret, load_settings
 
 PROTOCOL = "2025-06-18"
 START_TIMEOUT = 20
 CALL_TIMEOUT = 120
-CLIENT = {"name": "AI IQ 300", "version": "1.0"}
+from .config import VERSION as _APP_VERSION
+
+CLIENT = {"name": "AI IQ 300", "version": _APP_VERSION}
 ID_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -100,15 +101,15 @@ class Server:
             raise MCPError("no command")
         exe = shutil.which(cmd) or cmd  # npx -> npx.cmd on Windows
         args = [str(a) for a in self.cfg.get("args") or []]
-        if sys.platform == "win32" and exe.lower().endswith((".cmd", ".bat")):
-            args, exe = ["/c", exe, *args], os.environ.get("COMSPEC", "cmd.exe")
+        # A .cmd/.bat (npx, npm, uvx shims) is started directly: Windows runs it through cmd itself and quotes a
+        # path with spaces ("D:\Program Files\nodejs\npx.cmd") correctly. Wrapping it in "cmd /c" broke such paths.
         env = {**os.environ, **{str(k): str(v) for k, v in (self.cfg.get("env") or {}).items()}}
         self.proc = await asyncio.create_subprocess_exec(
             exe, *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             env=env, cwd=self.cfg.get("cwd") or None, limit=16 * 1024 * 1024,
             creationflags=0x08000000 if sys.platform == "win32" else 0)  # CREATE_NO_WINDOW
         self._reader = asyncio.create_task(self._read_stdout())
-        asyncio.create_task(self._read_stderr())
+        self._err_reader = asyncio.create_task(self._read_stderr())
 
     async def stop(self) -> None:
         self.started = False

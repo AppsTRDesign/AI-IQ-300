@@ -10,9 +10,12 @@ from pathlib import Path
 
 from . import db
 from .config import WORKSPACE_DIR
+from .sessions import CHAT_DIR, SESSION
 from .errors import AppError
 
-IGNORED = {".git", "node_modules", ".venv", "__pycache__", ".aiiq", "dist", "vendor"}
+IGNORED = {".git", "node_modules", ".venv", "__pycache__", ".aiiq", SESSION, "dist", "vendor"}
+# Projects created without choosing a folder live next to the chats.
+PROJECTS_DIR = CHAT_DIR / "projects"
 
 
 def slugify(name: str) -> str:
@@ -22,7 +25,7 @@ def slugify(name: str) -> str:
 
 def create_project(name: str, folder: str | None = None) -> dict:
     """A chosen local folder becomes the project root (outputs are written there);
-    otherwise a new folder is created under workspace/."""
+    otherwise a new folder is created under chat/projects/."""
     pid = uuid.uuid4().hex[:10]
     if folder:
         path = Path(folder).expanduser().resolve()
@@ -31,7 +34,7 @@ def create_project(name: str, folder: str | None = None) -> dict:
         if path == Path.home().resolve() or path == Path(path.anchor):
             raise AppError("folder_too_broad", "The home folder or a drive root cannot be a project folder")
     else:
-        path = WORKSPACE_DIR / f"{slugify(name)}-{pid[:4]}"
+        path = PROJECTS_DIR / f"{slugify(name)}-{pid[:4]}"
         path.mkdir(parents=True, exist_ok=True)
     db.execute("INSERT INTO projects(id,name,path,created) VALUES(?,?,?,?)", (pid, name, str(path), time.time()))
     return {"id": pid, "name": name, "path": str(path)}
@@ -45,9 +48,90 @@ def get_project(project_id: str | None) -> dict | None:
 
 
 def session_root(session: dict | None = None, project_id: str | None = None) -> Path:
-    """Project chats work in the project folder; chats without a project work in workspace/."""
+    """Project chats work in the project folder; a chat without a project works in its own folder chat/<chat id>
+    (its record is the hidden .session inside), so one chat never sees another chat's files or the project folders."""
     proj = get_project((session or {}).get("project_id") or project_id)
-    return Path(proj["path"]) if proj else WORKSPACE_DIR
+    if proj:
+        return Path(proj["path"])
+    if sid := (session or {}).get("id"):
+        root = CHATS_DIR / re.sub(r"[^\w-]", "", str(sid))
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    return CHATS_DIR / "_new"  # before the chat exists: no folder yet (the file view says so)
+
+
+CHATS_DIR = CHAT_DIR
+
+
+def migrate_layout() -> list[str]:
+    """Once, at start: the old layout (workspace/chats/<id> + chat/<id>-session, workspace/<project>) moves into
+    chat/<id>/ (+ .session) and chat/projects/; project paths in the database follow. Nothing is deleted: a name
+    that already exists at the target stays where it was. workspace/ is removed when it is empty."""
+    moved: list[str] = []
+
+    def move(src: Path, dst: Path) -> None:
+        if not src.exists():
+            return
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(src), str(dst))
+                moved.append(f"{src} -> {dst}")
+            except OSError:
+                pass
+            return
+        if src.is_dir() and dst.is_dir():  # merge folder contents
+            for c in list(src.iterdir()):
+                move(c, dst / c.name)
+            try:
+                src.rmdir()
+            except OSError:
+                pass
+
+    for old in CHAT_DIR.glob("*-session"):
+        sid = old.name[:-len("-session")]
+        if re.fullmatch(r"[0-9a-f]{6,32}", sid) and old.is_dir():
+            move(old, CHAT_DIR / sid / SESSION)
+    old_chats = WORKSPACE_DIR / "chats"
+    if old_chats.is_dir():
+        for d in old_chats.iterdir():
+            if d.is_dir() and re.fullmatch(r"[0-9a-f]{6,32}", d.name):
+                move(d, CHAT_DIR / d.name)
+        _drop_empty(old_chats / "_new")
+        _drop_empty(old_chats)
+    if WORKSPACE_DIR.is_dir():
+        for d in WORKSPACE_DIR.iterdir():
+            if not d.is_dir():
+                continue
+            target = PROJECTS_DIR / d.name
+            rows = db.query("SELECT id, path FROM projects")
+            move(d, target)
+            if target.exists() and not d.exists():
+                for r in rows:
+                    try:
+                        if Path(r["path"]).resolve() == d.resolve():
+                            db.execute("UPDATE projects SET path=? WHERE id=?", (str(target), r["id"]))
+                    except OSError:
+                        pass
+        _drop_empty(WORKSPACE_DIR, ignore=(".gitkeep",))
+    return moved
+
+
+def _drop_empty(d: Path, ignore: tuple = ()) -> None:
+    try:
+        if d.is_dir() and all(c.name in ignore for c in d.iterdir()):
+            for c in d.iterdir():
+                c.unlink()
+            d.rmdir()
+    except OSError:
+        pass
+
+
+def remove_chat_root(sid: str) -> None:
+    """Deleting a chat without a project also deletes its working folder."""
+    root = CHATS_DIR / re.sub(r"[^\w-]", "", str(sid))
+    if sid and root.parent == CHATS_DIR and root.is_dir() and root != PROJECTS_DIR:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def tree(root: Path, max_entries: int = 2000) -> list[dict]:
@@ -170,11 +254,12 @@ async def git_rollback(root: Path, sha: str) -> str | None:
     return await git_snapshot(root, f"rollback to {sha}")
 
 
-OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".html", ".htm"}
+OUTPUT_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico", ".html", ".htm",
+               ".mp3", ".wav", ".ogg", ".m4a", ".flac", ".mp4", ".webm", ".mov", ".mkv"}  # media gets a player card
 
 
 def output_files(root: Path) -> dict[str, float]:
-    """Images and web pages in root with their mtimes (bounded walk, dependency folders skipped).
+    """Images, web pages, audio and video in root with their mtimes (bounded walk, dependency folders skipped).
     Taken before and after a task: the difference is what the task produced, also files written by scripts."""
     found: dict[str, float] = {}
     seen = 0
@@ -196,6 +281,38 @@ def output_files(root: Path) -> dict[str, float]:
                     walk(p, depth + 1)
                 elif p.suffix.lower() in OUTPUT_EXTS:
                     found[p.relative_to(root).as_posix()] = p.stat().st_mtime
+            except OSError:
+                continue
+
+    if root.is_dir():
+        walk(root, 0)
+    return found
+
+
+def files_since(root: Path, exts: tuple[str, ...], since: float, names: set[str] | None = None) -> list[str]:
+    """Files with one of `exts` (or, with `names`, of those base names) written at/after `since` (bounded walk).
+    The proof a task really produced the PDF/Excel/... it was asked for."""
+    found: list[str] = []
+    seen = 0
+    low = {n.lower() for n in names or ()}
+
+    def walk(d: Path, depth: int) -> None:
+        nonlocal seen
+        if depth > 5 or seen > 6000 or len(found) > 20:
+            return
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            return
+        for p in entries:
+            seen += 1
+            if p.name in IGNORED or p.name.startswith("."):
+                continue
+            try:
+                if p.is_dir():
+                    walk(p, depth + 1)
+                elif (p.name.lower() in low if low else p.suffix.lower() in exts) and p.stat().st_mtime >= since:
+                    found.append(p.relative_to(root).as_posix())
             except OSError:
                 continue
 

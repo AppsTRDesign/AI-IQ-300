@@ -47,15 +47,18 @@ class ProcInfo:
     background: bool = False
     started_mono: float = field(default_factory=time.monotonic)
     last_output: float = 0.0  # monotonic time of the latest output line
+    expires_at: float | None = None  # wall time when an agent-started server is stopped automatically
+    expiry_task: asyncio.Task | None = None
 
     def public(self) -> dict:
         return {"id": self.id, "argv": self.argv, "cwd": self.cwd, "owner": self.owner, "state": self.state,
-                "pid": self.pid, "exit_code": self.exit_code, "started": self.started}
+                "pid": self.pid, "exit_code": self.exit_code, "started": self.started, "expires_at": self.expires_at}
 
 
 class ProcessManager:
     def __init__(self) -> None:
         self.procs: dict[str, ProcInfo] = {}
+        self._tasks: set[asyncio.Task] = set()
         self._sem: asyncio.Semaphore | None = None
 
     def _emit(self, info: ProcInfo, type_: str, **payload) -> None:
@@ -100,7 +103,9 @@ class ProcessManager:
         info.pid, info.state = info.proc.pid, "running"
         self._persist(info)
         self._emit(info, "started", argv=argv, pid=info.pid, cwd=cwd)
-        asyncio.create_task(self._supervise(info, timeout))
+        task = asyncio.create_task(self._supervise(info, timeout))
+        self._tasks.add(task)  # a reference until it ends (an unreferenced task can be collected mid-flight)
+        task.add_done_callback(self._tasks.discard)
         return info
 
     async def _pump(self, info: ProcInfo, stream: asyncio.StreamReader, name: str) -> None:
@@ -170,8 +175,46 @@ class ProcessManager:
         info.state = "cancelling"
         self._emit(info, "state", state="cancelling")
         await self._kill_tree(info)
-        await info.done.wait()
+        try:
+            # A process that cannot be killed (access denied, a zombie tree) must not hold up whoever stops it: the
+            # task that owns it would never finish and its chat would stay "working" for ever.
+            await asyncio.wait_for(info.done.wait(), 20)
+        except asyncio.TimeoutError:
+            info.state = "failed"
+            info.tail.append("[could not be stopped: the process did not exit]")
+            self._persist(info)
+            self._emit(info, "exit", state=info.state, exit_code=info.exit_code)
+            info.done.set()
         return True
+
+    def _owned(self, prefix: str) -> list[ProcInfo]:
+        return [p for p in self.procs.values() if p.background and p.state == "running" and p.owner.startswith(prefix)]
+
+    def hold(self, prefix: str) -> None:
+        """A new task of the chat is running: its servers stay up while it works (the countdown pauses)."""
+        for p in self._owned(prefix):
+            if p.expires_at is not None:
+                p.expires_at = None
+                self._emit(p, "state", state=p.state, expires_at=None)
+
+    def expire(self, prefix: str, seconds: float) -> list[ProcInfo]:
+        """Safety net: servers an agent started and did not stop are stopped `seconds` after its task ended (a dev
+        server on localhost:8000 kept running for hours). Returns the processes that got a countdown."""
+        out = self._owned(prefix)
+        for p in out:
+            p.expires_at = time.time() + seconds
+            self._emit(p, "state", state=p.state, expires_at=p.expires_at)
+            if not p.expiry_task or p.expiry_task.done():
+                p.expiry_task = asyncio.create_task(self._expire(p))
+        return out
+
+    async def _expire(self, info: ProcInfo) -> None:
+        while info.state == "running":
+            if info.expires_at is not None and time.time() >= info.expires_at:
+                info.tail.append("[stopped automatically: the task that started it ended and it was not stopped]")
+                await self.stop(info.id)
+                return
+            await asyncio.sleep(max(1.0, min(15.0, (info.expires_at or time.time() + 15) - time.time())))
 
     async def stop_owner(self, owner: str) -> None:
         await asyncio.gather(*(self.stop(i.id) for i in list(self.procs.values())

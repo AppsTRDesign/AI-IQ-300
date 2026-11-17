@@ -21,7 +21,7 @@ BINARY_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".pdf",
                ".sqlite", ".pyc", ".class", ".jar", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".psd", ".wasm"}
 MAX_FILES = 20000
 TEXT_MAX = 300_000  # per file
-TEXT_BUDGET = 40_000_000  # all kept texts of one folder
+TEXT_BUDGET = 16_000_000  # all kept texts of one folder (12 folders x 40 MB could hold 480 MB of RAM)
 TIME_LIMIT = 3.0  # seconds for one walk (a huge folder is compared partly, and says so)
 MAX_DIFF = 12000
 MAX_LIST = 200
@@ -82,7 +82,7 @@ def take(root: Path) -> Snapshot:
         if snap.partial:
             break
     _TEXTS[str(root)] = fresh
-    if len(_TEXTS) > 12:
+    if len(_TEXTS) > 4:
         _TEXTS.pop(next(iter(_TEXTS)))
     return snap
 

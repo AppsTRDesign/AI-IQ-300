@@ -10,7 +10,13 @@ import uuid
 from .events import bus
 
 _pending: dict[str, tuple[asyncio.Future, str, str]] = {}  # id -> (future, op hash, run id)
+_cards: dict[str, dict] = {}  # id -> the request as shown to the user (a client that reconnects gets it again)
 APPROVAL_TIMEOUT = 600
+
+
+def pending_for(run_id: str) -> list[dict]:
+    """Approvals of a task that still wait for an answer (for the state a reconnecting client receives)."""
+    return [c for aid, c in _cards.items() if c["run_id"] == run_id and aid in _pending and not _pending[aid][0].done()]
 
 
 def op_hash(op: dict) -> str:
@@ -22,14 +28,17 @@ async def request(run_id: str, op: dict, category: str, reasons: list[str], prev
     digest = op_hash(op)
     fut = asyncio.get_running_loop().create_future()
     _pending[aid] = (fut, digest, run_id)
-    bus.publish("run", "approval.request", {"run_id": run_id, "approval_id": aid, "hash": digest, "op": op,
-                                            "category": category, "reasons": reasons, "preview": preview})
+    card = {"run_id": run_id, "approval_id": aid, "hash": digest, "op": op,
+            "category": category, "reasons": reasons, "preview": preview}
+    _cards[aid] = card
+    bus.publish("run", "approval.request", card)
     try:
         return await asyncio.wait_for(fut, APPROVAL_TIMEOUT)
     except asyncio.TimeoutError:
         return False
     finally:
         _pending.pop(aid, None)
+        _cards.pop(aid, None)
         bus.publish("run", "approval.resolved", {"run_id": run_id, "approval_id": aid})
 
 

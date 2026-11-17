@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
+from urllib.request import url2pathname
 
 DEVICES = {
     "desktop": {"viewport": {"width": 1440, "height": 900}, "device_scale_factor": 1},
@@ -66,6 +67,36 @@ async def capture(url: str, out: Path, *, device: str = "desktop", width: int | 
             context = await browser.new_context(**opts, color_scheme="dark" if dark else "light",
                                                 locale="tr-TR" if lang == "tr" else "en-US")
             page = await context.new_page()
+            # The page's own JavaScript is really run: its errors and resources that failed to load are reported, so
+            # a page the model built is tested, not only looked at.
+            problems: list[str] = []
+            base_dir = Path(url2pathname(urlsplit(url).path)).parent if url.startswith("file:") else None
+
+            def failed(r) -> None:
+                if base_dir and r.url.startswith("file:"):
+                    # A local file the page refers to (img src, CSS url(), script) that is not in the folder: named
+                    # by its relative path, so the model knows exactly which reference to fix.
+                    p = Path(url2pathname(urlsplit(r.url).path))
+                    try:
+                        rel = p.relative_to(base_dir).as_posix()
+                    except ValueError:
+                        rel = str(p)
+                    # The closest file that does exist (images/latte-art.jpg vs latte-art-cup.jpg): usually the fix.
+                    import difflib
+                    have = [q.relative_to(base_dir).as_posix() for q in p.parent.glob("*") if q.is_file()] \
+                        if p.parent.is_dir() else []
+                    near = difflib.get_close_matches(rel, have, 1, 0.5)
+                    problems.append(f"missing file: {rel} - the page refers to it (img src, CSS url() or script) but "
+                                    "it does not exist" + (f"; did you mean {near[0]}? (it exists)" if near else
+                                                           ": download/create it (stock_photo) or remove the reference"))
+                elif not r.url.startswith("file:"):
+                    problems.append(f"failed to load: {r.url[:160]} ({r.failure or 'error'})")
+
+            page.on("pageerror", lambda e: problems.append(f"JS error: {str(e).splitlines()[0][:200]}"))
+            page.on("console", lambda m: m.type == "error" and "ERR_FILE_NOT_FOUND" not in m.text
+                    and problems.append(f"console error: {m.text[:200]}"))
+            page.on("requestfailed", failed)
+            page.on("response", lambda r: r.status >= 400 and problems.append(f"HTTP {r.status}: {r.url[:160]}"))
             resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=8000)
@@ -79,10 +110,15 @@ async def capture(url: str, out: Path, *, device: str = "desktop", width: int | 
                 await page.wait_for_timeout(min(int(wait_ms), 15000))
             size = await page.evaluate("() => [document.documentElement.scrollWidth, document.documentElement.scrollHeight]")
             seen = await page.evaluate(SEEN, selector or None)
+            broken = await page.evaluate("() => [...document.images].filter(i => i.complete && !i.naturalWidth)"
+                                         ".map(i => i.getAttribute('src') || '').slice(0, 8)")
+            problems += [f"broken image (not shown): {s[:160]}" for s in broken]
+            seen["problems"] = list(dict.fromkeys(problems))[:12]
             if fmt == "pdf":
-                await page.emulate_media(media="screen")
-                await page.pdf(path=str(out), print_background=True, width=f"{opts['viewport']['width']}px",
-                               height=f"{min(size[1], MAX_HEIGHT)}px")
+                # A4 pages (the page's own @page/@media print rules apply), not one endless sheet.
+                await page.emulate_media(media="print")
+                await page.pdf(path=str(out), format="A4", print_background=True, prefer_css_page_size=True,
+                               margin={"top": "12mm", "bottom": "12mm", "left": "10mm", "right": "10mm"})
             else:
                 kw = {"path": str(out), "type": "jpeg" if fmt in ("jpg", "jpeg") else "png"}
                 if kw["type"] == "jpeg":

@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -26,24 +27,164 @@ from .process_manager import manager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Processes from a previous backend instance are no longer supervised: mark them as such.
+    # Processes from a previous backend instance (dev servers the agent started, then the app was closed hard) are
+    # no longer supervised: stop the ones still alive, then mark them orphaned. A dev server left on localhost:8000
+    # kept running and locked its chat folder.
+    # Before v0.10.3 chat files lived in workspace/: move them into chat/<id>/ once.
+    await asyncio.to_thread(workspace.migrate_layout)
+    await asyncio.to_thread(_stop_orphans)
     db.execute("UPDATE processes SET state='orphaned' WHERE state IN ('queued','running','cancelling')")
+    # Tasks that were running when the app stopped (power cut, crash): shown as interrupted, resumable.
+    await asyncio.to_thread(orchestrator.recover_interrupted)
     from .tools import syntax
     syntax.warm()  # tree-sitter grammars load in the background (first run downloads them)
-    from . import hostinfo
-    hostinfo.warm()  # OS build, shells and tool versions for the system prompt, detected once in the background
+    from . import hostinfo, toolchain
+    toolchain.setup_paths()
+    hostinfo.warm()
+    # ffmpeg / composer fetched in the background when missing, then the tool list in the prompt is refreshed
+    asyncio.create_task(toolchain.ensure()).add_done_callback(lambda _t: hostinfo.refresh())  # OS build, shells and tool versions for the system prompt, detected once in the background
     from . import mcp_client
     if mcp_client.servers_cfg():  # connected MCP servers start in the background (Settings shows their state)
-        asyncio.create_task(mcp_client.ensure())
+        _bg(mcp_client.ensure())
+    warm = asyncio.create_task(router.warm_info())  # model windows ready before the first task asks
+    guard = asyncio.create_task(_ram_guard())  # unloads local models before low RAM freezes the computer
     yield
-    for run_id in list(orchestrator.RUNS):
-        await orchestrator.cancel_run(run_id)
+    warm.cancel()
+    guard.cancel()
+    await orchestrator.shutdown()  # tasks store their checkpoint and message before the loop closes
     await manager.shutdown()
     from . import mcp_client
     await mcp_client.shutdown()
+    db.checkpoint()  # the write-ahead log is folded into the database file
+    from .llm import modelstats
+    modelstats.flush()
+
+
+async def _ram_guard() -> None:
+    """Background RAM guard for local models (llm/memguard.py): unload before low memory freezes the computer."""
+    from .llm import memguard
+    from .agents.orchestrator import ui_text
+
+    def ollama() -> tuple[str, str]:
+        """(provider id, base URL) of the enabled local Ollama server (any id, not only the default one)."""
+        for pid, cfg in load_settings()["providers"].items():
+            if cfg.get("local") and cfg.get("enabled") and cfg.get("kind", pid) == "ollama":
+                return pid, (cfg.get("base_url") or "").rstrip("/")
+        return "", ""
+
+    def state() -> dict:
+        s = load_settings()
+        g = s.get("local_guard") or {}
+        pid, base = ollama()
+        active = s.get("active_model") or ""
+        return {"enabled": g.get("enabled", True), "emergency_unload": bool(g.get("emergency_unload")),
+                "low": g.get("low", 12), "critical": g.get("critical", 6), "base_url": base,
+                "active": active.partition(":")[2] if pid and active.startswith(pid + ":") else ""}
+
+    def busy(name: str) -> bool:
+        pid, _ = ollama()
+        return any((r.model or "") == f"{pid}:{name}" for r in orchestrator.RUNS.values())
+
+    fallbacks = {
+        "app": "Free {what} is low ({free} GB of {total} GB): the app released {freed} MB of its own caches.",
+        "idle": "Free {what} is low ({free} GB of {total} GB): the unused model {model} was unloaded. The model in use "
+                "stays loaded.",
+        "shrunk": "Free {what} is critically low ({free} GB of {total} GB): the context window of {model} was reduced "
+                  "from {old} to {new}. The model stays loaded and no chat memory is lost.",
+        "floor": "Free {what} is critically low ({free} GB of {total} GB) and the window of {model} is already at its "
+                 "smallest. Close other programs.",
+        "unloaded": "Free {what} is critically low ({free} GB of {total} GB): {model} was unloaded (emergency unload is "
+                    "on). The chat and the task's progress are kept; type \"continue\" to resume.",
+    }
+
+    def notify(kind: str, **info) -> None:
+        lang = load_settings().get("language") or "en"
+        info["what"] = "VRAM" if info.get("what") == "vram" else "RAM"
+        for k in ("old", "new"):
+            if isinstance(info.get(k), int):
+                info[k] = f"{info[k] // 1024}K"
+        text = ui_text(lang, f"ai_guard_{kind}", fallbacks.get(kind, ""), **info)
+        bus.publish("model", "memory", {"model": info.get("model") or "", "message": text, "kind": kind})
+        if kind in ("shrunk", "unloaded"):
+            pid, _ = ollama()
+            bus.publish("model", "context", {"model": f"{pid}:{info.get('model')}"})
+
+    async def relief() -> None:
+        """The app's other memory nobody is using right now: a browser window no task needs."""
+        from .tools.browser import AGENT
+        if AGENT.running() and not orchestrator.any_run_active() and not AGENT.lock.locked():
+            await AGENT.close()
+        # LM Studio: its models are unloaded only when no task uses that server and it is not the chosen one.
+        s = load_settings()
+        active = (s.get("active_model") or "").partition(":")[0]
+        for pid, cfg in s["providers"].items():
+            if cfg.get("local") and cfg.get("enabled") and cfg.get("kind", pid) != "ollama" and pid != active \
+                    and not any((r.model or "").startswith(pid + ":") for r in orchestrator.RUNS.values()):
+                if lms := router._lms():
+                    await router._run(lms, "unload", "--all")
+
+    lms_last = {"t": 0.0}
+
+    async def other_local(free, total, what, now) -> None:
+        """LM Studio (and other non-Ollama local servers) at critical memory: the chosen model is made smaller, never
+        closed. A task streaming on it is asked to give memory back itself (stop, summarize, smaller window)."""
+        if now - lms_last["t"] < 60:
+            return
+        s = load_settings()
+        active = s.get("active_model") or ""
+        pid, _, name = active.partition(":")
+        cfg = s["providers"].get(pid) or {}
+        if not (name and cfg.get("local") and cfg.get("enabled") and cfg.get("kind", pid) != "ollama"):
+            return
+        lms_last["t"] = now
+        if any((r.model or "") == active for r in orchestrator.RUNS.values()):
+            if not memguard.pressure(name):
+                memguard._PRESSURE[name] = now
+            return
+        cur = (await router.context_info(active))["current"]
+        new = memguard.shrink(name, cur) if cur else None
+        if new and await router.reload_local(active, new):
+            notify("shrunk", model=name, old=cur, new=new, free=free, total=total, what=what)
+        elif not new:
+            notify("floor", model=name, free=free, total=total, what=what)
+
+    await memguard.watchdog(state, busy, notify, relief, other_local)
+
+
+def _stop_orphans() -> None:
+    """Kill the process trees of a previous run's still-running processes. Only when the live process with that PID
+    is the same program that was started (PIDs are reused), so nothing else is ever touched."""
+    import subprocess
+    import sys
+    for row in db.query("SELECT pid, argv FROM processes WHERE state IN ('queued','running','cancelling') AND pid"):
+        try:
+            exe = Path(json.loads(row["argv"])[0]).stem.lower()
+            if sys.platform == "win32":
+                out = subprocess.run(["tasklist", "/FI", f"PID eq {int(row['pid'])}", "/FO", "CSV", "/NH"],
+                                     capture_output=True, text=True, timeout=10, creationflags=0x08000000).stdout.lower()
+                if exe and f'"{exe}' in out:
+                    subprocess.run(["taskkill", "/PID", str(int(row["pid"])), "/T", "/F"], capture_output=True,
+                                   timeout=15, creationflags=0x08000000)
+            else:
+                import os
+                import signal
+                cmd = Path(f"/proc/{int(row['pid'])}/cmdline")
+                if cmd.exists() and exe in cmd.read_bytes().decode(errors="replace").lower():
+                    os.killpg(os.getpgid(int(row["pid"])), signal.SIGTERM)
+        except Exception:  # noqa: BLE001 - a process that is gone or not ours is simply left alone
+            continue
 
 
 app = FastAPI(title="AI IQ 300", lifespan=lifespan)
+_BG: set[asyncio.Task] = set()
+
+
+def _bg(coro) -> asyncio.Task:
+    """A background task that keeps a reference until it ends (an unreferenced task can be collected mid-flight)."""
+    task = asyncio.create_task(coro)
+    _BG.add(task)
+    task.add_done_callback(_BG.discard)
+    return task
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
@@ -72,7 +213,8 @@ class ProjectIn(BaseModel):
 
 
 class ProjectPatch(BaseModel):
-    name: str
+    name: str | None = None
+    pinned: bool | None = None
 
 
 class SessionIn(BaseModel):
@@ -82,7 +224,7 @@ class SessionIn(BaseModel):
 
 @app.get("/api/projects")
 def list_projects():
-    return db.query("SELECT * FROM projects ORDER BY created DESC")
+    return db.query("SELECT * FROM projects ORDER BY pinned DESC, created DESC")
 
 
 @app.post("/api/projects")
@@ -97,8 +239,18 @@ def create_project(body: ProjectIn):
 
 @app.patch("/api/projects/{pid}")
 def rename_project(pid: str, body: ProjectPatch):
-    db.execute("UPDATE projects SET name=? WHERE id=?", (body.name.strip(), pid))
+    if body.name is not None and body.name.strip():
+        db.execute("UPDATE projects SET name=? WHERE id=?", (body.name.strip(), pid))
+    if body.pinned is not None:
+        db.execute("UPDATE projects SET pinned=? WHERE id=?", (int(body.pinned), pid))
     return {"ok": True}
+
+
+@app.post("/api/projects/{pid}/archive_chats")
+def archive_project_chats(pid: str):
+    """Archives every chat of the project (they stay on disk and can be restored)."""
+    n = db.execute("UPDATE sessions SET archived=1 WHERE project_id=? AND archived=0", (pid,)).rowcount
+    return {"archived": n}
 
 
 @app.delete("/api/projects/{pid}")
@@ -185,9 +337,15 @@ def fs_dirs(path: str = ""):
         raise to_http(e, 400)
 
 
+@app.get("/api/search")
+def search_chats(q: str = "", limit: int = 40):
+    """Full-text search over every chat's messages (sidebar search): newest hits first, each with its chat."""
+    return {"results": db.search(q[:200], max(1, min(limit, 100))) if q.strip() else []}
+
+
 @app.get("/api/sessions")
 def list_sessions(project_id: str | None = None):
-    cols = "id, project_id, title, created, updated, pinned, archived, context_used"
+    cols = "id, project_id, title, created, updated, pinned, archived, context_used, unread, title_auto"
     if project_id:
         return db.query(f"SELECT {cols} FROM sessions WHERE project_id=? AND archived=0 "
                         "ORDER BY pinned DESC, updated DESC", (project_id,))
@@ -209,25 +367,119 @@ def _session(sid: str) -> dict:
     return rows[0]
 
 
+STEP_DETAIL_SHOWN = 2000  # characters of a stored step's detail sent with the chat; the rest loads when opened
+
+
+def _light_steps(row: dict) -> None:
+    """A chat page carries every step of every answer: whole files written, long command outputs and notes made a
+    long chat megabytes to load and render. Long details go out cut; the step loads in full when the user opens it."""
+    for i, s in enumerate((row.get("meta") or {}).get("steps") or []):
+        d = s.get("detail")
+        if isinstance(d, str) and len(d) > STEP_DETAIL_SHOWN:
+            s["detail"] = d[:STEP_DETAIL_SHOWN]
+            s["lazy"] = {"mid": row["id"], "i": i, "chars": len(d)}
+
+
+@app.get("/api/messages/{mid}/steps/{i}")
+def message_step(mid: int, i: int):
+    """One stored step in full (opened in the trace after the chat loaded it cut)."""
+    rows = db.query("SELECT meta FROM messages WHERE id=?", (mid,))
+    steps = (json.loads(rows[0]["meta"] or "{}").get("steps") or []) if rows else []
+    if not 0 <= i < len(steps):
+        raise fail(404, "not_found", "No such step")
+    return steps[i]
+
+
 @app.get("/api/sessions/{sid}/messages")
-def get_messages(sid: str):
-    rows = db.query("SELECT * FROM messages WHERE session_id=? ORDER BY id", (sid,))
+def get_messages(sid: str, limit: int = 0, before: int | None = None):
+    """All messages, or (limit > 0) the latest `limit` ones before message id `before`: a long chat opens with
+    its last page and loads older pages while the user scrolls up. The 'X-Has-More' answer says if older exist."""
+    if limit > 0:
+        rows = db.query("SELECT * FROM messages WHERE session_id=? AND id<? ORDER BY id DESC LIMIT ?",
+                        (sid, before or 1 << 62, limit + 1))
+        more = len(rows) > limit
+        rows = list(reversed(rows[:limit]))
+    else:
+        rows, more = db.query("SELECT * FROM messages WHERE session_id=? ORDER BY id", (sid,)), False
     for r in rows:
         r["meta"] = json.loads(r["meta"] or "{}")
+        if limit > 0:
+            _light_steps(r)
+    if sid and limit > 0:
+        db.execute("UPDATE sessions SET unread=0 WHERE id=?", (sid,))
+        return {"messages": rows, "has_more": more}
     return rows
+
+
+@app.delete("/api/sessions/{sid}/messages/{mid}")
+def delete_message(sid: str, mid: int):
+    """Removes one message from the chat (and so from what later turns send to the model)."""
+    if orchestrator.active_run(sid):
+        run = orchestrator.active_run(sid)
+        rows = db.query("SELECT MAX(id) AS m FROM messages WHERE session_id=? AND role='user'", (sid,))
+        if rows and rows[0]["m"] == mid and run:
+            raise fail(409, "run_busy", "This message belongs to the running task")
+    n = db.execute("DELETE FROM messages WHERE session_id=? AND id=?", (sid, mid)).rowcount
+    if not n:
+        raise fail(404, "message_not_found", "Message not found")
+    return {"ok": True}
 
 
 class SessionPatch(BaseModel):
     title: str | None = None
     pinned: bool | None = None
     archived: bool | None = None
+    unread: bool | None = None
+    project_id: str | None = None
+    move: bool = False  # project_id is applied only with move=true (null = no project)
 
 
 @app.patch("/api/sessions/{sid}")
 def patch_session(sid: str, body: SessionPatch):
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    move = data.pop("move", False)
+    data.pop("project_id", None)
+    for k, v in data.items():
+        if k == "title":  # typed by the user: plain text, and the app never renames this chat again
+            v = orchestrator.clean_title(str(v)) or str(v)[:70]
+            db.execute("UPDATE sessions SET title_auto=0 WHERE id=?", (sid,))
         db.execute(f"UPDATE sessions SET {k}=? WHERE id=?", (int(v) if isinstance(v, bool) else v, sid))
+    if move:
+        if orchestrator.active_run(sid):
+            raise fail(409, "run_busy", "This chat is still working; wait for it or stop it first")
+        if body.project_id and not workspace.get_project(body.project_id):
+            raise fail(404, "project_not_found", "Project not found")
+        db.execute("UPDATE sessions SET project_id=? WHERE id=?", (body.project_id or None, sid))
     return _session(sid)
+
+
+@app.post("/api/sessions/{sid}/fork")
+def fork_session(sid: str):
+    """A separate copy of the chat: same project, messages and summary; later work in either stays apart."""
+    src = _session(sid)
+    new, now = uuid.uuid4().hex[:12], time.time()
+    db.execute("INSERT INTO sessions(id,project_id,title,created,updated,summary,summary_upto,context_used,context_stats) "
+               "VALUES(?,?,?,?,?,?,?,?,?)", (new, src["project_id"], (src["title"] or "")[:54] + " (2)", now, now,
+                                             src["summary"], 0, src["context_used"], src["context_stats"]))
+    upto = src["summary_upto"] or 0
+    mapped = 0
+    for r in db.query("SELECT role, content, meta, id FROM messages WHERE session_id=? ORDER BY id", (sid,)):
+        mid = db.add_message(new, r["role"], r["content"], json.loads(r["meta"] or "{}"))
+        if r["id"] <= upto:
+            mapped = mid
+    db.execute("UPDATE sessions SET summary_upto=? WHERE id=?", (mapped, new))
+    return _session(new)
+
+
+@app.get("/api/sessions/{sid}/export")
+def export_session(sid: str):
+    """The chat as Markdown (share / copy)."""
+    s = _session(sid)
+    out = [f"# {s['title'] or 'Chat'}\n"]
+    for r in db.query("SELECT role, content, created FROM messages WHERE session_id=? ORDER BY id", (sid,)):
+        who = "**User**" if r["role"] == "user" else "**AI IQ 300**"
+        out.append(f"{who} · {time.strftime('%Y-%m-%d %H:%M', time.localtime(r['created']))}\n\n{r['content'] or ''}\n")
+    return {"title": s["title"], "markdown": "\n---\n\n".join(out)}
 
 
 @app.get("/api/sessions/{sid}/active")
@@ -237,10 +489,16 @@ def active(sid: str):
 
 @app.get("/api/sessions/{sid}/context")
 async def session_context(sid: str, model: str):
-    info = await router.context_info(model)
     sess = _session(sid) if sid != "new" else {}
-    used = sess.get("context_used") or (orchestrator.estimate_tokens(orchestrator._history(sid)) if sess else 0)
-    stats = json.loads(sess["context_stats"]) if sess.get("context_stats") else {}
+    # A running task: its live count and model, never the stored value from the end of the previous task (opening
+    # the panel mid-task used to reset a red meter to the old, lower number).
+    live = orchestrator.live_context(sid) if sess else None
+    if live and live["model"]:
+        model = live["model"]
+    info = await router.context_info(model)
+    used = live["used"] if live else (
+        sess.get("context_used") or (orchestrator.estimate_tokens(orchestrator._history(sid)) if sess else 0))
+    stats = (live or {}).get("stats") or (json.loads(sess["context_stats"]) if sess.get("context_stats") else {})
     outputs: dict[str, dict] = {}
     if sess:  # files this chat wrote (newest first), from the recorded tool steps
         for row in db.query("SELECT meta FROM messages WHERE session_id=? AND role='assistant' ORDER BY id DESC", (sid,)):
@@ -269,12 +527,80 @@ async def compress_session(sid: str, body: CompressIn):
         raise to_http(e, 502)
 
 
+class IdsIn(BaseModel):
+    ids: list = []
+    all: bool = False
+
+
+@app.post("/api/sessions/delete")
+async def delete_sessions(body: IdsIn):
+    """Several chats at once (the selection in the chat list): each with everything it has, like delete_session."""
+    done = 0
+    for sid in [str(x) for x in body.ids][:500]:
+        try:
+            await delete_session(sid)
+            done += 1
+        except Exception:  # a chat already gone
+            continue
+    return {"ok": True, "deleted": done}
+
+
+@app.post("/api/sessions/{sid}/messages/delete")
+async def delete_messages(sid: str, body: IdsIn):
+    """Selected messages (or all) of a chat, with what was built from them: their lines in the chat record
+    (messages.jsonl), a summary that covers them, the saved progress of an interrupted task and, when the chat is
+    emptied, its whole history record (state, summaries, checkpoints). The files of its working folder stay."""
+    _session(sid)
+    if orchestrator.active_run(sid):
+        raise fail(409, "run_busy", "This chat is still working; stop it first")
+    ids = [int(x) for x in body.ids if str(x).isdigit()]
+    if body.all:
+        n = db.execute("DELETE FROM messages WHERE session_id=?", (sid,)).rowcount
+    elif ids:
+        n = db.execute(f"DELETE FROM messages WHERE session_id=? AND id IN ({','.join('?' * len(ids))})",
+                       (sid, *ids)).rowcount
+    else:
+        return {"ok": True, "deleted": 0}
+    left = db.query("SELECT COUNT(*) AS c FROM messages WHERE session_id=?", (sid,))[0]["c"]
+    row = db.query("SELECT summary_upto FROM sessions WHERE id=?", (sid,))
+    upto = (row[0]["summary_upto"] or 0) if row else 0
+    reset = body.all or not left or any(i <= upto for i in ids)
+    if reset:  # the summary was made of deleted messages: it goes too, so nothing of them reaches the model again
+        db.execute("UPDATE sessions SET summary=NULL, summary_upto=0, context_used=0, context_stats=NULL WHERE id=?", (sid,))
+    try:
+        rec = sessions.path(sid, create=False)
+        if rec.exists():
+            if not left:  # an emptied chat: its whole history record
+                for f in rec.iterdir():
+                    if f.is_file():
+                        f.unlink(missing_ok=True)
+                    else:
+                        shutil.rmtree(f, ignore_errors=True)
+            else:
+                for name in ("run_state.json", "partial_call.json"):
+                    (rec / name).unlink(missing_ok=True)
+                if reset:
+                    (rec / "summary.md").unlink(missing_ok=True)
+                tr = rec / "messages.jsonl"
+                if tr.exists() and ids:  # the record keeps only the messages that still exist
+                    gone = set(ids)
+                    lines = [ln for ln in tr.read_text(encoding="utf-8").splitlines()
+                             if ln.strip() and json.loads(ln).get("id") not in gone]
+                    tr.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    except (ValueError, OSError):
+        pass
+    return {"ok": True, "deleted": n, "left": left}
+
+
 @app.delete("/api/sessions/{sid}")
 async def delete_session(sid: str):
-    """Deletes the chat, its messages and its whole chat/<id>-session folder."""
+    """Deletes the chat, its messages and its whole chat/<id>/ folder (files and record)."""
     await orchestrator.cancel_session(sid)
+    rows = db.query("SELECT project_id FROM sessions WHERE id=?", (sid,))
     db.execute("DELETE FROM messages WHERE session_id=?", (sid,))
     db.execute("DELETE FROM sessions WHERE id=?", (sid,))
+    if rows and not rows[0]["project_id"]:
+        workspace.remove_chat_root(sid)
     try:
         sessions.remove(sid)
     except ValueError:
@@ -298,20 +624,47 @@ class ChatIn(BaseModel):
 @app.post("/api/sessions/{sid}/chat")
 async def chat(sid: str, body: ChatIn):
     session = {**_session(sid), "context_used": 0}
+    if orchestrator.active_run(sid):
+        # The chat is working: the message does not start a second task (two would write over each other) and does
+        # not stop the first; it reaches the running task as guidance.
+        run = orchestrator.steer(sid, body.text)
+        if run:
+            return {"run_id": run.id, "steered": True, "cwd": str(workspace.session_root(session))}
+        raise fail(409, "run_busy", "This chat is still working; wait for it or stop it first")
     if not (body.model or load_settings().get("active_model")):
         raise fail(400, "no_model", "No model selected; pick a model under the message box")
     if body.permission_mode and body.permission_mode not in policy.MODES:
         raise fail(400, "bad_permission_mode", "Invalid permission mode")
     if not session["title"]:
-        db.execute("UPDATE sessions SET title=? WHERE id=?", (body.text.strip()[:60], sid))
-    text = body.text
+        db.execute("UPDATE sessions SET title=? WHERE id=?", (orchestrator.clean_title(body.text)[:60], sid))
     root = workspace.session_root(session)
-    for a in body.attachments:  # inline small text attachments as context
+    # Reading and copying attachments (pictures, videos) runs off the event loop: a large file copied here held
+    # every other chat's stream and the websocket until it was done.
+    text = await asyncio.to_thread(_with_attachments, body.text, body.attachments, root)
+    run = orchestrator.start_run(session, text, body.model_dump() | {"text": text, "display_text": body.text})
+    return {"run_id": run.id, "cwd": str(root)}
+
+
+def _with_attachments(text: str, attachments: list, root: Path) -> str:
+    saved: list[str] = []
+    for a in attachments:  # inline small text attachments as context
         p = Path(a.get("path", ""))
         if p.is_file() and p.stat().st_size < 200_000 and a.get("kind") == "text":
             text += f"\n\n[Attached file: {p.name}]\n```\n{p.read_text(encoding='utf-8', errors='replace')}\n```"
-    run = orchestrator.start_run(session, text, body.model_dump() | {"text": text, "display_text": body.text})
-    return {"run_id": run.id, "cwd": str(root)}
+        elif p.is_file() and a.get("kind") in ("image", "binary"):
+            # Pictures and other files are also copied into the working folder: tools (inspect_media, image editing,
+            # a "make one like this") find them there in this and later messages ("the file is not in the folder").
+            try:
+                dest = root / "attachments" / p.name
+                if not dest.exists() or dest.stat().st_size != p.stat().st_size:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(p, dest)
+                saved.append(dest.relative_to(root).as_posix())
+            except (OSError, ValueError):
+                pass
+    if saved:
+        text += "\n\n[Attached files, saved in the working folder: " + ", ".join(saved) + "]"
+    return text
 
 
 @app.post("/api/runs/{run_id}/cancel")
@@ -358,7 +711,7 @@ def _looks_text(data: bytes) -> bool:
 
 # ---------- files (Monaco) ----------
 def _root(sid: str, project_id: str | None = None) -> Path:
-    """sid 'new' = a chat not created yet: the project folder if one is selected, else workspace/."""
+    """sid 'new' = a chat not created yet: the project folder if one is selected (else no folder yet)."""
     if sid == "new":
         return workspace.session_root(None, project_id)
     return workspace.session_root(_session(sid))
@@ -396,6 +749,8 @@ def _find_file(sid: str, path: str, project_id: str | None = None) -> Path:
 @app.get("/api/sessions/{sid}/files")
 def files(sid: str, project_id: str | None = None):
     root = _root(sid, project_id)
+    if sid == "new" and not project_id:
+        return {"root": "", "items": [], "pending": True}
     return {"root": str(root), "items": workspace.tree(root, 3000)}
 
 
@@ -421,7 +776,7 @@ def write_file(sid: str, body: FileIn, project_id: str | None = None):
 
 
 # ---------- file manager ----------
-HIDDEN_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".aiiq"}
+HIDDEN_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".aiiq", ".session"}
 
 
 def _entry(p: Path, root: Path) -> dict:
@@ -439,6 +794,9 @@ def _entry(p: Path, root: Path) -> dict:
 @app.get("/api/sessions/{sid}/fs/list")
 def fs_list(sid: str, path: str = "", project_id: str | None = None, hidden: bool = False):
     root = _root(sid, project_id).resolve()
+    if sid == "new" and not project_id:
+        # A chat that does not exist yet has no folder: chat/<id>/ is made with its first message.
+        return {"root": "", "path": "", "items": [], "pending": True}
     d = _resolve(sid, path or ".", project_id)
     if not d.is_dir():
         raise fail(404, "folder_not_found", "Folder not found")
@@ -550,7 +908,7 @@ def fs_slides(sid: str, path: str, project_id: str | None = None):
 @app.get("/api/sessions/{sid}/history")
 async def history(sid: str, project_id: str | None = None):
     root = _root(sid, project_id)
-    return [] if root == workspace.WORKSPACE_DIR else await workspace.git_history(root)
+    return [] if root.parent == workspace.CHATS_DIR or not root.exists() else await workspace.git_history(root)
 
 
 @app.post("/api/sessions/{sid}/rollback/{sha}")
@@ -611,6 +969,47 @@ async def web_search_test(q: str):
             "report": report}
 
 
+class EngineTestIn(BaseModel):
+    q: str = ""
+
+
+@app.post("/api/web/test/{engine}")
+async def web_engine_test(engine: str, body: EngineTestIn):
+    from .tools import web
+    return await web.test_engine(engine, body.q.strip() or "OpenAI API documentation")
+
+
+@app.post("/api/maps/test/{provider}")
+async def maps_test(provider: str, body: EngineTestIn):
+    """One place provider alone with a sample search, its own error shown (Settings > Web research)."""
+    from .tools import maps
+    t0 = time.monotonic()
+    q = body.q.strip() or "eczane"
+    try:
+        res = await maps.find_places(q, near="Kadıköy, İstanbul", radius=2000, limit=5,
+                                     lang=load_settings().get("language") or "tr", provider=provider)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:300]}
+    ok = bool(res["results"]) and res["provider"] != "-"
+    return {"ok": ok, "count": len(res["results"]), "ms": int((time.monotonic() - t0) * 1000), "provider": res["provider"],
+            "results": [{"title": r.get("name", ""), "url": r.get("maps_url") or r.get("url") or ""} for r in res["results"][:5]],
+            **({} if ok else {"error": "; ".join(res["notes"]) or "no results"})}
+
+
+@app.post("/api/media/test/{service}")
+async def media_test(service: str, body: EngineTestIn):
+    """Image generation service test (Settings > Web research): a small picture, whether it came without the logo."""
+    from .tools import imagegen
+    t0 = time.monotonic()
+    try:
+        data, clean = await imagegen.generate(body.q.strip() or "a cup of coffee on a wooden table, photo", 256, 256)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": True, "ms": int((time.monotonic() - t0) * 1000), "count": 1, "provider": service,
+            "results": [{"title": f"{len(data) // 1024} KB" + (" · logo-free (token)" if clean else " · with the free tier's logo"),
+                         "url": ""}]}
+
+
 @app.get("/api/models/providers")
 def model_providers():
     """Fast (no network): which providers are usable now. The UI then loads each one's models in parallel."""
@@ -635,7 +1034,8 @@ class ModelIn(BaseModel):
 @app.post("/api/models/activate")
 async def activate_model(body: ModelIn):
     save_settings({"active_model": body.model})
-    asyncio.create_task(router.activate(body.model))
+    _bg(router.activate(body.model))
+    _bg(router.context_info(body.model))  # its window is known before the first message
     return {"ok": True}
 
 
@@ -708,6 +1108,42 @@ async def tts_speak(body: TTSIn):
     return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
+class TTSFileIn(BaseModel):
+    text: str
+    voice: str
+    path: str
+    rate: float = 1.0
+
+
+@app.post("/api/sessions/{sid}/tts-file")
+async def tts_file(sid: str, body: TTSFileIn):
+    """The voice picker under a generated audio: the same text again with the voice the user chose, written over the
+    file in the chat's folder (only .mp3 inside the folder)."""
+    from .tools import speech
+    root = workspace.session_root(_session(sid)).resolve()
+    target = (root / body.path).resolve()
+    if root not in target.parents or target.suffix.lower() != ".mp3":
+        raise fail(400, "bad_path", "Only an .mp3 inside the chat's folder")
+    try:
+        res = await speech.text_to_speech(body.text[:20000], target, "", body.voice, "", body.rate)
+    except Exception as e:  # offline, unknown voice
+        raise fail(502, "tts_failed", str(e)[:300])
+    # The chosen voice is kept with the answer, so the card shows it after a reload too.
+    for row in db.query("SELECT id, meta FROM messages WHERE session_id=? AND role='assistant' ORDER BY id DESC LIMIT 20",
+                        (sid,)):
+        try:
+            meta = json.loads(row["meta"] or "{}")
+        except ValueError:
+            continue
+        hit = [s for s in meta.get("steps") or [] if (s.get("data") or {}).get("tts") and s["data"].get("path") == body.path]
+        if hit:
+            for s in hit:
+                s["data"]["tts"]["voice"] = res["voice"]
+            db.execute("UPDATE messages SET meta=? WHERE id=?", (json.dumps(meta, ensure_ascii=False), row["id"]))
+            break
+    return {"ok": True, "path": body.path, "voice": res["voice"], "bytes": res["bytes"]}
+
+
 # ---------- providers ----------
 class ProviderIn(BaseModel):
     name: str
@@ -772,6 +1208,7 @@ async def test_provider(pid: str):
     t0 = time.perf_counter()
     try:
         out = await asyncio.wait_for(router.get_provider(pid, require_enabled=False).test(), 20)
+        router.invalidate_models(pid)  # the model list is re-read at once, so an old error does not linger
         return {"ok": True, "ms": int((time.perf_counter() - t0) * 1000), **out}
     except ProviderError as e:
         return {"ok": False, "code": e.code, "error": str(e)}
@@ -779,6 +1216,95 @@ async def test_provider(pid: str):
         return {"ok": False, "code": "timeout", "error": "Timed out after 20 s"}
     except Exception as e:
         return {"ok": False, "code": "error", "error": f"{type(e).__name__}: {e}"}
+
+
+@app.get("/api/models/health")
+async def models_health():
+    """Polled by the UI every few seconds: is each enabled local server up, and the settings revision. A local
+    server that starts or stops, or settings changed in another window, are picked up without a page reload."""
+    import httpx
+    from .config import SETTINGS_FILE
+    settings = load_settings()
+
+    async def ping(pid: str, cfg: dict) -> tuple[bool, str]:
+        """(up, fingerprint of the model list): the list call itself is the ping, so a model pulled in Ollama or
+        loaded in LM Studio shows up too, not only a server that starts."""
+        base = (cfg.get("base_url") or "").rstrip("/")
+        ollama = cfg.get("kind", pid) == "ollama"
+        url = f"{base}/api/tags" if ollama else f"{base}/models"
+        try:
+            async with httpx.AsyncClient(timeout=1.5) as c:
+                r = await c.get(url)
+        except httpx.HTTPError:
+            return False, ""
+        if r.status_code >= 500:
+            return False, ""
+        try:
+            data = r.json()
+            names = sorted(str(m.get("name") or m.get("id") or "") for m in (data.get("models") if ollama else data.get("data")) or [])
+        except (ValueError, AttributeError, TypeError):
+            names = []
+        return True, str(hash(tuple(names)) & 0xFFFFFFFF)
+    # Every local server is watched, also one that is switched off: a server that starts (LM Studio ships off) is
+    # turned on by itself, unless the user switched it off.
+    local = {pid: cfg for pid, cfg in settings["providers"].items() if cfg.get("local")}
+    res = dict(zip(local, await asyncio.gather(*(ping(p, c) for p, c in local.items()))))
+    woke = [p for p, (up, _) in res.items() if up and not local[p].get("enabled") and not local[p].get("user_disabled")]
+    if woke:
+        save_settings({"providers": {p: {"enabled": True} for p in woke}})
+        for p in woke:
+            router.invalidate_models(p)
+    try:
+        rev = SETTINGS_FILE.stat().st_mtime_ns
+    except OSError:
+        rev = 0
+    on = {p for p, c in local.items() if c.get("enabled") or p in woke}
+    return {"local": {p: res[p][0] for p in on}, "models_rev": {p: res[p][1] for p in on if res[p][0]},
+            "settings_rev": str(rev)}
+
+
+@app.get("/api/local/{pid}/runtime")
+async def local_runtime_get(pid: str):
+    from .llm import local_runtime
+    cfg = load_settings()["providers"].get(pid) or {}
+    if not cfg.get("local"):
+        raise fail(404, "not_local", "Not a local provider")
+    if cfg.get("kind") == "ollama":
+        return {"kind": "ollama", **await local_runtime.ollama_status(cfg.get("base_url", "").rstrip("/"))}
+    return {"kind": "lmstudio", "runtime": cfg.get("runtime") or {}, "lms": bool(router._lms())}
+
+
+class RuntimeIn(BaseModel):
+    values: dict
+
+
+@app.put("/api/local/{pid}/runtime")
+async def local_runtime_put(pid: str, body: RuntimeIn):
+    from .llm import local_runtime
+    cfg = load_settings()["providers"].get(pid) or {}
+    if not cfg.get("local"):
+        raise fail(404, "not_local", "Not a local provider")
+    try:
+        if cfg.get("kind") == "ollama":
+            local_runtime.write_vars(body.values)
+            return {"kind": "ollama", **await local_runtime.ollama_status(cfg.get("base_url", "").rstrip("/"))}
+        rt = local_runtime.clean_lms(body.values)
+    except ValueError as e:
+        raise fail(400, "bad_runtime", str(e))
+    save_settings({"providers": {pid: {"runtime": None}}})
+    save_settings({"providers": {pid: {"runtime": rt}}})
+    return {"kind": "lmstudio", "runtime": rt, "lms": bool(router._lms())}
+
+
+@app.post("/api/local/{pid}/restart")
+async def local_runtime_restart(pid: str):
+    from .llm import local_runtime
+    cfg = load_settings()["providers"].get(pid) or {}
+    if cfg.get("kind") != "ollama" or not cfg.get("local"):
+        raise fail(400, "not_ollama", "Only a local Ollama server can be restarted from here")
+    out = await local_runtime.restart_ollama(cfg.get("base_url", "").rstrip("/"))
+    router.invalidate_models(pid)
+    return out
 
 
 @app.get("/api/usage")
@@ -796,16 +1322,42 @@ async def get_usage():
                      "headroom": round(usage.headroom(e["model"], mm.get("limits") or {}), 3)})
     # Shown: providers with usage, cooldowns or limits, plus cloud providers ready to use (key set).
     ready = {pid for pid, cfg in settings["providers"].items() if not cfg.get("local") and router.usable(pid, cfg)}
-    return {"providers": usage.snapshot(settings["providers"], mm.get("limits") or {}, ready), "pool": pool,
-            "now": time.time()}
+    snap = usage.snapshot(settings["providers"], mm.get("limits") or {}, ready)
+    # The providers' own account data (credits, balance, free tier): asked in parallel, at most 8 s.
+    accounts = await asyncio.gather(*(usage.account(pid, settings["providers"][pid]) for pid in snap), return_exceptions=True)
+    for pid, acc in zip(list(snap), accounts):
+        if isinstance(acc, dict) and acc:
+            snap[pid]["account"] = acc
+    return {"providers": snap, "pool": pool, "now": time.time()}
 
 
 @app.post("/api/usage/clear")
-def clear_usage_cooldowns(model: str | None = None):
-    """'Try again now': forget the cooldown of a model (or all) after the user topped up or a limit reset."""
+async def clear_usage_cooldowns(model: str | None = None, probe: bool = True):
+    """'Try again now': forget the cooldown of a model (or a whole provider, 'pid:'), then really ask the provider
+    with a one-token request, so the user sees at once whether it works again or why not."""
     from .llm import usage
+    from .llm.providers import ProviderError
     usage.clear(model)
-    return {"ok": True}
+    if not probe or not model:
+        return {"ok": True}
+    target = model
+    if model.endswith(":"):  # a provider: its first model (the active one when it belongs to it)
+        active = load_settings().get("active_model") or ""
+        if active.startswith(model):
+            target = active
+        else:
+            listing = await router.models_for(model[:-1])
+            if not listing["models"]:
+                return {"ok": False, "error": listing.get("error") or "no models"}
+            target = model + listing["models"][0]["id"]
+    t0 = time.monotonic()
+    try:
+        await asyncio.wait_for(router.complete(target, [{"role": "user", "content": "ping"}], {"max_tokens": 8}), 45)
+    except ProviderError as e:
+        return {"ok": False, "model": target, "code": e.code, "error": str(e)[:400]}
+    except asyncio.TimeoutError:
+        return {"ok": False, "model": target, "code": "timeout", "error": "no answer in 45 s"}
+    return {"ok": True, "model": target, "ms": int((time.monotonic() - t0) * 1000)}
 
 
 # ---------- MCP servers ----------
@@ -891,8 +1443,13 @@ def patch_settings(body: dict):
     body.pop("secrets", None)
     if body.get("permission_mode") and body["permission_mode"] not in policy.MODES:
         raise fail(400, "bad_permission_mode", "Invalid permission mode")
-    for pid in (body.get("providers") or {}):
+    current = load_settings()["providers"]
+    for pid, patch in (body.get("providers") or {}).items():
         router.invalidate_models(pid)
+        # A local server the user switched off stays off; otherwise it is turned on by itself when it starts
+        # (see models_health).
+        if isinstance(patch, dict) and "enabled" in patch and (current.get(pid) or patch).get("local"):
+            patch["user_disabled"] = not patch["enabled"]
     return save_settings(body)
 
 
@@ -955,7 +1512,7 @@ def _localize_later(kind: str, name: str) -> None:
             await asyncio.to_thread(catalog.localize, i18n.installed_languages(), [path])
         except Exception:
             pass  # offline: the item keeps its generic text
-    asyncio.create_task(job())  # callers are async endpoints, so a loop is running
+    _bg(job())  # callers are async endpoints, so a loop is running
 
 
 @app.delete("/api/catalog/{kind}/{name}")
@@ -1063,19 +1620,62 @@ async def events_ws(ws: WebSocket):
         await ws.close(code=4403)
         return
     await ws.accept()
-    since = int(ws.query_params.get("since", 0))
-    q, replay, truncated = bus.subscribe(since)
     try:
-        if truncated:
-            await ws.send_json({"seq": 0, "topic": "system", "type": "history_truncated", "payload": {}})
-        for e in replay:
-            await ws.send_json(e)
+        since = max(0, int(ws.query_params.get("since", 0)))
+    except ValueError:
+        since = 0
+    boot = ws.query_params.get("boot") or ""
+    q, replay, truncated = bus.subscribe(since)
+    # No await between subscribe() and the snapshots below: everything published later arrives through the queue, so
+    # the state the client gets is exact (nothing twice, nothing missing).
+    # A new page, a client from before a restart, or one that was away longer than the replay buffer reaches: it
+    # gets the state itself - every running task as a snapshot (text, steps, to-dos, waiting approvals) - instead of
+    # a partial replay. A short reconnect gets exactly the events it missed.
+    fresh = truncated or not since or (bool(boot) and boot != bus.boot)
+    now = time.time()
+    first = [{"seq": bus.last_seq, "ts": now, "topic": "system", "type": "hello",
+              "payload": {"boot": bus.boot, "reset": fresh}}]
+    if fresh:
+        first += [{"seq": bus.last_seq, "ts": now, "topic": "run", "type": "snapshot", "payload": r.snapshot()}
+                  for r in orchestrator.RUNS.values()]
+        first += bus.recent("process")  # the process panel keeps its output after a reload
+    else:
+        first += replay
+    try:
+        for i in range(0, len(first), 200):
+            await ws.send_json(first[i:i + 200])
         while True:
-            await ws.send_json(await q.get())
+            try:
+                batch = [await asyncio.wait_for(q.get(), 15)]
+            except asyncio.TimeoutError:
+                # Keep-alive: the client reconnects by itself when nothing arrives for a while (a connection that
+                # died without closing - sleep, network change - used to leave the chat frozen until a reload).
+                await ws.send_json({"seq": 0, "ts": time.time(), "topic": "system", "type": "ping", "payload": {}})
+                continue
+            while len(batch) < 300 and not q.empty():
+                batch.append(q.get_nowait())
+            batch = _coalesce(batch)
+            await ws.send_json(batch if len(batch) > 1 else batch[0])
     except (WebSocketDisconnect, RuntimeError):
+        pass
+    except Exception:  # noqa: BLE001 - a connection that broke mid-send
         pass
     finally:
         bus.unsubscribe(q)  # disconnect does not stop runs or processes
+
+
+def _coalesce(batch: list[dict]) -> list[dict]:
+    """Text pieces of one answer that are waiting together go out as one event (a fast model or a slow client:
+    hundreds of tiny messages became one). The merged event carries the last piece's sequence number."""
+    out: list[dict] = []
+    for e in batch:
+        last = out[-1] if out else None
+        if (last and e["type"] == "delta" and last["type"] == "delta" and e["topic"] == "run" == last["topic"]
+                and e["payload"].get("run_id") == last["payload"].get("run_id")):
+            out[-1] = {**e, "payload": {**e["payload"], "text": last["payload"]["text"] + e["payload"]["text"]}}
+        else:
+            out.append(e)
+    return out
 
 
 @app.post("/api/location/{request_id}")
@@ -1083,6 +1683,31 @@ def location_answer(request_id: str, body: dict):
     """The app's answer to a location request: {lat, lon, accuracy} or {error}."""
     from . import location
     return {"ok": location.answer(request_id, body)}
+
+
+@app.get("/api/browser/status")
+def browser_status():
+    """The browser agent window (browser_* tools): is it open, which tabs, how big its saved-sign-in profile is."""
+    from .tools.browser import AGENT
+    return AGENT.status()
+
+
+@app.post("/api/browser/close")
+async def browser_close():
+    """Close the browser window now (its profile, and the sign-ins in it, are kept)."""
+    from .tools.browser import AGENT
+    await AGENT.close()
+    return {"ok": True}
+
+
+@app.post("/api/browser/reset")
+async def browser_reset():
+    """Forget every sign-in: close the window and delete its profile folder."""
+    from .tools.browser import AGENT
+    if AGENT.running() and orchestrator.any_run_active():
+        raise fail(409, "browser_busy", "A task is using the browser right now")
+    ok = await AGENT.reset_profile()
+    return {"ok": ok}
 
 
 def _pct(values: list[float], q: float) -> int | None:
@@ -1118,10 +1743,40 @@ def perf(last: int = 100):
     return out
 
 
+@app.get("/api/models/stats")
+def model_stats():
+    """Per model: tasks, failures (also tasks that had to move to another model), first-token wait, turn time and
+    prompt reading speed - Settings > Models; the pool prefers the fast, reliable ones."""
+    from .llm import modelstats
+    orchestrator._speed_file()
+    stats = modelstats.all_stats()
+    for m, v in orchestrator.SPEED.items():
+        stats.setdefault(m, {"tasks": 0, "ok": 0, "failed": 0, "fail_pct": 0})["read_ms_per_1k"] = v[0]
+    return {"models": stats}
+
+
+@app.delete("/api/models/stats")
+def model_stats_reset(model: str = ""):
+    from .llm import modelstats
+    from .config import atomic_write
+    modelstats.reset(model or None)
+    orchestrator._speed_file()
+    if model:  # the measured reading speed goes with it (it is part of the same record in Settings)
+        orchestrator.SPEED.pop(model, None)
+    else:
+        orchestrator.SPEED.clear()
+    try:
+        atomic_write(orchestrator._speed_file(), json.dumps(orchestrator.SPEED, indent=1))
+    except OSError:
+        pass
+    return {"ok": True}
+
+
 @app.get("/api/health")
 def health():
     p = perf(50)
-    return {"ok": True, "runs": list(orchestrator.RUNS), "processes": len(manager.procs),
+    from .config import VERSION
+    return {"ok": True, "version": VERSION, "runs": list(orchestrator.RUNS), "processes": len(manager.procs),
             "perf": {k: p[k] for k in ("tasks", "first_ms", "model_wait_ms", "tools_ms", "overhead_ms")}}
 
 

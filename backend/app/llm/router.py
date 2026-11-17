@@ -3,6 +3,7 @@ or when settings.cloud_fallback is explicitly enabled (and the switch is reporte
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -12,19 +13,22 @@ from typing import AsyncIterator, Callable
 
 import httpx
 
-from ..config import get_secret, load_settings
+from ..config import DATA_DIR, get_secret, load_settings
 from ..events import bus
-from . import usage
+from . import modelstats, usage
 from .providers import ADAPTERS, VISION_HINT, Capabilities, OllamaProvider, Provider, ProviderError
 
 # Used only when a provider's API does not report a context window.
 CONTEXT_FALLBACK = [
     (r"gemini", 1_048_576), (r"deepseek-v4|glm-5|gpt-4\.1", 1_000_000), (r"claude", 200_000),
+    # NVIDIA NIM lists no window: Nemotron 3 / 3.5 (nano, super, ultra 550B) read up to 1M tokens (model cards).
+    (r"nemotron-3(?!.*(embed|safety|parse|reward))", 1_000_000), (r"llama-3\.\d-nemotron", 128_000),
     (r"gpt-5", 400_000), (r"grok", 256_000), (r"qwen3\.8|gemma-4|qwen3-vl", 256_000),
     (r"gpt-4o|deepseek|mistral|llama-3|qwen", 128_000), (r"evren-llm-7b", 32_768),
 ]
 DEFAULT_CONTEXT = 32_768
-LOCAL_DEFAULT_CTX = 32_768  # local window when neither the user nor the model file sets one
+LOCAL_DEFAULT_CTX = 16_384  # local window when neither the user nor the model file sets one (fast on a CPU, light on RAM;
+# grows only when a task really needs it, within what the free RAM allows)
 _INFO_CACHE: dict[str, tuple[float, dict]] = {}
 _NO_NATIVE_TOOLS: set[str] = set()  # models that rejected native tool calls (tag protocol is used)
 
@@ -49,8 +53,16 @@ def get_provider(name: str, require_enabled: bool = True) -> Provider:
 
 
 def supports_images(model_id: str) -> bool:
+    """The user's profile first, then what the provider's API reported for the model (Ollama capabilities,
+    OpenRouter modalities...), and only then the name."""
     if (v := profile(model_id).get("vision")) in ("on", "off"):
         return v == "on"
+    cached = _INFO_CACHE.get(model_id)
+    if cached and cached[1].get("vision") is not None:
+        return bool(cached[1]["vision"])
+    for m in (_MODEL_CACHE.get(model_id.partition(":")[0]) or (0, {}))[1].get("models", []):
+        if m.get("id") == model_id.partition(":")[2] and m.get("vision") is not None:
+            return bool(m["vision"])
     return any(h in model_id.lower() for h in VISION_HINT)
 
 
@@ -126,9 +138,9 @@ def profile(model_id: str) -> dict:
 def with_profile(model_id: str, m: dict, profiles: dict | None = None) -> dict:
     """Model info (list entry or context info) with the profile's capability overrides applied."""
     p = (profiles.get(model_id) or {}) if profiles is not None else profile(model_id)
+    m = {**m, "can_think": m.get("can_think", m.get("thinking"))}  # the API's own answer, before any override
     if not p:
         return m
-    m = dict(m)
     for k in ("vision", "thinking"):
         if p.get(k) in ("on", "off"):
             m[k] = p[k] == "on"
@@ -162,28 +174,51 @@ HEARTBEAT = 2.0  # seconds of silence after which an 'idle' event is emitted
 # A cloud API streams continuously (also while it writes a tool call); minutes of silence mean a stalled request:
 # give up and let the task retry (or switch model) instead of waiting for the 30-minute read timeout.
 # Local servers stay silent while they read a long prompt on CPU, so they have no such limit.
-CLOUD_SILENCE = float(os.environ.get("AIIQ_CLOUD_SILENCE") or 180)
+CLOUD_SILENCE = float(os.environ.get("AIIQ_CLOUD_SILENCE") or 300)  # default of Settings > Agent > stream_timeout
 
 
-async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | None = None) -> AsyncIterator[dict]:
+def silence_limits(local: bool) -> tuple[float | None, float | None]:
+    """(first token, between chunks) silence limits in seconds from Settings > Agent; None = no limit."""
+    a = load_settings().get("agent") or {}
+    if local:
+        v = float(a.get("local_stream_timeout") or 0)
+        return (v or None), (v or None)
+    mid = float(a.get("stream_timeout") or CLOUD_SILENCE)
+    first = float(a.get("first_token_timeout") or max(mid, 300))
+    return max(30.0, first), max(30.0, mid)
+
+
+async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | None = None,
+                     first_silence: float | None = None) -> AsyncIterator[dict]:
     """Pass provider events through, adding {'type': 'idle', 'seconds'} while the provider is silent.
     Local servers stream nothing while a model writes a native tool call (a whole file can take minutes), so the
-    UI shows live progress and cancellation still works. Network failures become ProviderErrors."""
+    UI shows live progress and cancellation still works. Network failures become ProviderErrors.
+    first_silence: the limit before the first event (the provider reads the prompt first), max_silence after it."""
     it = gen.__aiter__()
     pending: asyncio.Future | None = None
-    idle = 0.0
+    last_data = time.monotonic()  # the last real content (text, thinking, tool-call parts, usage)
+    started = False
     try:
         while True:
             if pending is None:
                 pending = asyncio.ensure_future(it.__anext__())
             done, _ = await asyncio.wait({pending}, timeout=HEARTBEAT)
+            if done and pending.exception() is None and (pending.result() or {}).get("type") == "ping":
+                # A keep-alive (SSE comment) keeps the connection open but carries nothing: it must not reset the
+                # silence clock, or a provider that pings while it writes a tool call never hits the stall limit.
+                pending, done = None, set()
             if not done:
-                idle += HEARTBEAT
-                if max_silence and idle >= max_silence:
-                    raise ProviderError("timeout", f"{name}: no data for {int(idle)} s (stalled request)")
+                idle = time.monotonic() - last_data
+                limit = max_silence if started else (first_silence or max_silence)
+                if limit and idle >= limit:
+                    raise ProviderError("timeout", f"{name}: no data for {int(idle)} s "
+                                        f"({'stalled mid-answer' if started else 'no first token'}; limit {int(limit)} s "
+                                        "in Settings > Agent)")
                 yield {"type": "idle", "seconds": int(idle)}
                 continue
-            fut, pending, idle = pending, None, 0.0
+            fut, pending = pending, None
+            last_data = time.monotonic()
+            started = True
             try:
                 evt = fut.result()
             except StopAsyncIteration:
@@ -202,10 +237,68 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
             pass
 
 
+class _Slots:
+    """Requests in flight to one cloud provider. Providers limit parallel requests per key (evren answers a second
+    one with HTTP 503 "model is busy"); the app itself sends several at once (title, summary, vision, team members,
+    a second chat), so they wait here for a free slot instead of failing. After a busy/rate-limit answer the
+    provider gets one request at a time for a while (adaptive), then the normal limit again."""
+
+    def __init__(self, limit: int):
+        self.limit, self.busy, self.low_until = max(1, limit), 0, 0.0
+        self.cond = asyncio.Condition()
+
+    def cap(self) -> int:
+        return 1 if time.monotonic() < self.low_until else self.limit
+
+
+_SLOTS: dict[str, _Slots] = {}
+DEFAULT_CONCURRENCY = 3  # per cloud provider; Settings > provider "concurrency" overrides it
+SERIAL_AFTER_BUSY = 300  # seconds of one-at-a-time after a busy / rate-limit answer
+
+
+async def _take_slot(pname: str, cfg: dict, cancel: asyncio.Event | None) -> _Slots | None:
+    if cfg.get("local"):
+        return None  # local servers queue by themselves
+    s = _SLOTS.get(pname)
+    limit = max(1, int(cfg.get("concurrency") or DEFAULT_CONCURRENCY))
+    if s is None:
+        s = _SLOTS[pname] = _Slots(limit)
+    s.limit = limit  # Settings > provider "parallel requests" applies at once (it was read only on first use)
+    async with s.cond:
+        while s.busy >= s.cap():
+            if cancel and cancel.is_set():
+                raise asyncio.CancelledError
+            try:
+                await asyncio.wait_for(s.cond.wait(), 1.0)
+            except asyncio.TimeoutError:
+                pass
+        s.busy += 1
+    return s
+
+
+async def _free_slot(s: _Slots | None) -> None:
+    if s is None:
+        return
+    async with s.cond:
+        s.busy = max(0, s.busy - 1)
+        s.cond.notify_all()
+
+
+_MAIN_ACTIVE: dict[str, int] = {}  # provider -> task requests streaming now (side jobs wait for 0)
+
+
+def provider_busy(pname: str) -> None:
+    """A busy / rate-limit answer: one request at a time to this provider for a while."""
+    if s := _SLOTS.get(pname):
+        s.low_until = time.monotonic() + SERIAL_AFTER_BUSY
+
+
 async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = None,
                       cancel: asyncio.Event | None = None,
                       on_fallback: Callable[[str], None] | None = None) -> AsyncIterator[dict]:
     caller = dict(opts or {})  # without this model's profile: a fallback model applies its own
+    # lane "side": a background job (chat title) that must never overlap a task's own request on that provider.
+    lane = caller.pop("lane", "main")
     opts = dict(caller)
     pname, model = split_model_id(model_id)
     if "num_ctx" not in opts and (n := load_settings()["context"]["num_ctx"].get(model_id)):
@@ -226,22 +319,50 @@ async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = N
     tokens = {"input": 0, "output": 0}
     try:
         prov = get_provider(pname)
-        async for evt in _heartbeat(prov.stream(model, messages, opts), pname,
-                                    None if prov.cfg.get("local") else CLOUD_SILENCE):
-            if cancel and cancel.is_set():
-                raise asyncio.CancelledError
-            if evt["type"] == "thinking" and hide_thinking:
-                continue
-            if evt["type"] == "usage":
-                tokens["input"] = evt.get("input") or tokens["input"]
-                tokens["output"] = evt.get("output") or tokens["output"]
-            yield evt
+        if prov.cfg.get("local") and isinstance(prov, OllamaProvider) and "num_ctx" not in opts:
+            # Every request to a local model carries the same window. A side call without one (a summary, a language
+            # fix, a title, a probe) made Ollama fall back to its own default size: the model was reloaded for that
+            # call and again for the next task turn - twice tens of seconds on a CPU, with a RAM spike each time.
+            opts["num_ctx"] = (await context_info(model_id))["current"]
+        # A provider with a known requests-per-minute cap (NVIDIA NIM free: 40) is paced instead of answering 429s.
+        # free_rpm: a cap only the provider's free models have (OpenRouter ":free": 20 per minute).
+        free = model.endswith(":free") and int(prov.cfg.get("free_rpm") or 0)
+        if rpm := int(free or prov.cfg.get("rpm") or 0):
+            await usage.pace(f"{pname}:free" if free else pname, rpm, cancel)
+        first, mid = silence_limits(bool(prov.cfg.get("local")))
+        if lane == "side":
+            for _ in range(180):  # waits while a task streams on this provider (90 s at most)
+                if not _MAIN_ACTIVE.get(pname):
+                    break
+                await asyncio.sleep(0.5)
+        slot = await _take_slot(pname, prov.cfg, cancel)
+        if lane != "side":
+            _MAIN_ACTIVE[pname] = _MAIN_ACTIVE.get(pname, 0) + 1
+        try:
+            async for evt in _heartbeat(prov.stream(model, messages, opts), pname, mid, first):
+                if cancel and cancel.is_set():
+                    raise asyncio.CancelledError
+                if evt["type"] == "thinking" and hide_thinking:
+                    continue
+                if evt["type"] == "usage":
+                    tokens["input"] = evt.get("input") or tokens["input"]
+                    tokens["output"] = evt.get("output") or tokens["output"]
+                yield evt
+        finally:
+            await _free_slot(slot)
+            if lane != "side":
+                _MAIN_ACTIVE[pname] = max(0, _MAIN_ACTIVE.get(pname, 1) - 1)
         usage.record(model_id, tokens["input"], tokens["output"])  # quota windows (5 h / week)
     except ProviderError as e:
+        if e.code in ("overloaded", "rate_limit"):
+            provider_busy(pname)
         usage.fail(model_id, e.code, str(e), usage.reset_hint(prov.base_url) if prov else None)
         settings = load_settings()
         fb = settings.get("fallback_model")
-        if e.code == "unavailable" and settings.get("cloud_fallback") and fb and fb != model_id:
+        # The fallback model (Settings > Models) answers when the chosen provider cannot be reached or is
+        # overloaded; quota, key and request errors are the user's to fix and are reported instead.
+        if e.code in ("unavailable", "overloaded", "bad_gateway", "server") and settings.get("cloud_fallback") \
+                and fb and fb != model_id:
             if on_fallback:
                 on_fallback(fb)
             async for evt in stream_chat(fb, messages, caller, cancel):
@@ -252,7 +373,18 @@ async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = N
 
 async def complete(model_id: str, messages: list[dict], opts: dict | None = None,
                    cancel: asyncio.Event | None = None) -> str:
-    return "".join([e["text"] async for e in stream_chat(model_id, messages, opts, cancel) if e["type"] == "text"])
+    """One-shot text (summaries, language fixes, delegated answers): reasoning the model wrote inline (<think>,
+    harmony analysis channel, a lone </think>) is removed, so it never ends up in a summary or an answer."""
+    from ..agents.stream_parser import StreamSplitter
+    raw = "".join([e["text"] async for e in stream_chat(model_id, messages, opts, cancel) if e["type"] == "text"])
+    sp = StreamSplitter()
+    out: list[str] = []
+    for kind, text in sp.feed(raw) + sp.flush():
+        if kind == "retract":
+            out.clear()
+        elif kind == "visible":
+            out.append(text)
+    return "".join(out)
 
 
 _MODEL_CACHE: dict[str, tuple[float, dict]] = {}
@@ -282,6 +414,8 @@ async def models_for(name: str, refresh: bool = False) -> dict:
         out["error"], out["code"] = str(e), e.code
     except asyncio.TimeoutError:
         out["error"], out["code"] = "timeout", "timeout"
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:  # unreachable, or an answer in another shape
+        out["error"], out["code"] = f"{name}: {type(e).__name__}: {e}", "unavailable"
     for m in out["models"]:
         m["context"] = m.get("context") or fallback_context(m["id"]) if not out["local"] else m.get("context")
     if not out["error"]:  # failures are not cached: the next request retries immediately
@@ -296,8 +430,10 @@ def _profiled(name: str, out: dict) -> dict:
     models = []
     for m in out["models"]:
         mid = f"{name}:{m['id']}"
+        raw = m
         m = with_profile(mid, m, profiles)
-        models.append({**m, **effort_spec(mid, m, settings)})
+        # Effort levels follow what the API offers, not the user's on/off choice (the buttons must not vanish).
+        models.append({**m, **effort_spec(mid, raw, settings)})
     return {**out, "models": models}
 
 
@@ -308,12 +444,38 @@ def usable_providers() -> dict[str, dict]:
 
 async def list_all_models() -> dict[str, dict]:
     providers = usable_providers()
-    results = await asyncio.gather(*(models_for(k) for k in providers))
-    return dict(zip(providers, results))
+    results = await asyncio.gather(*(models_for(k) for k in providers), return_exceptions=True)
+    # One provider that fails in an unexpected way no longer takes the whole model list down with it.
+    return {k: (r if isinstance(r, dict) else {"name": providers[k]["name"], "local": providers[k]["local"], "models": [],
+                                               "error": f"{type(r).__name__}: {r}", "code": "error"})
+            for k, r in zip(providers, results, strict=True)}
 
 
 def fallback_context(model: str) -> int:
     return next((n for pat, n in CONTEXT_FALLBACK if re.search(pat, model, re.I)), DEFAULT_CONTEXT)
+
+
+_INFO_REFRESH: set[str] = set()
+_TASKS: set[asyncio.Task] = set()
+
+
+async def _refresh_info(model_id: str) -> dict:
+    pname, model = split_model_id(model_id)
+    try:
+        info = await asyncio.wait_for(get_provider(pname).model_info(model), 10)
+        _INFO_CACHE[model_id] = (time.monotonic(), info)
+        return info
+    except Exception:
+        return {"context": None}
+    finally:
+        _INFO_REFRESH.discard(model_id)
+
+
+async def warm_info() -> None:
+    """At start: the active model's and the pool models' details, fetched before the first task needs them."""
+    s = load_settings()
+    models = {s.get("active_model") or ""} | {e.get("model", "") for e in (s.get("multi_model") or {}).get("pool") or []}
+    await asyncio.gather(*(_refresh_info(m) for m in models if ":" in m), return_exceptions=True)
 
 
 async def context_info(model_id: str) -> dict:
@@ -321,24 +483,47 @@ async def context_info(model_id: str) -> dict:
     pname, model = split_model_id(model_id)
     settings = load_settings()
     cached = _INFO_CACHE.get(model_id)
-    if cached and time.monotonic() - cached[0] < 1800:
+    if cached:
+        # An older answer is still used at once and refreshed in the background: a task never waits for this
+        # network call (it cost 0.3-0.5 s at the start of a task after every restart or every 30 minutes).
         info = cached[1]
+        if time.monotonic() - cached[0] >= 1800 and model_id not in _INFO_REFRESH:
+            _INFO_REFRESH.add(model_id)
+            task = asyncio.create_task(_refresh_info(model_id))
+            _TASKS.add(task)  # a reference until it ends (an unreferenced task can be collected mid-flight)
+            task.add_done_callback(_TASKS.discard)
     else:
-        try:
-            info = await asyncio.wait_for(get_provider(pname).model_info(model), 10)
-            _INFO_CACHE[model_id] = (time.monotonic(), info)
-        except Exception:
-            info = {"context": None}
+        info = await _refresh_info(model_id)
     p_cfg = settings["providers"].get(pname, {})
     max_ctx = info.get("context") or (p_cfg.get("context") or fallback_context(model))
     local = bool(p_cfg.get("local"))
     override = settings["context"]["num_ctx"].get(model_id)
     current = min(override or info.get("default_ctx") or (LOCAL_DEFAULT_CTX if local else max_ctx), max_ctx)
+    ram = None
+    if local and info.get("kv_per_token"):
+        # RAM guard: the window (and any automatic growth) stays within what the free memory can hold, so a big
+        # local model never pushes the computer into swapping or a crash.
+        from . import memguard
+        ram = await asyncio.to_thread(memguard.safe_window, get_provider(pname).base_url, model, info["kv_per_token"])
+        if ram and not ram["short"]:
+            binding = current > ram["max"]
+            max_ctx = max(2048, min(max_ctx, ram["max"]))
+            current = min(current, max_ctx)
+            # The same window as the last request while it still fits: free RAM moving by a few megabytes must not
+            # change num_ctx, because every other size makes the server reload the whole model.
+            current = memguard.steady(model, current, ram["max"], binding)
+            max_ctx = max(max_ctx, current)
+    if local:
+        from . import memguard
+        if (cap := memguard.cap(model)) and cap < max_ctx:
+            # Memory ran low and the guard made this model's window smaller (the model stays loaded): nothing grows
+            # past it until memory is comfortable again.
+            max_ctx, current = cap, min(current, cap)
     out = with_profile(model_id, {
-        "model": model_id, "max": max_ctx, "current": current, "local": local, "adjustable": local,
+        "model": model_id, "max": max_ctx, "current": current, "local": local, "adjustable": local, "ram": ram,
         "threshold": settings["context"]["compress_threshold"], "tools": info.get("tools"),
         "vision": info.get("vision"), "thinking": info.get("thinking"), "native_tools": native_tools(model_id, info)})
-    return {**out, **effort_spec(model_id, out)}
+    return {**out, **effort_spec(model_id, {**out, "thinking": info.get("thinking")})}
 
 
 def native_tools(model_id: str, info: dict) -> bool:
@@ -351,11 +536,33 @@ def native_tools(model_id: str, info: dict) -> bool:
     forced = profile(model_id).get("tools")
     if forced == "tags":
         return False
+    if forced != "native" and is_local(model_id):
+        # Local servers (Ollama) send a native tool call only when the whole call is generated: a page written by a
+        # CPU model was 5-10 minutes of silence (nothing visible, everything lost on a drop). The text protocol streams
+        # the file as it is written (live progress, resumable). Model profile "native" turns function calling back on.
+        return False
     return prov.native_tools and (forced == "native" or info.get("tools") is not False) and model_id not in _NO_NATIVE_TOOLS
 
 
-def disable_native_tools(model_id: str) -> None:
+def disable_native_tools(model_id: str, persist: bool = False) -> None:
+    """persist: remembered across restarts (data/stream_tools.json) - for providers that send a native tool call
+    only when it is complete, so every later task starts with the streamed text protocol instead of first losing
+    a minute (or a whole file) to a silent call."""
     _NO_NATIVE_TOOLS.add(model_id)
+    if persist:
+        try:
+            saved = set(json.loads(_STREAM_TOOLS.read_text(encoding="utf-8"))) if _STREAM_TOOLS.exists() else set()
+            if model_id not in saved:
+                _STREAM_TOOLS.write_text(json.dumps(sorted(saved | {model_id})), encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+
+
+_STREAM_TOOLS = DATA_DIR / "stream_tools.json"
+try:
+    _NO_NATIVE_TOOLS.update(json.loads(_STREAM_TOOLS.read_text(encoding="utf-8")) if _STREAM_TOOLS.exists() else [])
+except (OSError, ValueError):
+    pass
 
 
 def _lms() -> str | None:
@@ -368,6 +575,61 @@ async def _run(*argv: str) -> tuple[int, str]:
                                              env={**os.environ, "NO_COLOR": "1"})
     out, _ = await p.communicate()
     return p.returncode or 0, out.decode(errors="replace")
+
+
+async def _lms_rest_load(prov, body: dict) -> bool:
+    """LM Studio 0.4+: POST /api/v1/models/load with load options. False when the endpoint is missing (older app)."""
+    import httpx
+    root = prov.base_url.rstrip("/").removesuffix("/v1")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=5)) as c:
+            r = await c.post(f"{root}/api/v1/models/load", json=body, headers=prov.headers())
+    except httpx.HTTPError:
+        return False
+    if r.status_code in (404, 405):
+        return False
+    if r.status_code >= 400:
+        raise ProviderError("load_failed", r.text[:400])
+    return True
+
+
+async def reload_local(model_id: str, num_ctx: int) -> bool:
+    """LM Studio fixes the window when a model loads (Ollama takes num_ctx with each request): the memory guard's
+    smaller window takes effect by loading the same model again at that size. Only this model is touched; the chat
+    and the task go on (the next request waits for the load). False when it could not be done."""
+    pname, model = split_model_id(model_id)
+    cfg = load_settings()["providers"].get(pname, {})
+    if not cfg.get("local"):
+        return False
+    prov = get_provider(pname)
+    if isinstance(prov, OllamaProvider):
+        return True  # the next request carries the new num_ctx
+    from . import local_runtime
+    try:
+        rt = local_runtime.clean_lms(cfg.get("runtime") or {})
+    except ValueError:
+        rt = {}
+    import httpx
+    root = prov.base_url.rstrip("/").removesuffix("/v1")
+    try:  # LM Studio 0.4+ REST: unload this instance, load it again at the new size
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(f"{root}/api/v1/models/unload", json={"instance_id": model}, headers=prov.headers())
+        if r.status_code < 400 and await _lms_rest_load(prov, local_runtime.lms_rest_body(model, num_ctx, rt)):
+            _forget_ctx(model_id)
+            return True
+    except (httpx.HTTPError, ProviderError):
+        pass
+    if lms := _lms():
+        await _run(lms, "unload", model)
+        code, _out = await _run(lms, "load", model, "--yes", "--context-length", str(num_ctx), *local_runtime.lms_cli_args(rt))
+        _forget_ctx(model_id)
+        return code == 0
+    return False
+
+
+def _forget_ctx(model_id: str) -> None:
+    """The cached window info of a model that was just loaded at another size."""
+    _INFO_CACHE.pop(model_id, None)
 
 
 async def activate(model_id: str) -> None:
@@ -396,12 +658,22 @@ async def activate(model_id: str) -> None:
             elif (lms := _lms()) and not (name == pname):
                 await _run(lms, "unload", "--all")
         prov = get_provider(pname)
+        rt = {}
+        if not isinstance(prov, OllamaProvider):
+            from . import local_runtime
+            try:
+                rt = local_runtime.clean_lms(cfg.get("runtime") or {})
+            except ValueError:
+                rt = {}
+            body = local_runtime.lms_rest_body(model, num_ctx, rt)
         if isinstance(prov, OllamaProvider):
             await prov.load(model, num_ctx)
+        elif body and await _lms_rest_load(prov, body):
+            pass  # LM Studio's own REST load took the flash-attention / KV / batch options
         elif lms := _lms():
             await _run(lms, "unload", "--all")
             args = [lms, "load", model, "--yes"] + (["--context-length", str(num_ctx)] if num_ctx else [])
-            code, out = await _run(*args)
+            code, out = await _run(*args, *local_runtime.lms_cli_args(rt))
             if code:
                 raise ProviderError("load_failed", out[-400:])
         else:
@@ -422,6 +694,19 @@ CAPS = ("code", "reasoning", "fast", "vision", "long_context", "writing")
 
 def multi_settings() -> dict:
     return load_settings().get("multi_model") or {}
+
+
+def side_model() -> str:
+    """A cloud model for small side jobs (chat titles) while a local model works: the vision model, the fallback
+    model or the first pool model the user set up, if it is usable now. Empty when there is none."""
+    s = load_settings()
+    for mid in [s.get("vision_model"), s.get("fallback_model"), *[e["model"] for e in pool()]]:
+        if not mid or ":" not in mid or is_local(mid):
+            continue
+        pid = mid.partition(":")[0]
+        if usable(pid, s["providers"].get(pid) or {}) and availability(mid)[0]:
+            return mid
+    return ""
 
 
 def is_local(model_id: str) -> bool:
@@ -457,7 +742,7 @@ def availability(model_id: str) -> tuple[bool, str]:
 
 
 async def pick(need: str | None = None, need_ctx: int = 0, exclude: set[str] | None = None,
-               tools: bool = False) -> tuple[str | None, str]:
+               tools: bool = False, avoid: set[str] | None = None) -> tuple[str | None, str]:
     """The most available pool model for a capability: not cooling down, within limits, with room for the
     context, tagged for the capability when possible; ties go to the most headroom left, then pool order.
     Returns (model_id or None, explanation)."""
@@ -482,11 +767,25 @@ async def pick(need: str | None = None, need_ctx: int = 0, exclude: set[str] | N
         if need == "vision" and not (info.get("vision") or "vision" in e["tags"]):
             continue
         match = 0 if not need or need in e["tags"] else 1
-        ranked.append((match, -usage.headroom(mid, limits), i, mid))
+        # The provider's own per-minute token cap (reported in its headers, e.g. Groq free: 8000): a request that
+        # can never fit is skipped; one that would have to wait for the window ranks after models that are free
+        # now. Members of a team also spread over providers (avoid), so they do not queue on one rate limit.
+        pcfg = load_settings()["providers"].get(mid.partition(":")[0]) or {}
+        tok = (usage.reported(pcfg.get("base_url") or "") or {}).get("tokens") or {}
+        if tok.get("limit") and need_ctx and need_ctx > tok["limit"]:
+            skipped.append(f"{mid} (per-minute cap {tok['limit']} tokens)")
+            continue
+        waiting = 1 if (tok.get("remaining") is not None and (tok.get("reset_at") or 0) > time.time()
+                        and tok["remaining"] < max(need_ctx, 3000)) else 0
+        crowded = 1 if avoid and mid.partition(":")[0] in avoid else 0
+        # Proven fast, reliable models first (measured first-token time and failure rate, Settings > Models);
+        # with prefer_fast off the pool order decides, as before.
+        rel, speed = modelstats.rank_key(mid) if multi_settings().get("prefer_fast", True) else (0, 0)
+        ranked.append((waiting, crowded, match, rel, speed, -usage.headroom(mid, limits), i, mid))
     if not ranked:
         return None, "no available model in the pool" + (f": {', '.join(skipped)}" if skipped else "")
     ranked.sort()
-    return ranked[0][3], ""
+    return ranked[0][-1], ""
 
 
 def agent_model(role: str, main: str) -> str:

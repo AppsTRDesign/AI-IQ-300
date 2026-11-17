@@ -34,7 +34,7 @@ class ToolContext:
     root: Path
     mode: str
     cancel: asyncio.Event
-    session_dir: Path | None = None  # chat/<id>-session: scripts, screenshots, state
+    session_dir: Path | None = None  # chat/<id>/.session: scripts, screenshots, state
     owner: str | None = None  # "<session_id>:<run_id>": groups background tasks per chat
     files_changed: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
@@ -46,7 +46,14 @@ class ToolContext:
     live: Callable[..., str] | None = None
     step_id: str | None = None  # the trace step of the tool call running now (team board updates it in place)
     goal: str = ""  # the user's request of this task (team members get it, so paths and names are not lost)
+    team_prior: list = field(default_factory=list)  # team parts of the interrupted task this one resumes
     shell_cwd: str = ""  # set by a standalone "cd DIR": later run/start calls without cwd run there
+    # Decimal figures seen in this task's sources (tool results, the user's messages): a document is checked
+    # against them, so invented numbers are flagged. sourced = a web/file source was read in this task.
+    evidence: set = field(default_factory=set)
+    read_seen: dict = field(default_factory=dict)  # path -> (mtime, size) of whole-file reads in this task
+    started: float = field(default_factory=time.time)  # when this task began (files newer than this are its own)
+    sourced: bool = False
 
 
 @dataclass
@@ -82,21 +89,59 @@ def tool(name: str, usage: str, description: str, params: dict | None = None, ma
 
 # Tools that change nothing on the computer: offered alone for plain knowledge questions.
 READ_ONLY = {"read_file", "list_dir", "search_code", "symbols", "impact", "web_search", "fetch_url", "research", "use_skill", "web_screenshot",
-             "places", "read_document", "my_location"}
+             "places", "read_document", "my_location", "system_info", "browser_snapshot", "browser_find", "browser_inspect",
+             "browser_screenshot", "browser_scroll", "browser_wait"}
 
 
 def _pick(names: set[str] | None) -> list[ToolSpec]:
     return [t for t in TOOLS.values() if names is None or t.name in names]
 
 
-def tools_prompt(names: set[str] | None = None) -> str:
-    return "\n".join(f"- {t.usage}\n  {t.description}" for t in _pick(names))
+def _short(text: str, limit: int) -> str:
+    """The first sentence of a description (or the first `limit` characters at a word boundary)."""
+    text = re.sub(r"\s+", " ", text or "").strip()
+    m = re.match(r"(.{20,}?[.!?])(\s|$)", text)
+    first = m.group(1) if m else text
+    return first if len(first) <= limit else first[:limit].rsplit(" ", 1)[0] + "…"
 
 
-def tool_schemas(names: set[str] | None = None) -> list[dict]:
-    """Native function-calling definitions (provider adapters wrap them in their own format)."""
-    return [{"name": t.name, "description": t.description,
-             "parameters": {"type": "object", "properties": t.params, "required": list(t.required)}}
+def _compact_param(p: dict) -> dict:
+    out = {k: v for k, v in p.items() if k not in ("description", "items", "properties")}
+    if p.get("description"):
+        out["description"] = _short(p["description"], 70)
+    if isinstance(p.get("items"), dict):
+        out["items"] = _compact_param(p["items"])
+    if isinstance(p.get("properties"), dict):
+        out["properties"] = {k: _compact_param(v) for k, v in p["properties"].items()}
+    return out
+
+
+def tools_prompt(names: set[str] | None = None, compact: bool = False, lean: bool = False) -> str:
+    """lean: the usage line and one short sentence (the usage already shows the arguments)."""
+    if lean:
+        return "\n".join(f"- {t.usage}\n  {_short(t.description, 90)}" for t in _pick(names))
+    return "\n".join(f"- {t.usage}\n  {_short(t.description, 160) if compact else t.description}" for t in _pick(names))
+
+
+def _lean_param(p: dict) -> dict:
+    out = {k: v for k, v in p.items() if k in ("type", "enum")}
+    if p.get("description"):
+        out["description"] = _short(p["description"], 40)
+    if isinstance(p.get("items"), dict):
+        out["items"] = {"type": p["items"].get("type", "string")}
+    return out
+
+
+def tool_schemas(names: set[str] | None = None, compact: bool = False, lean: bool = False) -> list[dict]:
+    """Native function-calling definitions (provider adapters wrap them in their own format). compact: the first
+    sentence of each description only, for small context windows (the definitions are sent with every turn)."""
+    if lean:  # slow models: one short sentence per tool, a few words per argument
+        return [{"name": t.name, "description": _short(t.description, 90),
+                 "parameters": {"type": "object", "properties": {k: _lean_param(v) for k, v in t.params.items()},
+                                "required": list(t.required)}} for t in _pick(names)]
+    return [{"name": t.name, "description": _short(t.description, 160) if compact else t.description,
+             "parameters": {"type": "object", "properties": {k: _compact_param(v) for k, v in t.params.items()}
+                            if compact else t.params, "required": list(t.required)}}
             for t in _pick(names)]
 
 
@@ -200,24 +245,60 @@ def _rel(ctx: ToolContext, target: Path) -> str:
 
 
 @tool("write_file", '<tool name="write_file" path="REL/PATH">full file content</tool>',
-      "Create or overwrite a file (parent folders are created). Always write the COMPLETE file content.",
-      {"path": S("File path relative to the working directory"), "content": S("Complete file content")},
+      "Create or overwrite a file (parent folders are created). Always write the COMPLETE file content in ONE call, "
+      "however large (a whole web page, a full script): every extra call is a full model round trip. append=true adds "
+      "to the end of an existing file (only to continue a file that was cut off).",
+      {"path": S("File path relative to the working directory"), "content": S("Complete file content (or the next part with append)"),
+       "append": {"type": "boolean", "description": "Add content to the end of the existing file (large files in parts)"}},
       main="content", required=("path", "content"))
 async def write_file(ctx, args, body):
     target = _path(ctx, args["path"])
+    from .verify import is_binary_name, text_into_binary
+    if is_binary_name(target):  # an .mp4/.png/.pdf/.docx made of text is a fake file with the right name
+        return ToolResult(False, text_into_binary(target))
     op = {"tool": "write_file", "path": str(target), "sha": hashlib.sha256(body.encode()).hexdigest()[:16]}
-    content = clean_file_content(body)
+    content = with_charset(target, clean_file_content(body))
     existed = target.exists()
+    if str(args.get("append", "")).lower() in ("true", "1", "yes") and existed:
+        if msg := await gate(ctx, {**op, "tool": "write_file"}, policy.decide_file_write(target, ctx.root, ctx.mode)):
+            return ToolResult(False, msg)
+        old = target.read_bytes().decode("utf-8", errors="replace")
+        joined = old + ("" if not old or old.endswith("\n") or content.startswith("\n") else "\n") + content
+        target.write_text(joined, encoding="utf-8", newline="")
+        rel = _rel(ctx, target)
+        ctx.files_changed.append(rel)
+        added = content.count("\n") + (0 if content.endswith("\n") else 1)
+        diff = "@@ appended @@\n" + "\n".join("+" + line for line in content.splitlines()[:4000])
+        return ToolResult(True, f"appended {len(content)} chars to {rel} (now {len(joined)} chars)",
+                          {"path": rel, "language": target.suffix.lstrip("."), "created": False,
+                           "added": added, "removed": 0, "diff": diff[:PREVIEW_LIMIT]})
     preview = lambda: change_preview("overwrite" if existed else "new", _text_of(target) if existed else None,  # noqa: E731
                                      content, _rel(ctx, target))
+    rel = _rel(ctx, target)
+    if existed and _text_of(target) == content:
+        # The same file again with the same content (a model re-creating what it already wrote): nothing to do.
+        return ToolResult(True, f"{rel} already has exactly this content; nothing was written. Do not write it again: "
+                                "continue with the next step.", {"path": rel})
+    again = existed and rel in ctx.files_changed
     if msg := await gate(ctx, op, policy.decide_file_write(target, ctx.root, ctx.mode), preview):
         return ToolResult(False, msg)
+    # This write's own line changes (like an edit's), so the review card can add up every operation of the task.
+    try:
+        change = await asyncio.to_thread(change_preview, "overwrite" if existed else "new",
+                                         _text_of(target) if existed else None, content, rel)
+    except Exception:
+        change = {}
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8", newline="")
-    rel = _rel(ctx, target)
     ctx.files_changed.append(rel)
-    return ToolResult(True, f"{'updated' if existed else 'created'} {rel} ({len(content)} chars)",
-                      {"path": rel, "language": target.suffix.lstrip("."), "created": not existed})
+    note = (" Note: this file was already written earlier in this task - for further changes use edit_file with the "
+            "changed part only; never recreate a finished file.") if again else ""
+    if js := await js_check(target):
+        note += "\n" + js
+    return ToolResult(True, f"{'updated' if existed else 'created'} {rel} ({len(content)} chars).{note}",
+                      {"path": rel, "language": target.suffix.lstrip("."), "created": not existed,
+                       **({"diff": change["diff"], "added": change["added"], "removed": change["removed"]}
+                          if change.get("diff") is not None and "added" in change else {})})
 
 
 @tool("edit_file", '<tool name="edit_file" path="REL/PATH">\n<<<<<<< SEARCH\nexact lines from the file\n=======\nnew lines\n'
@@ -264,7 +345,8 @@ async def edit_file(ctx, args, body):
     patch = diff(before.replace("\r\n", "\n"), text, rel)
     added = sum(1 for l in patch.splitlines() if l.startswith("+") and not l.startswith("+++"))
     removed = sum(1 for l in patch.splitlines() if l.startswith("-") and not l.startswith("---"))
-    return ToolResult(True, f"edited {rel}: {done} replacement(s), +{added} -{removed} lines",
+    js = await js_check(target)
+    return ToolResult(True, f"edited {rel}: {done} replacement(s), +{added} -{removed} lines" + (f"\n{js}" if js else ""),
                       {"path": rel, "language": target.suffix.lstrip("."), "diff": patch,
                        "added": added, "removed": removed})
 
@@ -308,6 +390,18 @@ async def read_file(ctx, args, body):
     if target.suffix.lower() in DOC_EXTS - {".txt", ".md", ".json", ".xml", ".html", ".htm", ".log", ".csv", ".tsv"}:
         return await read_document(ctx, {"path": args["path"]}, "")  # PDF/Office/image: pages, OCR
     text = target.read_text(encoding="utf-8", errors="replace")
+    # Inline images (data:...;base64) are megabytes of noise for a model: shown as a short placeholder.
+    text = re.sub(r"(data:[\w/+.-]+;base64,)[A-Za-z0-9+/=\s]{300,}",
+                  lambda m: f"{m.group(1)}[{len(m.group(0)) * 3 // 4096} KB image data omitted]", text)
+    st = target.stat()
+    key = str(target.resolve())
+    if not args.get("lines") and ctx.read_seen.get(key) == (st.st_mtime_ns, st.st_size):
+        # The same unchanged file again: its content is already in this conversation.
+        return ToolResult(True, f"{args['path']} is unchanged since you read it earlier in this task ({len(text)} "
+                                "characters); its content is above. Continue with the next step (read_file lines=a-b "
+                                "only if you need one part again).", {"path": args["path"]})
+    if not args.get("lines"):
+        ctx.read_seen[key] = (st.st_mtime_ns, st.st_size)
     if m := re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+))?\s*", args.get("lines") or ""):
         all_lines = text.split("\n")
         start = max(1, int(m.group(1)))
@@ -356,7 +450,16 @@ async def delete_file(ctx, args, body):
     target = _path(ctx, args["path"])
     op = {"tool": "delete_file", "path": str(target)}
     preview = lambda: change_preview("delete", _text_of(target), None, _rel(ctx, target)) if target.is_file() else None  # noqa: E731
-    if msg := await gate(ctx, op, policy.Decision("ask", "dangerous", ["file deletion"]), preview):
+    if ".session" in target.parts:
+        return ToolResult(False, "The chat's .session folder is the app's own record; it cannot be deleted.")
+    try:  # a file this task itself made (a failed output, a temp file) in the working folder: its own to remove
+        own = target.is_file() and target.stat().st_mtime >= ctx.started - 1 and target.resolve().is_relative_to(ctx.root.resolve())
+    except OSError:
+        own = False
+    # 'full' (Tam erişim): never asked; 'auto': only files this task made; 'ask': always asked.
+    decision = policy.Decision("allow", "write") if ctx.mode == "full" or (own and ctx.mode == "auto") else \
+        policy.Decision("ask", "dangerous", ["file deletion"])
+    if msg := await gate(ctx, op, decision, preview):
         return ToolResult(False, msg)
     if target.is_file():
         target.unlink()
@@ -397,7 +500,6 @@ def route_heredoc(shell: str, command: str) -> tuple[str, str]:
         body = "\n".join(lines[i + 1:end]) + "\n"
         head, tail = m.group(1).strip(), m.group(4).strip()
         literal = "@'\n" + body.replace("\n'@", "\n '@") + "'@"
-        target = re.match(r"(?:cat|tee)\s*(>>?)?\s*(\S+)?$", (head + " " + tail).replace("cat >", "cat>").replace("cat>", "cat >"))
         redirect = re.search(r"(>>?)\s*(\S+)", head + " " + tail)
         if head in ("cat", "tee") or (head.startswith(("cat", "tee")) and redirect):
             path = redirect.group(2) if redirect else ""
@@ -490,12 +592,33 @@ def ps_script(command: str, pwsh: bool) -> str:
     return PS_SHIM + command + PS_TRAILER
 
 
+# One command line for a program (not source code of the language): "python --version", "node -v", "pip install x".
+CLI_LINE = re.compile(r"\s*(python3?|py|pip3?|node|npm|npx|php|composer|git|winget|choco|scoop|dotnet|java|go|cargo|"
+                      r"deno|bun|yarn|pnpm|where|which)(\.exe)?(\s+-{1,2}[\w-]+|\s+[\w./:\\-]+)*\s*$", re.I)
 CD_ONLY = re.compile(r"\s*(?:cd|chdir|Set-Location|sl|pushd)(?:\s+/d)?\s+(?:-Path\s+)?(['\"]?)([^'\";&|<>]+?)\1\s*;?\s*")
+
+
+PY_START = re.compile(r"(?:import [A-Za-z_][\w.]*(?:\s*,\s*[\w.]+)*(?: as \w+)?|from [A-Za-z_.][\w.]* import .+"
+                      r"|def \w+\(.*\):|class \w+.*:|async def \w+\(.*\):)\s*$")
+PS_HINT = re.compile(r"(?m)^\s*(?:\$\w+\s*=|[A-Z][a-z]+-[A-Z]\w+\b|param\s*\()")
+
+
+FFMPEG_NO_Y = re.compile(r"(?m)(?:^|(?<=[;&|(]))\s*(?:&\s*)?[\"']?(?:[\w:\\/. -]*[\\/])?ffmpeg(?:\.exe)?[\"']?(?=\s)(?![^\n;&|]*\s-[yn]\b)")
+
+
+def looks_python(command: str) -> bool:
+    """Multi-line Python source (it starts with an import/def/class line and has no PowerShell syntax)."""
+    lines = [ln for ln in command.strip().splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    return len(lines) > 1 and bool(PY_START.match(lines[0].strip())) and not PS_HINT.search(command)         and "<<" not in command
 
 
 def build_argv(ctx: ToolContext, shell: str, command: str) -> list[str]:
     """Turn a shell + command into an argv vector. Script shells use an explicit script file."""
     shell = (shell or DEFAULT_SHELL).lower()
+    if shell != "python" and "ffmpeg" in command:
+        # ffmpeg asks "File exists. Overwrite? [y/N]" and, with no input, gives up: models then delete files or
+        # report a video that was never made. -y overwrites (a command that says -n keeps its choice).
+        command = FFMPEG_NO_Y.sub(lambda m: m.group(0) + " -y", command)
     if shell == "python" and "\n" not in command.strip():
         # Models often send a shell line to the python "shell" ("python app.py", "app.py arg", "pip install x"),
         # which would run as Python source and fail: run it as the command it is.
@@ -506,6 +629,8 @@ def build_argv(ctx: ToolContext, shell: str, command: str) -> list[str]:
             return [PYTHON, *shlex.split(m.group(1))]  # posix: quotes around -c code are removed
         if m := re.fullmatch(r"pip3?\s+(.+)", line, re.I):
             return [PYTHON, "-m", "pip", *shlex.split(m.group(1), posix=sys.platform != "win32")]
+    if shell in POWERSHELLS + ("cmd", "bash") and looks_python(command):
+        shell = "python"  # Python source sent without shell="python" (it failed as PowerShell before)
     if sys.platform != "win32" and shell in POWERSHELLS + ("cmd",) and not shutil.which("pwsh"):
         shell = "bash"  # Linux/macOS without PowerShell: run the command in bash
     shell, command = route_heredoc(shell, command)
@@ -553,6 +678,10 @@ async def _spawn(ctx: ToolContext, args: dict, body: str, background: bool):
         shell, command = "exec", " ".join(shlex.quote(x) if " " in x else x for x in direct)
     if not command:
         return None, ToolResult(False, "Give the command (or argv=[program, args...]).")
+    if shell in ("python", "node", "php") and CLI_LINE.match(command) and "\n" not in command.strip():
+        # A command line ("python --version", "pip install x") sent with shell=python would run as Python source
+        # (NameError): it belongs to the system shell.
+        shell = DEFAULT_SHELL
     cwd = _path(ctx, args.get("cwd") or ctx.shell_cwd or ".")
     if shell in ("powershell", "cmd", "bash") and (m := CD_ONLY.fullmatch(command)):
         # Each command runs in its own process, so a lone "cd" would change nothing: remember it instead,
@@ -565,9 +694,10 @@ async def _spawn(ctx: ToolContext, args: dict, body: str, background: bool):
     op = {"tool": "start" if background else "run", "shell": shell, "cwd": str(cwd), "command": command}
     if msg := await gate(ctx, op, policy.decide_command(command, ctx.mode)):
         return None, ToolResult(False, msg)
+    env = policy.minimal_env()  # the PATH as it is now (a program installed a moment ago is found)
     if isinstance(direct, list) and direct and shell == "exec":
         argv = list(direct)
-        exe = shutil.which(argv[0])
+        exe = shutil.which(argv[0], path=env.get("PATH"))
         if argv[0].lower() in ("python", "python3", "py"):
             argv[0] = PYTHON
         elif exe:
@@ -576,7 +706,7 @@ async def _spawn(ctx: ToolContext, args: dict, body: str, background: bool):
         argv = build_argv(ctx, shell, command)
     ctx.commands.append(command)
     timeout = None if background else float(args.get("timeout") or load_settings()["agent"]["command_timeout"])
-    info = await manager.start(argv, str(cwd), policy.minimal_env(), owner=ctx.owner or ctx.run_id, timeout=timeout,
+    info = await manager.start(argv, str(cwd), env, owner=ctx.owner or ctx.run_id, timeout=timeout,
                                background=background)
     if background:
         ctx.step("process", {"process_id": info.id, "command": command, "shell": shell})
@@ -594,20 +724,43 @@ async def _spawn(ctx: ToolContext, args: dict, body: str, background: bool):
        "cwd": S("Working directory, default '.'"), "timeout": {"type": "integer", "description": "Seconds"}},
       main="command", required=())
 async def run(ctx, args, body):
+    if SERVER_CMD.search(body or "") or SERVER_CMD.search(" ".join(map(str, args.get("argv") or []))):
+        # A server never "finishes": with run the task would wait for the command timeout (minutes). It is started
+        # in the background instead and returns once it is up (it is stopped later with stop, or automatically).
+        res = await start(ctx, args, body)
+        return ToolResult(res.ok, "[This is a server, so it was started in the background with start.]\n" + res.output,
+                          res.data)
+    t0 = time.time()
     info, denied = await _spawn(ctx, args, body, background=False)
     if denied:
         return denied
     waiter = asyncio.create_task(info.done.wait())
     canceller = asyncio.create_task(ctx.cancel.wait())
-    await asyncio.wait({waiter, canceller}, return_when=asyncio.FIRST_COMPLETED)
+    try:
+        await asyncio.wait({waiter, canceller}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:  # the task was stopped while the command ran: never leave it running
+        await asyncio.shield(manager.stop(info.id))
+        raise
+    finally:
+        canceller.cancel()
     if ctx.cancel.is_set():
         await manager.stop(info.id)
-    canceller.cancel()
     out = "\n".join(info.tail)
-    return ToolResult(info.state == "exited", f"exit_code={info.exit_code} state={info.state}\n{clip(out)}",
+    # Files the command wrote are checked by type (a 1 KB "video", an empty PDF, a .docx that is no zip...):
+    # exit code 0 alone does not mean the output is real.
+    from .verify import check_outputs
+    broken = "" if ctx.cancel.is_set() else await check_outputs(ctx.root, t0)
+    return ToolResult(info.state == "exited" and not broken,
+                      f"exit_code={info.exit_code} state={info.state}\n{clip(out)}{broken}",
                       {"process_id": info.id, "exit_code": info.exit_code})
 
 
+# Commands that start a server or a watcher (they run until stopped).
+SERVER_CMD = re.compile(
+    r"http\.server|\bphp\s+(-\w+\s+)*-S\s|\bnpm\s+(run\s+)?(dev|start|serve|watch)\b|\b(yarn|pnpm|bun)\s+(run\s+)?(dev|start|serve)\b|"
+    r"\bnpx\s+(--yes\s+)?(serve|http-server|vite|live-server|nodemon)\b|\bvite(\s|$)|\bnext\s+(dev|start)\b|"
+    r"\buvicorn\b|\bflask\s+run\b|manage\.py\s+runserver|\brails\s+s(erver)?\b|\bhugo\s+server|\bjekyll\s+serve|"
+    r"\bnodemon\b|\bhttp-server\b|\blive-server\b|webpack\s+serve|ng\s+serve|\bdotnet\s+(run|watch)\b.*--urls", re.I)
 # A dev server says it is up ("Local: http://localhost:5173", "listening on 3000", "ready in 412 ms").
 READY = re.compile(r"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]?1?\]?)(:\d+)?|listening|ready in|ready on|"
                    r"started (server|on)|server (is )?running|compiled successfully|webpack compiled|"
@@ -647,8 +800,10 @@ async def start(ctx, args, body):
     if denied:
         return denied
     why = await wait_ready(info)
+    note = ("\nStop it with stop id=" + info.id + " when your check is done; if left running it is stopped "
+            "automatically a few minutes after this task.") if info.state == "running" else ""
     return ToolResult(info.state in ("running", "exited"),
-                      f"process_id={info.id} state={info.state} ({why})\n{clip(chr(10).join(info.tail), 3000)}",
+                      f"process_id={info.id} state={info.state} ({why})\n{clip(chr(10).join(info.tail), 3000)}{note}",
                       {"process_id": info.id, "ready": why})
 
 
@@ -706,9 +861,10 @@ async def research(ctx, args, body):
     parts += [f"## {p['title']}\nURL: {p['url']}\n{p['excerpt']}" for p in r["pages"]]
     if r["blocked"]:
         parts.append("Blocked by site protection (not readable): " + ", ".join(r["blocked"]))
-    if not r["pages"]:
-        parts.append("No source could be read. Search snippets:\n" +
-                     "\n".join(f"- {x['title']} <{x['url']}>: {x['snippet']}" for x in r["results"]))
+    if len(r["pages"]) < 2 and r["results"]:  # few readable sources: the other results' snippets help too
+        read = {p["url"] for p in r["pages"]}
+        parts.append(("No source could be read. " if not r["pages"] else "") + "Search snippets:\n" +
+                     "\n".join(f"- {x['title']} <{x['url']}>: {x['snippet']}" for x in r["results"] if x["url"] not in read))
     return ToolResult(bool(r["pages"] or r["results"]), clip("\n\n".join(parts), 14000),
                       {"sources": [p["url"] for p in r["pages"]]})
 
@@ -724,6 +880,19 @@ async def my_location(ctx, args, body):
         return ToolResult(False, msg)
     loc = await location.current("tr" if ctx.lang == "tr" else "en", str(args.get("fresh", "")).lower() in ("true", "1"))
     return ToolResult("error" not in loc, location.describe(loc), {k: loc.get(k) for k in ("lat", "lon", "accuracy_m", "source")})
+
+
+@tool("system_info", '<tool name="system_info"></tool>',
+      "This computer's hardware and OS in one call: CPU, cores, RAM modules, GPU and VRAM, motherboard, BIOS, disks "
+      "and free space, network adapters, monitors, OS version. Use it for any 'my PC specs / donanım / sistem "
+      "özellikleri' request instead of systeminfo/wmic/findstr commands (those break on non-English systems).", {})
+async def system_info(ctx, args, body):
+    from . import sysinfo
+    try:
+        text = await asyncio.to_thread(sysinfo.report)
+    except Exception as e:  # noqa: BLE001 - a missing source must not break the task
+        return ToolResult(False, f"system_info failed: {e}")
+    return ToolResult(True, text)
 
 
 @tool("places", '<tool name="places" near="Kadıköy, İstanbul" radius="1500" map="true">kahve dükkanı</tool>',
@@ -834,31 +1003,361 @@ async def web_screenshot(ctx, args, body):
         return ToolResult(False, f"screenshot failed: {msg}")
     out = _rel(ctx, target)
     ctx.files_changed.append(out)
+    from .visual import describe_for
+    seen = await describe_for(ctx.model, target, ctx.goal) if target.suffix.lower() != ".pdf" else None
+    look = (f"The vision model {seen[0]} looked at the screenshot:\n{seen[1]}\n\n" if seen else
+            "If you describe the page, use ONLY the page content below (you may not be able to see the image); never "
+            "guess colors, layout or elements that are not listed.\n")
     return ToolResult(True, f"saved {out} ({info['width']}x{info['height']}px) - {info['title'] or info['final_url']}\n"
-                            "The image is already shown to the user in the chat. If you describe the page, use ONLY the "
-                            "page content below (you may not be able to see the image); never guess colors, layout or "
-                            "elements that are not listed.\n"
+                            "The image is already shown to the user in the chat. " + look +
                             f"Headings: {' | '.join(info.get('headings') or []) or '-'}\n"
                             f"Buttons/links: {' | '.join(info.get('buttons') or []) or '-'}\n"
                             f"Images on the page: {info.get('images', 0)}; page background: {info.get('background', '?')}\n"
+                            + (("Problems found while the page ran (fix them, then take the screenshot again):\n- "
+                                + "\n- ".join(info["problems"]) + "\n") if info.get("problems")
+                               else "The page's JavaScript ran without errors; every image loaded.\n") +
                             f"Visible text:\n{info.get('text') or '(none)'}",
                       {"path": out, "screenshot": out, "url": info["final_url"], "title": info["title"],
                        "size": [info["width"], info["height"]]})
 
 
-@tool("make_doc", '<tool name="make_doc" type="docx|xlsx|pdf|pptx" path="docs/report.docx">markdown or JSON content</tool>',
-      "Generate an office document. docx/pdf/pptx take markdown (# headings, - bullets; '---' splits slides); "
-      "xlsx takes a JSON array of rows.",
-      {"type": S("Document type", enum=["docx", "xlsx", "pdf", "pptx"]), "path": S("Output path"),
-       "content": S("Markdown, or JSON rows for xlsx")}, main="content", required=("path", "content"))
+@tool("stock_photo", '<tool name="stock_photo" folder="images" count="3" wide="true">coffee shop interior</tool>',
+      "Find real free photos (Openverse / Wikimedia Commons, commercial-use licenses) and download them into the "
+      "working folder, web-sized. Get ALL the photos a page needs in ONE call: list the subjects separated by commas "
+      "(\"latte art cup, iced coffee, croissant, coffee shop interior\"); they are searched in parallel, one photo "
+      "each (count = total). Short concrete English subjects work best. Use the returned relative paths (never hotlink "
+      "a photo URL). Returns each file with its author and license for a credit line.",
+      {"query": S("Subjects in English, comma separated: one call for every photo the page needs"), "folder": S("Folder in the working directory (default images)"),
+       "count": {"type": "integer", "description": "How many photos (1-8, default 3)"},
+       "wide": {"type": "boolean", "description": "Landscape photos only (hero/banner); default true"}},
+      main="query", required=("query",))
+async def stock_photo(ctx, args, body):
+    from . import stock
+    query = (args.get("query") or body).strip()
+    if not query:
+        return ToolResult(False, "Say what the photo should show.")
+    if msg := await _network_gate(ctx, {"tool": "stock_photo", "url": "https://api.openverse.org"}):
+        return ToolResult(False, msg)
+    folder = _path(ctx, (args.get("folder") or "images").strip() or "images")
+    if msg := await gate(ctx, {"tool": "stock_photo", "path": str(folder)}, policy.decide_file_write(folder / "x.jpg", ctx.root, ctx.mode)):
+        return ToolResult(False, msg)
+    wide = str(args.get("wide", True)).lower() not in ("false", "0", "no")
+    try:
+        got = await stock.find(query, folder, int(re.sub(r"\D", "", str(args.get("count") or "")) or 3), wide)
+    except Exception as e:  # network down, Pillow missing...
+        return ToolResult(False, f"photo search failed: {str(e)[:200]}")
+    if not got:
+        return ToolResult(False, f"No usable photo found for {query!r}: try other, simpler English words, or use "
+                                 "CSS/SVG art instead.")
+    lines = []
+    for g in got:
+        rel = _rel(ctx, g["path"])
+        ctx.files_changed.append(rel)
+        lines.append(f"- {rel} ({g['width']}x{g['height']}) \"{g['title'][:70]}\" by {g['author']} · {g['license']} · {g['source']}")
+    return ToolResult(True, f"Downloaded {len(got)} photo(s); use these relative paths in the page (src=\"{_rel(ctx, got[0]['path'])}\") "
+                            "and add a small credit line (author, license) in the footer:\n" + "\n".join(lines),
+                      {"files": [_rel(ctx, g["path"]) for g in got]})
+
+
+@tool("inspect_media", '<tool name="inspect_media" path="photo.jpg" transcript="true">what to look for</tool>',
+      "See and hear any image, video or audio file, even if you cannot see images yourself: returns its facts (size, "
+      "duration, codecs, EXIF, dominant colours, brightness, sharpness, faces), the text in it (OCR, also on video "
+      "frames), a description by a vision model (a video as numbered key frames at scene changes; the frame sheet "
+      "is saved and shown to the user) and the speech as text (offline transcription). Use it before you describe, "
+      "edit or judge a media file.",
+      {"path": S("Image, video or audio file in the working folder"),
+       "question": S("Optional: what to look for"),
+       "transcript": {"type": "boolean", "description": "Transcribe speech in video/audio (default true)"},
+       "minutes": {"type": "integer", "description": "Transcribe at most this many minutes (default 10)"}},
+      main="question", required=("path",))
+async def inspect_media(ctx, args, body):
+    from . import media_inspect
+    target = _path(ctx, (args.get("path") or "").strip())
+    if not target.is_file():
+        return ToolResult(False, f"No such file in the working folder: {args.get('path')}")
+    try:
+        res = await media_inspect.inspect(
+            target, ctx.root, ctx.model, (args.get("question") or body or ctx.goal or "")[:400], ctx.lang or "tr",
+            transcript=str(args.get("transcript", True)).lower() not in ("false", "0", "no"),
+            minutes=float(re.sub(r"[^\d.]", "", str(args.get("minutes") or "")) or 10))
+    except ValueError as e:
+        return ToolResult(False, str(e))
+    except Exception as e:  # a broken file, ffmpeg missing...
+        return ToolResult(False, f"inspection failed: {type(e).__name__}: {str(e)[:200]}")
+    data: dict = {"path": _rel(ctx, target)}
+    if res.get("sheet"):
+        data["screenshot"] = _rel(ctx, res["sheet"])  # the key-frame sheet appears under the step like a screenshot
+        ctx.files_changed.append(data["screenshot"])
+    return ToolResult(True, clip(media_inspect.report(res), 16000), data)
+
+
+@tool("generate_image", '<tool name="generate_image" path="images/hero.jpg" width="1280" height="768">detailed English prompt</tool>',
+      "Create a new picture from a description (free FLUX image model via Pollinations, no key, a few seconds): "
+      "photo-realistic scenes, product shots, illustrations, 3D renders, logos ideas, a picture 'like this one' (first "
+      "describe the original with inspect_media, then write that description as the prompt). Write a detailed English "
+      "prompt: subject, setting, lighting, camera/style (e.g. 'food photography, top view, soft daylight'). For exact "
+      "diagrams or text-heavy graphics draw with code (skia/drawsvg) instead.",
+      {"prompt": S("Detailed English description of the picture"), "path": S("Output file (default images/generated.jpg)"),
+       "width": {"type": "integer", "description": "Width in px (256-2048, default 1024)"},
+       "height": {"type": "integer", "description": "Height in px (256-2048, default 1024)"},
+       "seed": {"type": "integer", "description": "Optional seed: the same seed and prompt give the same picture"}},
+      main="prompt", required=("prompt",))
+async def generate_image(ctx, args, body):
+    prompt = (args.get("prompt") or body or "").strip()
+    if not prompt:
+        return ToolResult(False, "Describe the picture to create.")
+    if msg := await _network_gate(ctx, {"tool": "generate_image", "url": "https://image.pollinations.ai"}):
+        return ToolResult(False, msg)
+    rel = (args.get("path") or "images/generated.jpg").strip()
+    target = _path(ctx, rel if Path(rel).suffix.lower() in (".jpg", ".jpeg", ".png", ".webp") else rel + ".jpg")
+    if msg := await gate(ctx, {"tool": "generate_image", "path": str(target)}, policy.decide_file_write(target, ctx.root, ctx.mode)):
+        return ToolResult(False, msg)
+    from . import imagegen
+    num = lambda k, d: max(256, min(2048, int(re.sub(r"\D", "", str(args.get(k) or "")) or d)))  # noqa: E731
+    seed = int(args["seed"]) if str(args.get("seed") or "").strip().isdigit() else None
+    try:
+        data, clean = await imagegen.generate(prompt, num("width", 1024), num("height", 1024), seed)
+    except RuntimeError as e:
+        return ToolResult(False, f"image generation failed ({e}); try again or draw it with code.")
+    w, h = await asyncio.to_thread(imagegen.save, data, target)
+    out = _rel(ctx, target)
+    ctx.files_changed.append(out)
+    note = ("" if clean else " (the free service puts its small pollinations.ai logo in a corner; a free Pollinations "
+            "token in Settings > Web research removes it)")
+    return ToolResult(True, f"created {out} ({w}x{h}px){note}. It is shown to the user; look at it with inspect_media "
+                            "if you need to check.", {"path": out, "files": [out]})
+
+
+@tool("speech_to_text", '<tool name="speech_to_text" path="interview.mp4" language="tr" model="base"></tool>',
+      "Turn the speech in an audio or video file into text, offline (faster-whisper on the CPU): returns the "
+      "transcript with timestamps and writes <name>.srt (subtitles) and <name>.txt into the working folder. "
+      "language: optional (auto-detected); model: tiny (fastest), base (default), small or medium (more accurate, "
+      "slower); minutes: only the first N minutes.",
+      {"path": S("Audio or video file in the working folder"), "language": S("Optional language code: tr, en..."),
+       "model": S("tiny | base | small | medium"),
+       "minutes": {"type": "integer", "description": "Only the first N minutes (default: all)"}},
+      required=("path",))
+async def speech_to_text(ctx, args, body):
+    from . import speech
+    target = _path(ctx, (args.get("path") or body or "").strip())
+    if not target.is_file():
+        return ToolResult(False, f"No such file in the working folder: {args.get('path') or body}")
+    from .media_inspect import AUDIO, VIDEO
+    if target.suffix.lower() not in AUDIO | VIDEO:
+        return ToolResult(False, f"{target.name} is not an audio or video file. For a picture use inspect_media "
+                                 "(it reads the text in it with OCR).")
+    out_dir = target.parent
+    if msg := await gate(ctx, {"tool": "speech_to_text", "path": str(out_dir / (target.stem + ".srt"))},
+                         policy.decide_file_write(out_dir / (target.stem + ".srt"), ctx.root, ctx.mode)):
+        return ToolResult(False, msg)
+    try:
+        res = await speech.speech_to_text(target, out_dir, (args.get("language") or "").strip() or None,
+                                          (args.get("model") or "base").strip(),
+                                          float(re.sub(r"[^\d.]", "", str(args.get("minutes") or "")) or 0))
+    except ImportError:
+        return ToolResult(False, "faster-whisper is not installed (run install.bat / install.sh).")
+    except Exception as e:
+        return ToolResult(False, f"speech to text failed: {type(e).__name__}: {str(e)[:200]}")
+    srt, txt = _rel(ctx, res["srt"]), _rel(ctx, res["txt"])
+    ctx.files_changed += [srt, txt]
+    if not res["segments"]:
+        return ToolResult(True, f"No speech was found in {target.name} (silence or music only).", {"path": txt})
+    return ToolResult(True, clip(
+        f"Transcribed {res['segments']} segments, {int(res['duration'])} s of speech, language {res['language']}; "
+        f"saved {srt} (subtitles) and {txt} (plain text).\nShow the transcript to the user as this table (translate "
+        f"the header to the user's language, keep the times), then name the two files:\n\n{res['text']}", 16000),
+        {"path": txt, "files": [srt, txt]})
+
+
+@tool("text_to_speech", '<tool name="text_to_speech" path="audio/intro.mp3" language="tr" gender="female">text to read</tool>',
+      "Turn text into natural speech (Microsoft neural voices, free): writes an .mp3 into the working folder, any "
+      "length. language picks a matching voice (gender female/male), or give voice like tr-TR-AhmetNeural; rate "
+      "0.5-2.0. Use it for voice-overs, audio versions of texts, video narration (then merge with ffmpeg).",
+      {"text": S("The text to read"), "path": S("Output .mp3 path (default speech.mp3)"),
+       "language": S("Language code: tr, en, de..."), "gender": S("female | male"),
+       "voice": S("Optional exact voice id, e.g. tr-TR-EmelNeural"),
+       "rate": {"type": "number", "description": "Speed 0.5-2.0 (default 1.0)"}},
+      main="text", required=("text",))
+async def text_to_speech(ctx, args, body):
+    from . import speech
+    text = (args.get("text") or body or "").strip()
+    if not text:
+        return ToolResult(False, "Give the text to read.")
+    rel = (args.get("path") or "speech.mp3").strip()
+    target = _path(ctx, rel if rel.lower().endswith(".mp3") else rel + ".mp3")
+    if msg := await gate(ctx, {"tool": "text_to_speech", "path": str(target)},
+                         policy.decide_file_write(target, ctx.root, ctx.mode)):
+        return ToolResult(False, msg)
+    try:
+        res = await speech.text_to_speech(text, target, (args.get("language") or ctx.lang or "tr").strip().lower()[:3],
+                                          (args.get("voice") or "").strip(), (args.get("gender") or "").strip(),
+                                          float(args.get("rate") or 1.0))
+    except Exception as e:  # offline, unknown voice...
+        return ToolResult(False, f"text to speech failed: {str(e)[:200]}")
+    out = _rel(ctx, target)
+    ctx.files_changed.append(out)
+    lang = res["voice"].split("-")[0]
+    return ToolResult(True, f"saved {out} ({res['bytes'] // 1024} KB, voice {res['voice']}, {res['chars']} characters). "
+                            "The user plays it in the chat and can pick another voice there (with previews).",
+                      {"path": out, "tts": {"text": text[:20000], "voice": res["voice"], "lang": lang,
+                                            "rate": float(args.get("rate") or 1.0)}})
+
+
+@tool("make_doc", '<tool name="make_doc" type="pdf|docx|pptx|xlsx|html" path="docs/report.pdf" theme="corporate">'
+      'markdown, HTML or JSON content</tool>',
+      "Generate a professional document (designed layout, every language and script, clickable links, LaTeX math). "
+      "pdf/docx/pptx/html take full Markdown (headings, **bold**, lists, tables, links, images, code, > quotes, "
+      "$inline$ and $$display$$ LaTeX) or HTML; in pptx every # / ## heading (or ---) starts a slide, the first # "
+      "alone is the title slide. xlsx takes JSON rows, {\"sheets\": {\"Name\": rows}} or Markdown tables (one sheet "
+      "each; numbers become real numbers). For the most professional reports write HTML (a fragment, the designed "
+      "template styles it): <h1>, <h2>, <p>, <table>, plus ready components: KPI cards <div class=\"kpis\"><div "
+      "class=\"kpi\"><span>USD/TRY</span><b>50,36</b><em class=\"up\">+0,22%</em></div>...</div>, a bar chart <div "
+      "class=\"bars\"><div style=\"--v:76%\"><span>USD</span><i></i><b>50,36</b></div>...</div> (--v = bar length in "
+      "% of the largest value), <div class=\"callout\">note</div>, <span class=\"badge\">tag</span>, <div "
+      "class=\"cols\">two columns</div>, inline <svg> charts. They need no image file and also work in docx/pptx. "
+      "Large content: write it to a .md/.html file first (write_file, append "
+      "parts) and pass source=that file instead of content. Write real data and real source URLs, never placeholders.",
+      {"type": S("Document type", enum=["pdf", "docx", "pptx", "xlsx", "html"]), "path": S("Output path"),
+       "content": S("Markdown / HTML, or JSON rows for xlsx"),
+       "source": S("Optional: a .md/.html/.json file in the working folder to convert instead of content"),
+       "theme": S("Color theme", enum=["corporate", "blue", "green", "red", "purple", "orange", "teal", "gray", "dark"]),
+       "landscape": {"type": "boolean", "description": "PDF in landscape (wide tables)"}},
+      main="content", required=("path",))
 async def make_doc(ctx, args, body):
     from .docs_gen import generate
     target = _path(ctx, args["path"])
+    content = body
+    base_dir = ctx.root
+    if args.get("source"):
+        src = _path(ctx, args["source"])
+        if not src.is_file():
+            return ToolResult(False, f"source not found: {args['source']}")
+        content = src.read_text(encoding="utf-8", errors="replace")
+        base_dir = src.parent
+    if not (content or "").strip():
+        return ToolResult(False, "No content: pass Markdown/HTML/JSON as content, or source=<file>.")
     if msg := await gate(ctx, {"tool": "make_doc", "path": str(target)}, policy.decide_file_write(target, ctx.root, ctx.mode)):
         return ToolResult(False, msg)
-    await asyncio.to_thread(generate, args.get("type") or target.suffix.lstrip("."), body, target)
-    ctx.files_changed.append(args["path"])
-    return ToolResult(True, f"generated {args['path']}", {"path": args["path"]})
+    try:
+        info = await generate(args.get("type") or target.suffix.lstrip("."), content, target, base_dir=base_dir,
+                              theme=args.get("theme"), lang=getattr(ctx, "lang", None) or "en",
+                              landscape=str(args.get("landscape", "")).lower() in ("true", "1", "yes"))
+    except ValueError as e:
+        return ToolResult(False, str(e))
+    rel = _rel(ctx, target)
+    ctx.files_changed.append(rel)
+    # The document's source stays next to it: a later "add a chart / change the table" edits this text and
+    # converts again, instead of rebuilding the document from memory (a PDF itself cannot be edited).
+    src_rel = args.get("source") or ""
+    if not src_rel:
+        try:
+            keep = target.parent / ".doc-sources" / f"{target.name}.md"
+            keep.parent.mkdir(parents=True, exist_ok=True)
+            keep.write_text(content, encoding="utf-8")
+            src_rel = _rel(ctx, keep)
+        except OSError:
+            src_rel = ""
+    extra = ", ".join(f"{k}: {v}" for k, v in info.items() if k in ("slides", "sheets", "formulas", "images", "engine") and v)
+    if kind_of(args, target) != "xlsx":
+        extra += f". The document contains {info.get('images', 0)} image(s)/chart(s)"
+    if miss := info.get("missing_images"):
+        # The document was written without them: the model must know, so it never tells the user they are there.
+        extra += (f". WARNING: {len(miss)} image(s) were NOT included because the file does not exist or is not an "
+                  f"image: {', '.join(miss)}. The document has NO such picture. If a chart/image is wanted, create it "
+                  "for real first (run with shell=python and matplotlib: plt.savefig('chart.png')), check it exists, "
+                  "then call make_doc again with ![caption](chart.png). Never claim an image that was not included")
+    if bad := unverified_figures(ctx, content):
+        extra += (f". WARNING: {len(bad)} figures in this document appear in NO source read in this task: "
+                  f"{', '.join(bad[:12])}. Numbers must come from the sources: read them again (research / fetch_url) "
+                  "and correct the document, or state clearly which values are your own calculation. Do not present "
+                  "unverified numbers as facts")
+    if src_rel:
+        extra += (f". Source text: {src_rel} (to change this document later: edit_file that source, then make_doc "
+                  f"source={src_rel} with the same path)")
+    return ToolResult(True, f"generated {rel} ({info.get('bytes', 0) // 1024} KB{', ' + extra if extra else ''})",
+                      {"path": rel, "source": src_rel, "images": info.get("images", 0),
+                       **{k: v for k, v in info.items() if k in ("slides", "sheets", "engine")}})
+
+
+def kind_of(args: dict, target: Path) -> str:
+    return str(args.get("type") or target.suffix.lstrip(".")).lower()
+
+
+FIGURE = re.compile(r"(?<![\w.,])\d{1,3}(?:[.,]\d{3})*[.,]\d{1,4}(?![\w]|[.,]\d)")
+
+
+def figures(text: str) -> set[str]:
+    """Decimal numbers of a text in one spelling (50,36 = 50.36), for the evidence check."""
+    out = set()
+    for m in FIGURE.findall(text or ""):
+        digits = re.sub(r"[.,](?=\d{3}(?:\D|$))", "", m) if re.search(r"[.,]\d{3}[.,]", m) else m
+        out.add(digits.replace(",", "."))
+    return out
+
+
+def unverified_figures(ctx: "ToolContext", content: str) -> list[str]:
+    """Figures of a document that no source of this task contains (only when sources were read at all)."""
+    if not ctx.sourced or not ctx.evidence:
+        return []
+    mine = figures(content)
+    known = set(ctx.evidence)
+    for e in ctx.evidence:  # a source's 50.1926 also covers 50.19 and 50.2 (rounded or cut)
+        whole, _, frac = e.partition(".")
+        for n in range(1, len(frac)):
+            known.add(f"{whole}.{frac[:n]}")
+            try:
+                known.add(f"{round(float(e), n):.{n}f}")
+            except ValueError:
+                pass
+    unknown = sorted(f for f in mine if f not in known)
+    return unknown if len(unknown) >= 3 and len(unknown) > len(mine) * 0.4 else []
+
+
+def with_charset(target: Path, content: str) -> str:
+    """A whole HTML page without a charset declaration gets <meta charset="utf-8"> (browsers otherwise guess and
+    Turkish letters break)."""
+    if target.suffix.lower() not in (".html", ".htm") or re.search(r"<meta[^>]+charset", content[:4000], re.I):
+        return content
+    if m := re.search(r"<head[^>]*>", content[:4000], re.I):
+        return content[:m.end()] + '\n<meta charset="utf-8">' + content[m.end():]
+    if m := re.search(r"<html[^>]*>", content[:4000], re.I):
+        return content[:m.end()] + '\n<head><meta charset="utf-8"></head>' + content[m.end():]
+    return content
+
+
+JS_CHECK = """() => new Promise((done) => setTimeout(done, 900))"""
+
+
+async def js_check(target: Path) -> str:
+    """Opens a written HTML page (with its scripts) in headless Chromium and reports JavaScript errors: uncaught
+    exceptions, console errors and failed local scripts/styles. Empty string when the page is clean."""
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if not re.search(r"<script|onclick=|onload=", text, re.I):
+        return ""
+    from playwright.async_api import async_playwright
+    problems: list[str] = []
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                page.on("pageerror", lambda e: problems.append(f"Uncaught {str(e)[:300]}"))
+                page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text[:300]}") if m.type == "error" else None)
+                page.on("requestfailed", lambda r: problems.append(f"failed to load {r.url[-120:]}")
+                        if r.url.startswith("file:") else None)
+                await page.goto(target.resolve().as_uri(), wait_until="load", timeout=15000)
+                await page.evaluate(JS_CHECK)
+            finally:
+                await browser.close()
+    except Exception as e:  # noqa: BLE001 - no browser: no check, never a failed write
+        return f"(JavaScript check skipped: {type(e).__name__})"
+    if not problems:
+        return "JavaScript check: the page loaded without errors."
+    return "JavaScript ERRORS when the page loads (fix them, then the check runs again):\n- " + "\n- ".join(
+        dict.fromkeys(problems[:12]))
 
 
 def b64_file(path: Path) -> str:
@@ -922,6 +1421,70 @@ async def mcp(ctx, args, body):
     except Exception as e:
         return ToolResult(False, f"MCP {server}/{name} failed: {e}")
     return ToolResult(ok, clip(out), {"server": server, "name": name})
+
+
+@tool("mcp_add", '<tool name="mcp_add" id="github" command="npx" args=\'["-y", "@modelcontextprotocol/server-github"]\'>{"GITHUB_PERSONAL_ACCESS_TOKEN": "..."}</tool>',
+      "Connect a new MCP server so its tools become usable (stdio: command + args, e.g. npx -y <npm package>, "
+      "uvx <pypi package>, or node/python with a script cloned from GitHub; http: url). Body: environment variables "
+      "as a JSON object (tokens stay in the secret store). Returns the server's tools. Use the skill mcp-servers to "
+      "find the right package first. remove=true disconnects a server.",
+      {"id": S("Short id: lowercase letters, digits, - or _"), "command": S("stdio: program (npx, uvx, node, python...)"),
+       "args": {"type": "array", "items": {"type": "string"}, "description": "stdio: arguments"},
+       "url": S("http transport: server URL"), "env": {"type": "object", "description": "Environment variables / tokens"},
+       "remove": {"type": "boolean", "description": "Disconnect and delete this server"}},
+      main="env", required=("id",))
+async def mcp_add(ctx, args, body):
+    import re as _re
+    from .. import mcp_client
+    from ..config import load_settings, save_settings, set_secret
+    sid = str(args.get("id") or "").strip().lower()
+    if not _re.fullmatch(r"[a-z0-9_-]{1,32}", sid):
+        return ToolResult(False, "id must be 1-32 lowercase letters, digits, - or _.")
+    if args.get("remove") in (True, "true", "1"):
+        if sid not in (load_settings().get("mcp_servers") or {}):
+            return ToolResult(False, f"No MCP server '{sid}'.")
+        if msg := await gate(ctx, {"tool": "mcp_add", "remove": sid}, policy.Decision("allow" if ctx.mode == "full" else "ask", "mcp", [sid])):
+            return ToolResult(False, msg)
+        save_settings({"mcp_servers": {sid: None}})
+        set_secret(f"mcp_{sid}", None)
+        await mcp_client.ensure()
+        return ToolResult(True, f"MCP server '{sid}' removed.")
+    raw_env = body.strip() or args.get("env") or {}
+    try:
+        env = json.loads(raw_env) if isinstance(raw_env, str) else raw_env
+        if not isinstance(env, dict):
+            raise ValueError
+    except ValueError:
+        return ToolResult(False, "env must be a JSON object of NAME: value.")
+    argv = args.get("args") or []
+    if isinstance(argv, str):
+        try:
+            argv = json.loads(argv)
+        except ValueError:
+            argv = argv.split()
+    url, command = str(args.get("url") or "").strip(), str(args.get("command") or "").strip()
+    if not (command or url):
+        return ToolResult(False, "Give command (+ args) for a stdio server or url for an http server.")
+    cfg = {"name": sid, "transport": "http" if url and not command else "stdio", "command": command,
+           "args": [str(a) for a in argv], "url": url, "cwd": str(ctx.root), "enabled": True}
+    shown = " ".join([command, *cfg["args"]]) if command else url
+    op = {"tool": "mcp_add", "id": sid, "command": shown, "env": sorted(env)}
+    if msg := await gate(ctx, op, policy.Decision("allow" if ctx.mode == "full" else "ask", "mcp", [shown])):
+        return ToolResult(False, msg)
+    save_settings({"mcp_servers": {sid: None}})
+    save_settings({"mcp_servers": {sid: cfg}})
+    key = "headers" if cfg["transport"] == "http" else "env"
+    set_secret(f"mcp_{sid}", json.dumps({key: {str(k): str(v) for k, v in env.items()}}) if env else None)
+    srv = await mcp_client.restart(sid)
+    st = mcp_client.status().get(sid) or {}
+    if not st.get("running"):
+        return ToolResult(False, f"MCP server '{sid}' was saved but did not start: {st.get('error') or 'unknown error'}. "
+                          "Check the package name / command (run it once with run to see its output), then call "
+                          "mcp_add again with the same id.")
+    tools = ", ".join(t["name"] for t in st.get("tools", [])[:40]) or "none"
+    del srv
+    return ToolResult(True, f"MCP server '{sid}' connected ({shown}). Tools: {tools}. Call them with the mcp tool.",
+                      {"server": sid})
 
 
 @tool("team", '<tool name="team">[{"title": "Backend API", "task": "complete sub-task", "need": "code", "stage": 1}, ...]</tool>',
@@ -1063,8 +1626,25 @@ async def save_catalog(ctx, args, body):
 TODO_STATES = ("pending", "in_progress", "completed")
 
 
+NEED_GROUPS = ["web", "media", "design", "browser", "places", "docs", "memory", "project", "team", "mcp", "mcp_setup",
+               "system"]
+
+
+@tool("need_tools", '<tool name="need_tools" groups="web,docs"></tool>',
+      "Only the tools this request needs are loaded. To get more, open groups: web (search, research, fetch_url, "
+      "web_screenshot), media (inspect_media: see/hear images, videos, audio), design (stock_photo: real photos for "
+      "pages; web_screenshot), browser (act in a real browser window), places (maps, nearby venues, the user's location), "
+      "docs (make/read PDF, Word, Excel, PowerPoint), memory (remember rules, save skills/agents), project (symbols, "
+      "impact), team (agent team, ask another model), mcp (connected MCP servers), mcp_setup (mcp_add: connect a "
+      "new MCP server), system (system_info: this computer's hardware and OS).",
+      {"groups": S("Comma separated group names: " + ", ".join(NEED_GROUPS))}, main="groups", required=("groups",))
+async def need_tools(ctx, args, body):  # handled by the orchestrator (it owns the task's tool offer)
+    return ToolResult(False, "need_tools is handled by the agent loop.")
+
+
 @tool("todo", '<tool name="todo">[{"content": "Create the database schema", "status": "in_progress"}, ...]</tool>',
-      "Task list shown live to the user. For any task with 3 or more steps, call it first with the whole plan "
+      "Task list shown live to the user. For any task with 3 or more steps, send it with the whole plan in the "
+      "same reply as the first actions (not a reply of its own) "
       "(short imperative items), then call it again with the WHOLE updated list whenever an item starts "
       "(in_progress, exactly one at a time) or is finished (completed). Finish every item before the final answer.",
       {"items": {"type": "array", "description": "The whole list, in order",
@@ -1092,3 +1672,8 @@ async def todo(ctx, args, body):
     left = [i["content"] for i in items if i["status"] != "completed"]
     note = f"Next: {left[0]}. Keep going." if left else "All items are completed: give the final answer."
     return ToolResult(True, f"To-do list updated ({done}/{len(items)} completed). {note}", {"todos": items[:30]})
+
+
+# browser_* tools live in their own module (separate concern, long file); importing it here runs their
+# @tool(...) decorators so they register into TOOLS, same as every function above.
+from . import browser_tools  # noqa: E402,F401

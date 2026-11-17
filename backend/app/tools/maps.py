@@ -280,16 +280,25 @@ async def find_places(query: str, near: str = "", radius: int = 1500, limit: int
         if near and not center:
             notes.append(f"'{near}' could not be found on the map; searching by text only.")
         order = []
-        if (key := get_secret("google_maps_key")) and provider in ("", "google"):
-            order.append(("Google", lambda: _google(c, key, query, near, center, radius, limit, lang)))
-        if (key := get_secret("yandex_maps_key")) and provider in ("", "yandex"):
-            order.append(("Yandex", lambda: _yandex(c, key, query, near, center, radius, limit, lang)))
-        if center and provider in ("", "osm", "openstreetmap"):
+        from ..config import load_settings
+        off = set((load_settings().get("maps") or {}).get("disabled") or []) if not provider else set()
+        if (key := get_secret("google_maps_key")) and provider in ("", "google") and "google" not in off:
+            order.append(("Google", lambda key=key: _google(c, key, query, near, center, radius, limit, lang)))
+        if (key := get_secret("yandex_maps_key")) and provider in ("", "yandex") and "yandex" not in off:
+            order.append(("Yandex", lambda key=key: _yandex(c, key, query, near, center, radius, limit, lang)))
+        if center and provider in ("", "osm", "openstreetmap") and "osm" not in off:
             order.append(("OpenStreetMap", lambda: _osm(c, query, center, radius, limit, lang)))
         results, used = [], ""
         for name, fn in order:
             try:
                 results = await fn()
+            except httpx.HTTPStatusError as e:
+                try:  # the API's own reason (e.g. "Permission denied on the service": Places API not enabled)
+                    why = (e.response.json().get("error") or {}).get("message") or e.response.text[:200]
+                except ValueError:
+                    why = e.response.text[:200]
+                notes.append(f"{name}: HTTP {e.response.status_code} {why}")
+                continue
             except (httpx.HTTPError, RuntimeError, ValueError, KeyError) as e:
                 notes.append(f"{name}: {str(e)[:160] or type(e).__name__}")
                 continue
