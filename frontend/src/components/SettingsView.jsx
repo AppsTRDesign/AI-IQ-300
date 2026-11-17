@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle, AlertTriangle, Bot, Check, CheckCircle2, ChevronDown, Cloud, Cpu, Eye, EyeOff, FileText, Gauge, Globe,
   Info, KeyRound, Languages, Loader2, Monitor, Moon, Palette, Plus, RefreshCw, Save, Search, Server, ShieldCheck, Sun,
-  Trash2, X, Zap, Network, Plug, Volume2, Pencil,
+  Trash2, X, Zap, Network, Plug, Volume2, Pencil, HardDrive, Power,
 } from "lucide-react";
 import { edgeVoices, speak, speechOpts, speechSupported, voicesFor } from "../lib/speech";
 import { useStore, useT } from "../lib/store";
@@ -12,7 +12,8 @@ import { errorText } from "../lib/errors";
 import { Button, Modal, Toggle, inputCls } from "./ui";
 import Select from "./Select";
 import Markdown from "./Markdown";
-import { CapBadges, capsHint } from "./Caps";
+import { CapBadges, CapIcons, capsHint } from "./Caps";
+import RangeField from "./RangeField";
 
 const TABS = [
   { id: "general", icon: Palette, key: "set_general" },
@@ -62,16 +63,10 @@ function Segmented({ value, options, onChange }) {
   );
 }
 
-function SliderRow({ label, desc, value, min, max, step = 1, unit = "", onCommit, format }) {
-  const [v, setV] = useState(value);
-  useEffect(() => setV(value), [value]);
+function SliderRow({ label, desc, onCommit, ...range }) {
   return (
     <Row label={label} desc={desc}>
-      <div className="flex items-center gap-3">
-        <input type="range" className="slider flex-1" min={min} max={max} step={step} value={v}
-          onChange={(e) => setV(+e.target.value)} onMouseUp={() => onCommit(v)} onTouchEnd={() => onCommit(v)} onKeyUp={() => onCommit(v)} />
-        <span className="w-16 text-right font-mono text-[13px]">{format ? format(v) : v}{unit}</span>
-      </div>
+      <RangeField {...range} onCommit={(v) => v != null && onCommit(v)} />
     </Row>
   );
 }
@@ -85,7 +80,8 @@ function useModelOptions(vision = false, cloudOnly = false) {
     const list = p.models.map((m) => ({
       value: `${pid}:${m.id}`, label: m.id, group: `${p.name} · ${p.local ? t("local") : t("cloud")}`,
       badge: m.context ? formatTokens(m.context) : undefined,
-      hint: (vision && m.vision === false ? `⚠ ${t("cap_no_vision")} · ` : "") + (capsHint(t, m) || ""),
+      icons: <CapIcons m={m} />, keywords: capsHint(t, m),
+      hint: [vision && m.vision === false && `⚠ ${t("cap_no_vision")}`, m.size && `${(m.size / 1e9).toFixed(1)} GB`].filter(Boolean).join(" · ") || undefined,
       rank: vision ? (m.vision ? 0 : m.vision == null ? 1 : 2) : 0,
     }));
     return vision ? list.sort((a, b) => a.rank - b.rank) : list;
@@ -257,7 +253,12 @@ function Models() {
       </Card>
       <Card title={t("cloud_fallback")} desc={t("cloud_fallback_desc")}>
         <Row tight label={t("enabled")}><Toggle checked={!!s.cloud_fallback} onChange={(v) => st.updateSettings({ cloud_fallback: v })} /></Row>
-        <Row label={t("fallback_model")}><ModelSelect value={s.fallback_model} allowEmpty onChange={(v) => st.updateSettings({ fallback_model: v })} /></Row>
+        <Row stack label={t("fallback_model")} desc={t("fallback_model_desc")}>
+          <div className="space-y-3">
+            <ModelSelect value={s.fallback_model} allowEmpty onChange={(v) => st.updateSettings({ fallback_model: v })} />
+            {s.fallback_model && <ModelSummary id={s.fallback_model} />}
+          </div>
+        </Row>
       </Card>
       <ModelProfiles />
       <ProviderStatusList />
@@ -271,7 +272,7 @@ const PROFILE_KEYS = ["thinking", "vision", "streaming", "tools"];
 
 function ModelProfiles() {
   const t = useT();
-  const profiles = useStore((x) => x.settings?.model_profiles || {});
+  const profiles = useStore((x) => x.settings?.model_profiles) || NO_CONF;
   const active = useStore((x) => x.prefs.model || x.settings?.active_model || "");
   const [model, setModel] = useState(active);
   const [busy, setBusy] = useState(false);
@@ -299,6 +300,7 @@ function ModelProfiles() {
       action={busy ? <Loader2 size={15} className="animate-spin text-accent" /> : null}>
       <div className="space-y-2.5 px-5 py-4">
         <ModelSelect value={model} onChange={setModel} />
+        {model && <ModelSummary id={model} />}
         {others.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
             <span>{t("prof_saved")}:</span>
@@ -321,11 +323,13 @@ function ModelProfiles() {
             <Segmented value={p.tools || "auto"} onChange={(v) => set({ tools: v })}
               options={[{ id: "auto", label: t("prof_auto") }, { id: "native", label: t("prof_native") }, { id: "tags", label: t("prof_tags") }]} />
           </Row>
-          <Row tight label={t("prof_temperature")} desc={t("prof_temperature_desc")}>
-            <NumberInput value={p.temperature} decimal max={2} placeholder={t("prof_auto")} onCommit={(v) => set({ temperature: v })} />
+          <Row label={t("prof_temperature")} desc={t("prof_temperature_desc")}>
+            <RangeField value={p.temperature} min={0} max={2} step={0.05} auto={t("prof_auto")} autoAt={0.7} format={(v) => v.toFixed(2)}
+              onCommit={(v) => set({ temperature: v })} />
           </Row>
-          <Row tight label={t("prof_max_tokens")} desc={t("prof_max_tokens_desc")}>
-            <NumberInput value={p.max_tokens} max={1000000} placeholder={t("prof_auto")} onCommit={(v) => set({ max_tokens: v })} />
+          <Row label={t("prof_max_tokens")} desc={t("prof_max_tokens_desc")}>
+            <RangeField value={p.max_tokens} min={256} max={Math.max(8192, Math.min(1000000, caps?.context || 131072))} log auto={t("prof_auto")}
+              autoAt={4096} format={formatTokens} onCommit={(v) => set({ max_tokens: v })} />
           </Row>
           {Object.keys(p).length > 0 && (
             <div className="flex justify-end px-5 pb-4">
@@ -335,22 +339,6 @@ function ModelProfiles() {
         </>
       )}
     </Card>
-  );
-}
-
-function NumberInput({ value, onCommit, placeholder, decimal, max }) {
-  const [v, setV] = useState(value ?? "");
-  useEffect(() => setV(value ?? ""), [value]);
-  const commit = () => {
-    if (String(value ?? "") === String(v)) return;
-    const n = v === "" ? null : Math.min(max, decimal ? Math.round(parseFloat(v) * 100) / 100 : parseInt(v, 10));
-    onCommit(n == null || Number.isNaN(n) ? null : n);
-  };
-  return (
-    <input value={v} inputMode={decimal ? "decimal" : "numeric"} placeholder={placeholder}
-      onChange={(e) => setV(e.target.value.replace(",", ".").replace(decimal ? /[^\d.]/g : /[^\d]/g, ""))}
-      onBlur={commit} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-      className={`${inputCls} h-8 w-28 px-2.5 text-right text-[13px]`} />
   );
 }
 
@@ -407,10 +395,159 @@ function ProviderModels({ id }) {
         {list.slice(0, 300).map((m) => (
           <button key={m.id} title={t("use_this_model")} onClick={() => { useStore.getState().selectModel(`${id}:${m.id}`); useStore.getState().updateSettings({ active_model: `${id}:${m.id}` }); }}
             className="flex items-center gap-1 rounded-lg border border-line bg-bg px-2 py-0.5 font-mono text-[11px] hover:border-accent hover:text-accent">
-            {m.id}{m.context && <span className="text-subtle">· {formatTokens(m.context)}</span>}
+            {m.id}<CapIcons m={m} />{m.context && <span className="text-subtle">· {formatTokens(m.context)}</span>}
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Local server tuning. Ollama: server environment variables (OLLAMA_VULKAN, OLLAMA_FLASH_ATTENTION, KV cache...),
+// stored where Ollama reads them and applied with a restart. LM Studio: load options sent with every model load.
+// Every option starts on "Auto" (the server's own default).
+const RT_ROW = "flex flex-col gap-2 py-2.5 @2xl:flex-row @2xl:items-center @2xl:justify-between";
+
+function RtRow({ label, desc, children }) {
+  return (
+    <div className={RT_ROW}>
+      <div className="min-w-0 @2xl:max-w-[46%]"><div className="text-[12.5px] font-medium">{label}</div>{desc && <div className="mt-0.5 text-[11px] leading-snug text-subtle">{desc}</div>}</div>
+      <div className="min-w-0 @2xl:w-[340px] @2xl:shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function LocalRuntime({ id, cfg }) {
+  const t = useT();
+  const st = useStore.getState();
+  const [rt, setRt] = useState(null);
+  const [busy, setBusy] = useState("");
+  const load = () => api.get(`/api/local/${id}/runtime`).then(setRt).catch(() => setRt({ error: true }));
+  useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    if (rt?.kind !== "ollama") return;
+    const i = setInterval(load, 6000);
+    return () => clearInterval(i);
+  }, [rt?.kind]);
+  if (!rt) return <div className="flex items-center gap-2 text-xs text-muted"><Loader2 size={13} className="animate-spin" />{t("loading")}</div>;
+  if (rt.error) return null;
+  const put = async (values) => {
+    setBusy("save");
+    try { setRt(await api.put(`/api/local/${id}/runtime`, { values })); st.notify(t("saved"), "ok"); }
+    catch (e) { st.notify(t("save_failed"), "error", e.message); }
+    setBusy("");
+  };
+  const auto = { id: "", label: t("prof_auto") };
+
+  if (rt.kind === "lmstudio") {
+    const r = rt.runtime || {};
+    const set = (k) => (v) => put({ ...r, [k]: v ?? "" });
+    return (
+      <div className="rounded-xl border border-line p-3">
+        <div className="flex items-center gap-2 text-[13px] font-semibold"><Gauge size={14} className="text-accent" />{t("rt_title")}</div>
+        <p className="mt-0.5 text-[11px] leading-snug text-subtle">{t("rt_lms_desc")}</p>
+        <div className="mt-1 divide-y divide-line">
+          <RtRow label={t("rt_gpu_offload")} desc={t("rt_gpu_offload_desc")}>
+            <Segmented value={r.gpu || ""} onChange={set("gpu")} options={[auto, { id: "max", label: t("rt_full") }, { id: "0.75", label: "75%" }, { id: "0.5", label: "50%" }, { id: "0.25", label: "25%" }, { id: "off", label: t("prof_off") }]} />
+          </RtRow>
+          <RtRow label={t("rt_flash")} desc={t("rt_flash_desc")}>
+            <Segmented value={r.flash_attention || ""} onChange={set("flash_attention")} options={[auto, { id: "on", label: t("prof_on") }, { id: "off", label: t("prof_off") }]} />
+          </RtRow>
+          <RtRow label={t("rt_kv_gpu")} desc={t("rt_kv_gpu_desc")}>
+            <Segmented value={r.offload_kv || ""} onChange={set("offload_kv")} options={[auto, { id: "on", label: "GPU" }, { id: "off", label: "RAM" }]} />
+          </RtRow>
+          <RtRow label={t("rt_batch")} desc={t("rt_batch_desc")}>
+            <RangeField value={r.eval_batch} min={32} max={8192} log auto={t("prof_auto")} autoAt={512} onCommit={set("eval_batch")} />
+          </RtRow>
+          <RtRow label={t("rt_ttl")} desc={t("rt_ttl_desc")}>
+            <RangeField value={r.ttl} min={60} max={86400} log auto={t("prof_auto")} autoAt={3600} unit="s" onCommit={set("ttl")} />
+          </RtRow>
+        </div>
+        {!rt.lms && (r.gpu || r.ttl) && <div className="mt-2 flex items-center gap-1.5 text-[11px] text-warn"><AlertTriangle size={12} />{t("rt_lms_missing")}</div>}
+      </div>
+    );
+  }
+
+  const v = rt.vars || {};
+  const set = (k) => (val) => put({ [k]: val ?? "" });
+  const loaded = rt.loaded || [];
+  const win = rt.platform === "win32";
+  const cmds = Object.entries(v).filter(([k]) => k !== "OLLAMA_CONTEXT_LENGTH")
+    .map(([k, val]) => (val ? (win ? `setx ${k} ${val}` : `export ${k}=${val}`) : null)).filter(Boolean);
+  const restart = async () => {
+    setBusy("restart");
+    const r = await api.post(`/api/local/${id}/restart`).catch((e) => ({ ok: false, error: e.message }));
+    setBusy("");
+    if (r.ok) { st.notify(t("rt_restarted", { v: r.version || "" }), "ok"); st.loadProviderModels(id, true); }
+    else st.notify(t("rt_restart_failed"), "error", t(`rt_${r.error}`) !== `rt_${r.error}` ? t(`rt_${r.error}`) : r.error);
+    load();
+  };
+  return (
+    <div className="rounded-xl border border-line p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="flex items-center gap-2 text-[13px] font-semibold"><Gauge size={14} className="text-accent" />{t("rt_title")}</span>
+        <span className={`rounded-md px-1.5 py-px text-[10px] ${rt.running ? "bg-ok/10 text-ok" : "bg-danger/10 text-danger"}`}>
+          {rt.running ? t("rt_running", { v: rt.version || "?" }) : rt.installed ? t("rt_stopped") : t("rt_not_installed")}</span>
+        {rt.installed && (
+          <Button className="ml-auto !px-2.5 !py-1 text-xs" variant={rt.pending?.length ? "primary" : undefined} disabled={!!busy} onClick={restart}>
+            {busy === "restart" ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}{t(rt.running ? "rt_restart" : "rt_start")}
+          </Button>
+        )}
+      </div>
+      <p className="mt-0.5 text-[11px] leading-snug text-subtle">{t("rt_ollama_desc")}</p>
+      {rt.pending?.length > 0 && (
+        <div className="mt-2 flex items-start gap-1.5 rounded-lg bg-warn/10 px-2.5 py-1.5 text-[11px] text-warn"><AlertTriangle size={12} className="mt-px shrink-0" />{t("rt_pending", { n: rt.pending.length })}</div>
+      )}
+      {loaded.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {loaded.map((m) => {
+            const gpu = m.size ? Math.round((m.vram / m.size) * 100) : 0;
+            return (
+              <span key={m.name} className="flex items-center gap-1.5 rounded-lg bg-hover px-2 py-0.5 font-mono text-[11px]" title={t("rt_vram_hint")}>
+                {m.name}<span className={gpu >= 90 ? "text-ok" : gpu > 0 ? "text-warn" : "text-subtle"}>{gpu ? `GPU ${gpu}%` : "CPU"}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <div className="mt-1 divide-y divide-line">
+        <RtRow label={t("rt_vulkan")} desc={t("rt_vulkan_desc")}>
+          <Segmented value={v.OLLAMA_VULKAN || ""} onChange={set("OLLAMA_VULKAN")} options={[auto, { id: "1", label: t("prof_on") }, { id: "0", label: t("prof_off") }]} />
+        </RtRow>
+        <RtRow label={t("rt_vk_f16")} desc={t("rt_vk_f16_desc")}>
+          <Segmented value={v.GGML_VK_DISABLE_F16 || ""} onChange={set("GGML_VK_DISABLE_F16")} options={[auto, { id: "1", label: t("rt_f16_off") }]} />
+        </RtRow>
+        <RtRow label={t("rt_flash")} desc={t("rt_flash_desc")}>
+          <Segmented value={v.OLLAMA_FLASH_ATTENTION || ""} onChange={set("OLLAMA_FLASH_ATTENTION")} options={[auto, { id: "1", label: t("prof_on") }, { id: "0", label: t("prof_off") }]} />
+        </RtRow>
+        <RtRow label={t("rt_kv")} desc={t("rt_kv_desc")}>
+          <Segmented value={v.OLLAMA_KV_CACHE_TYPE || ""} onChange={set("OLLAMA_KV_CACHE_TYPE")}
+            options={[auto, { id: "f16", label: t("rt_kv_f16") }, { id: "q8_0", label: t("rt_kv_q8") }, { id: "q4_0", label: t("rt_kv_q4") }]} />
+          {v.OLLAMA_KV_CACHE_TYPE && v.OLLAMA_KV_CACHE_TYPE !== "f16" && v.OLLAMA_FLASH_ATTENTION === "0" && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-warn"><AlertTriangle size={12} />{t("rt_kv_needs_fa")}</div>
+          )}
+        </RtRow>
+        <RtRow label={t("rt_parallel")} desc={t("rt_parallel_desc")}>
+          <RangeField value={v.OLLAMA_NUM_PARALLEL ? +v.OLLAMA_NUM_PARALLEL : null} min={1} max={16} auto={t("rt_parallel_default")} autoAt={1}
+            onCommit={(n) => {
+              // Every slot has its own context memory: a higher value is confirmed with what it costs.
+              if (n && n > 1 && n > (+v.OLLAMA_NUM_PARALLEL || 1) && !window.confirm(t("rt_parallel_confirm", { n }))) return;
+              set("OLLAMA_NUM_PARALLEL")(n);
+            }} />
+          {+v.OLLAMA_NUM_PARALLEL > 1 && (
+            <div className="mt-1.5 flex items-start gap-1.5 text-[11px] text-warn"><AlertTriangle size={12} className="mt-px shrink-0" />{t("rt_parallel_warn", { n: v.OLLAMA_NUM_PARALLEL })}</div>
+          )}
+        </RtRow>
+        <RtRow label={t("rt_max_loaded")} desc={t("rt_max_loaded_desc")}>
+          <RangeField value={v.OLLAMA_MAX_LOADED_MODELS ? +v.OLLAMA_MAX_LOADED_MODELS : null} min={1} max={8} auto={t("prof_auto")} autoAt={3} onCommit={set("OLLAMA_MAX_LOADED_MODELS")} />
+        </RtRow>
+      </div>
+      {cmds.length > 0 && (
+        <details className="mt-2 text-[11px] text-subtle">
+          <summary className="cursor-pointer select-none hover:text-fg">{t("rt_commands")}</summary>
+          <pre className="mt-1 overflow-x-auto rounded-lg bg-panel p-2 font-mono text-[11px] text-muted">{cmds.join("\n")}</pre>
+        </details>
+      )}
     </div>
   );
 }
@@ -442,7 +579,9 @@ function ProviderCard({ id, cfg, hasKey }) {
     try {
       if (key) await saveKey();
       if (urlDirty) await save({ [field]: url.trim() });
-      setTest(await api.post(`/api/providers/${id}/test`));
+      const r = await api.post(`/api/providers/${id}/test`);
+      setTest(r);
+      if (r.ok) st.loadProviderModels(id, true).then(() => st.ensureModel()); // the card's old error goes away at once
     } catch (e) { setTest({ ok: false, code: "request", error: e.message }); }
     setBusy(false);
   };
@@ -471,7 +610,7 @@ function ProviderCard({ id, cfg, hasKey }) {
           <ChevronDown size={14} className={`ml-auto shrink-0 text-subtle transition ${open ? "rotate-180" : ""}`} />
         </button>
         <Button onClick={runTest} disabled={busy} className="!px-2.5 !py-1">{busy ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}<span className="hidden sm:inline">{t("test")}</span></Button>
-        <Toggle checked={!!cfg.enabled} onChange={(v) => save({ enabled: v })} />
+        <Toggle checked={!!cfg.enabled && !!ready} disabled={!ready} onChange={(v) => save({ enabled: v })} />
       </div>
       {test && (
         <div className={`fade-in mt-2 rounded-xl px-3 py-2 text-xs ${test.ok && !needsTerms ? "bg-ok/10 text-ok" : needsTerms ? "bg-warn/10 text-warn" : "bg-danger/10 text-danger"}`}>
@@ -519,8 +658,19 @@ function ProviderCard({ id, cfg, hasKey }) {
             </label>
           )}
           <div className="rounded-xl border border-line bg-panel p-3"><ProviderModels id={id} /></div>
+          {!cfg.local && (
+            <div className="grid gap-3 rounded-xl border border-line p-3 @2xl:grid-cols-2">
+              <div className="min-w-0"><div className="text-xs font-medium">{t("rpm_limit")}</div><div className="mb-2 text-[11px] leading-snug text-subtle">{t("rpm_limit_desc")}</div>
+                <RangeField value={cfg.rpm || 0} min={0} max={1000} log zeroLabel="∞" unit={t("unit_per_min")} onCommit={(v) => save({ rpm: v || 0 })} /></div>
+              <div className="min-w-0"><div className="text-xs font-medium">{t("concurrency_limit")}</div><div className="mb-2 text-[11px] leading-snug text-subtle">{t("concurrency_limit_desc")}</div>
+                <RangeField value={cfg.concurrency || null} min={1} max={32} auto="3" autoAt={3} onCommit={(v) => save({ concurrency: v || 0 })} /></div>
+            </div>
+          )}
+          {cfg.local && <LocalRuntime id={id} cfg={cfg} />}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
-            <label className="flex items-center gap-2"><Toggle checked={cfg.streaming !== false} onChange={(v) => save({ streaming: v })} /> {t("streaming")}</label>
+            {["anthropic", "gemini"].includes(cfg.kind)  /* these APIs are always used streaming */
+              ? <span className="flex items-center gap-1.5 text-subtle" title={t("streaming_always_desc")}><Check size={13} className="text-ok" /> {t("streaming_always")}</span>
+              : <label className="flex items-center gap-2"><Toggle checked={cfg.streaming !== false} onChange={(v) => save({ streaming: v })} /> {t("streaming")}</label>}
             <span className="font-mono">id: {id}</span>
             <button onClick={remove} className="ml-auto flex items-center gap-1 text-subtle hover:text-danger"><Trash2 size={13} /> {t("delete")}</button>
           </div>
@@ -616,7 +766,7 @@ function Context() {
     <div className="space-y-4">
       <Card title={t("context_compress")} desc={t("context_compress_desc")}>
         <SliderRow label={t("compress_threshold")} desc={t("compress_threshold_desc")} value={s.context.compress_threshold}
-          min={0} max={100} unit="%" onCommit={(v) => save({ compress_threshold: v })} />
+          min={40} max={95} unit="%" onCommit={(v) => save({ compress_threshold: v })} />
         <SliderRow label={t("keep_recent")} desc={t("keep_recent_desc")} value={s.context.keep_recent ?? 6}
           min={0} max={20} onCommit={(v) => save({ keep_recent: v })} />
       </Card>
@@ -624,7 +774,7 @@ function Context() {
         <Card title={t("context_window")} desc={ctx.model}>
           <Row label={t("model_max")} desc={ctx.local ? t("context_local_desc") : t("context_cloud_desc")}><span className="font-mono text-[13px]">{formatTokens(ctx.max)} token</span></Row>
           {ctx.adjustable
-            ? <SliderRow label={t("context_size")} desc={t("context_size_hint")} value={ctx.current} min={2048} max={ctx.max} step={1024}
+            ? <SliderRow label={t("context_size")} desc={t("context_size_hint")} value={ctx.current} min={2048} max={ctx.max} log
               format={formatTokens} onCommit={(v) => st.setModelContext(ctx.model, v)} />
             : <Row label={t("context_size")}><span className="font-mono text-[13px]">{formatTokens(ctx.current)}</span></Row>}
         </Card>
@@ -671,6 +821,182 @@ function TextSetting({ section, field, label, desc, placeholder }) {
 
 const ENGINE_STATE = { ok: "text-ok", resting: "text-subtle", empty: "text-subtle", blocked: "text-warn", "off-topic": "text-warn", error: "text-danger" };
 
+function BrowserAgentCard() {
+  const t = useT();
+  const s = useStore((x) => x.settings);
+  const st = useStore.getState();
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState("");
+  const cfg = s.browser || { visible: true, channel: "" };
+  const load = () => api.get("/api/browser/status").then(setStatus).catch(() => setStatus(null));
+  useEffect(() => { load(); const i = setInterval(load, 4000); return () => clearInterval(i); }, []);
+  const act = async (name, fn) => {
+    setBusy(name);
+    try { await fn(); await load(); st.notify(t(name === "reset" ? "browser_reset_done" : "browser_closed"), "ok"); }
+    catch (e) { st.notify(e.message, "error"); }
+    setBusy("");
+  };
+  const mb = status?.profile_bytes || 0;
+  return (
+    <Card title={t("browser_agent")} desc={t("browser_agent_desc")}>
+      <Row tight label={t("browser_visible")} desc={t("browser_visible_desc")}>
+        <Toggle checked={cfg.visible !== false} onChange={(v) => st.updateSettings({ browser: { visible: v } })} />
+      </Row>
+      <Row tight label={t("browser_dismiss")} desc={t("browser_dismiss_desc")}>
+        <Toggle checked={cfg.dismiss_popups !== false} onChange={(v) => st.updateSettings({ browser: { dismiss_popups: v } })} />
+      </Row>
+      <Row label={t("browser_channel")} desc={t("browser_channel_desc")}>
+        <Select value={cfg.channel || ""} onChange={(v) => st.updateSettings({ browser: { channel: v } })}
+          options={[{ value: "", label: t("browser_channel_bundled") }, { value: "fast", label: t("browser_channel_fast") },
+            { value: "chrome", label: "Google Chrome" }, { value: "msedge", label: "Microsoft Edge" }]} />
+        {cfg.channel === "fast" && <p className="mt-1.5 text-[11px] leading-snug text-subtle">{t("browser_channel_fast_hint")}</p>}
+      </Row>
+      <Row tight label={t("browser_status")}>
+        {status?.running ? (
+          <span className="flex items-center gap-1.5 text-[13px] font-medium text-ok">
+            <span className="h-1.5 w-1.5 rounded-full bg-ok" /> {t("browser_running", { n: status.tabs?.length || 0 })}
+          </span>
+        ) : <span className="text-[13px] text-subtle">{t("browser_not_running")}</span>}
+      </Row>
+      <Row stack label={t("browser_profile")} desc={t("browser_profile_desc")}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-line bg-bg px-3 py-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-hover text-muted"><HardDrive size={15} /></span>
+            <div className="min-w-0 leading-tight">
+              <div className="text-[13px] font-medium">{mb > 0 ? `${(mb / 1e6).toFixed(1)} MB` : t("browser_profile_empty")}</div>
+              <div className="text-[11px] text-subtle">{t("browser_profile_size")}</div>
+            </div>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {status?.running && (
+              <Button className="whitespace-nowrap" onClick={() => act("close", () => api.post("/api/browser/close"))} disabled={!!busy}>
+                {busy === "close" ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} {t("browser_close")}
+              </Button>
+            )}
+            <Button variant="danger" className="whitespace-nowrap" onClick={() => act("reset", () => api.post("/api/browser/reset"))} disabled={!!busy || mb === 0}>
+              {busy === "reset" ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} {t("browser_forget_signins")}
+            </Button>
+          </div>
+        </div>
+      </Row>
+      <p className="px-4 pb-3.5 text-xs leading-relaxed text-muted @md:px-5">{t("browser_agent_note")}</p>
+    </Card>
+  );
+}
+
+// One search engine / place provider, laid out like a provider card: status dot, key badge, accordion with its key
+// and IDs, its own test (only that service, with its real error) and an on/off switch.
+const SEARCH_SERVICES = [
+  { id: "google", name: "Google Programmable Search", secret: "google_search_key", ph: "AIza…", desc: "google_search_desc",
+    fields: [{ field: "google_cx", label: "google_cx", desc: "google_cx_desc", ph: "0123456789abcdef0" }], doc: "https://developers.google.com/custom-search/v1/overview" },
+  { id: "yandex", name: "Yandex Search API", secret: "yandex_search_key", ph: "AQVN…", desc: "yandex_search_desc",
+    fields: [{ field: "yandex_folder", label: "yandex_folder", desc: "yandex_folder_desc", ph: "b1g…" }], doc: "https://yandex.cloud/en/docs/search-api/" },
+  { id: "bing-api", name: "Bing Web Search API", secret: "bing_search_key", ph: "Ocp-Apim-Subscription-Key", desc: "bing_search_desc", doc: "https://learn.microsoft.com/bing/search-apis/" },
+  { id: "brave", name: "Brave Search API", secret: "brave_api_key", ph: "BSA…", desc: "brave_desc", doc: "https://api-dashboard.search.brave.com/app/documentation" },
+  { id: "tavily", name: "Tavily API", secret: "tavily_api_key", ph: "tvly-…", desc: "tavily_desc", doc: "https://docs.tavily.com" },
+  { id: "searxng", name: "SearXNG", desc: "searxng_desc", fields: [{ field: "searxng_url", label: "searxng_url", ph: "http://127.0.0.1:8888" }], doc: "https://docs.searxng.org" },
+  { id: "ddgs", test: "ddgs-google", name: "DDGS (Google · Yahoo · Bing · Yandex · Brave)", desc: "ddgs_desc", free: true },
+  { id: "duckduckgo", name: "DuckDuckGo", desc: "ddg_desc", free: true },
+  { id: "wikipedia", name: "Wikipedia / Wikidata", desc: "wiki_desc", free: true },
+];
+// Image generation: works without a key (the free tier keeps its small logo); the free token of a registered
+// Pollinations account makes pictures logo-free.
+const MEDIA_SERVICES = [
+  { id: "pollinations", name: "Pollinations (FLUX)", secret: "pollinations_token", ph: "token…", desc: "pollinations_desc",
+    doc: "https://auth.pollinations.ai", free: true },
+];
+const MAP_SERVICES = [
+  { id: "google", name: "Google Places API", secret: "google_maps_key", ph: "AIza…", desc: "google_maps_desc", doc: "https://developers.google.com/maps/documentation/places/web-service" },
+  { id: "yandex", name: "Yandex Places API", secret: "yandex_maps_key", ph: "…", desc: "yandex_maps_desc", doc: "https://yandex.com/dev/maps/geosearch/" },
+  { id: "osm", name: "OpenStreetMap (Nominatim + Overpass)", desc: "osm_desc", free: true },
+];
+
+const NO_CONF = {};
+function ServiceCard({ svc, section, kind }) {
+  const t = useT();
+  const st = useStore.getState();
+  const has = useStore((x) => (svc.secret ? !!x.settings?.secrets?.[svc.secret] : true));
+  const conf = useStore((x) => x.settings?.[section]) || NO_CONF; // a missing section must not be a new {} on every render (endless re-render)
+  const off = (conf.disabled || []).includes(svc.id);
+  const [open, setOpen] = useState(false);
+  const [key, setKey] = useState("");
+  const [show, setShow] = useState(false);
+  const [vals, setVals] = useState({});
+  const [test, setTest] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const fieldsSet = (svc.fields || []).every((f) => conf[f.field]);
+  const ready = svc.free || (has && fieldsSet && (svc.secret || (svc.fields || []).length));
+  const dirty = Object.entries(vals).some(([k, v]) => v !== (conf[k] || ""));
+  const saveFields = async () => { if (dirty) await st.updateSettings({ [section]: Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, v.trim()])) }); };
+  const saveKey = async () => { if (!key) return; await st.setSecret(svc.secret, key); setKey(""); };
+  const toggle = (v) => st.updateSettings({ [section]: { disabled: v ? (conf.disabled || []).filter((x) => x !== svc.id) : [...(conf.disabled || []), svc.id] } });
+  const runTest = async () => {
+    setBusy(true); setTest(null); setOpen(true);
+    try {
+      await saveKey(); await saveFields();
+      setTest(await api.post(`/api/${kind === "maps" ? "maps" : kind === "media" ? "media" : "web"}/test/${svc.test || svc.id}`, { q: "" }));
+    } catch (e) { setTest({ ok: false, error: e.message }); }
+    setBusy(false);
+  };
+  const dot = test ? (test.ok ? "bg-ok" : "bg-danger") : off || !ready ? "bg-active" : "bg-ok";
+  return (
+    <div className="px-4 py-3 sm:px-5">
+      <div className="flex items-center gap-3">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
+        <button onClick={() => setOpen(!open)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <span className="truncate text-[13px] font-semibold">{svc.name}</span>
+          {svc.free ? <span className="hidden shrink-0 rounded-md bg-ok/10 px-1.5 py-px text-[10px] text-ok sm:inline">{t("free_no_key")}</span>
+            : has && svc.secret ? <KeyRound size={12} className="shrink-0 text-ok" />
+              : !svc.secret ? null : <span className="hidden shrink-0 rounded-md bg-hover px-1.5 py-px text-[10px] text-muted sm:inline">{t("key_missing_short")}</span>}
+          <ChevronDown size={14} className={`ml-auto shrink-0 text-subtle transition ${open ? "rotate-180" : ""}`} />
+        </button>
+        <Button onClick={runTest} disabled={busy || (!ready && !key)} className="!px-2.5 !py-1">{busy ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}<span className="hidden sm:inline">{t("test")}</span></Button>
+        <Toggle checked={!!ready && !off} disabled={!ready} onChange={toggle} />
+      </div>
+      {open && (
+        <div className="fade-in mt-3 grid gap-3 pl-5">
+          <p className="text-xs leading-snug text-muted">{t(svc.desc)}{svc.doc && <> · <a href={svc.doc} target="_blank" rel="noreferrer" className="text-accent hover:underline">{t("docs_link")}</a></>}</p>
+          {svc.secret && (
+            <label className="text-xs text-muted">{t("api_key")}
+              <div className="mt-1 flex gap-2">
+                <div className="relative flex-1">
+                  <input className={`${inputCls} pr-16 font-mono ${key ? "!border-warn" : ""}`} type={show ? "text" : "password"} value={key} autoComplete="off"
+                    placeholder={has ? "••••••••••••  " + t("key_saved") : svc.ph} onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && saveKey()} />
+                  <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 gap-0.5">
+                    <button onClick={() => setShow(!show)} className="rounded-md p-1 text-subtle hover:bg-hover">{show ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+                    {has && !key && <button title={t("delete")} onClick={() => st.setSecret(svc.secret, null).then(() => st.notify(t("key_removed"), "ok"))} className="rounded-md p-1 text-subtle hover:bg-hover hover:text-danger"><X size={14} /></button>}
+                  </div>
+                </div>
+                {key && <Button variant="primary" onClick={saveKey}><Save size={14} /> {t("save")}</Button>}
+              </div>
+            </label>
+          )}
+          {(svc.fields || []).map((f) => (
+            <label key={f.field} className="text-xs text-muted">{t(f.label)}{f.desc && <span className="text-subtle"> · {t(f.desc)}</span>}
+              <div className="mt-1 flex gap-2">
+                <input className={`${inputCls} font-mono ${(vals[f.field] ?? conf[f.field] ?? "") !== (conf[f.field] || "") ? "!border-warn" : ""}`}
+                  value={vals[f.field] ?? conf[f.field] ?? ""} placeholder={f.ph} onChange={(e) => setVals({ ...vals, [f.field]: e.target.value })}
+                  onKeyDown={(e) => e.key === "Enter" && saveFields()} />
+                {(vals[f.field] ?? conf[f.field] ?? "") !== (conf[f.field] || "") && <Button variant="primary" onClick={saveFields}><Save size={14} /></Button>}
+              </div>
+            </label>
+          ))}
+          {test && (
+            <div className={`fade-in rounded-xl px-3 py-2 text-xs ${test.ok ? "bg-ok/10 text-ok" : "bg-danger/10 text-danger"}`}>
+              {test.ok ? <>✓ {t("service_test_ok", { n: test.count, ms: test.ms })}</> : <><div className="font-medium">✕ {t("service_test_failed")}</div><div className="mt-0.5 break-words font-mono text-[11px] opacity-80">{test.error}</div></>}
+              {test.results?.length > 0 && (
+                <div className="mt-1.5 space-y-0.5 text-muted">
+                  {test.results.map((r, i) => <div key={i} className="truncate">{r.url ? <a href={r.url} target="_blank" rel="noreferrer" className="hover:underline">{r.title || r.url}</a> : r.title}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Web() {
   const t = useT();
   const [q, setQ] = useState("Audi 2026 modelleri");
@@ -683,21 +1009,16 @@ function Web() {
   };
   return (
     <div className="space-y-4">
-      <Card title={t("web_engines")} desc={t("web_engines_desc")}>
-        <SecretField name="google_search_key" label="Google Programmable Search" desc={t("google_search_desc")} placeholder="AIza…" />
-        <TextSetting section="search" field="google_cx" label={t("google_cx")} desc={t("google_cx_desc")} placeholder="0123456789abcdef0" />
-        <SecretField name="yandex_search_key" label="Yandex Search API" desc={t("yandex_search_desc")} placeholder="AQVN…" />
-        <TextSetting section="search" field="yandex_folder" label={t("yandex_folder")} desc={t("yandex_folder_desc")} placeholder="b1g…" />
-        <SecretField name="bing_search_key" label="Bing Web Search API" desc={t("bing_search_desc")} placeholder="Ocp-Apim-Subscription-Key" />
-        <SecretField name="brave_api_key" label="Brave Search API" desc={t("brave_desc")} placeholder="BSA…" />
-        <SecretField name="tavily_api_key" label="Tavily API" desc={t("tavily_desc")} placeholder="tvly-…" />
-        <TextSetting section="search" field="searxng_url" label="SearXNG" desc={t("searxng_desc")} placeholder="http://127.0.0.1:8888" />
+      <Card title={<span className="flex items-center gap-2"><Search size={15} />{t("web_engines")} <span className="text-xs font-normal text-subtle">{SEARCH_SERVICES.length}</span></span>} desc={t("web_engines_desc")}>
+        {SEARCH_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="search" kind="web" />)}
       </Card>
-      <Card title={t("maps_services")} desc={t("maps_services_desc")}>
-        <SecretField name="google_maps_key" label="Google Places API" desc={t("google_maps_desc")} placeholder="AIza…" />
-        <SecretField name="yandex_maps_key" label="Yandex Places API" desc={t("yandex_maps_desc")} placeholder="…" />
-        <Row label="OpenStreetMap" desc={t("osm_desc")}><span className="text-[13px] font-medium text-ok">{t("always_on")}</span></Row>
+      <Card title={<span className="flex items-center gap-2"><Globe size={15} />{t("maps_services")} <span className="text-xs font-normal text-subtle">{MAP_SERVICES.length}</span></span>} desc={t("maps_services_desc")}>
+        {MAP_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="maps" kind="maps" />)}
       </Card>
+      <Card title={<span className="flex items-center gap-2"><Globe size={15} />{t("image_services")} <span className="text-xs font-normal text-subtle">{MEDIA_SERVICES.length}</span></span>} desc={t("image_services_desc")}>
+        {MEDIA_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="media" kind="media" />)}
+      </Card>
+      <BrowserAgentCard />
       <Card title={t("web_test")} desc={t("web_policy")}>
         <div className="flex gap-2 px-5 py-4">
           <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && test()} className={inputCls} />
@@ -744,9 +1065,48 @@ function Security() {
         ))}
       </Card>
       <Card title={t("agent_limits")} desc={t("agent_limits_desc")}>
-        <SliderRow label={t("max_iterations")} value={s.agent.max_iterations} min={1} max={100} onCommit={agent("max_iterations")} />
-        <SliderRow label={t("max_debug")} value={s.agent.max_debug_attempts} min={0} max={20} onCommit={agent("max_debug_attempts")} />
+        <Row tight label={t("parallel_tools")} desc={t("parallel_tools_desc")}>
+          <Toggle checked={s.agent.parallel_tools !== false} onChange={agent("parallel_tools")} />
+        </Row>
+        <Row tight label={t("unlimited_iterations")} desc={t("unlimited_iterations_desc")}>
+          <Toggle checked={!!s.agent.unlimited_iterations} onChange={agent("unlimited_iterations")} />
+        </Row>
+        {!s.agent.unlimited_iterations && <SliderRow label={t("max_iterations")} value={s.agent.max_iterations} min={1} max={300} onCommit={agent("max_iterations")} />}
+        <Row tight label={t("unlimited_debug")} desc={t("unlimited_debug_desc")}>
+          <Toggle checked={!!s.agent.unlimited_debug} onChange={agent("unlimited_debug")} />
+        </Row>
+        {!s.agent.unlimited_debug && <SliderRow label={t("max_debug")} value={s.agent.max_debug_attempts} min={0} max={50} onCommit={agent("max_debug_attempts")} />}
         <SliderRow label={t("command_timeout")} value={s.agent.command_timeout} min={10} max={3600} step={10} unit="s" onCommit={agent("command_timeout")} />
+        <SliderRow label={t("server_ttl")} desc={t("server_ttl_desc")} value={s.agent.server_ttl_minutes ?? 10} min={0} max={120} unit={t("unit_m")}
+          onCommit={agent("server_ttl_minutes")} />
+        <Row label={t("split_write")} desc={t("split_write_desc")}>
+          <RangeField value={s.agent.split_write_chars ? +s.agent.split_write_chars : null} min={10000} max={500000} step={5000}
+            auto={t("split_write_off")} autoAt={0} onCommit={(v) => agent("split_write_chars")(v || 0)} />
+        </Row>
+      </Card>
+      <Card title={t("model_connection")} desc={t("model_connection_desc")}>
+        <SliderRow label={t("stream_timeout")} desc={t("stream_timeout_desc")} value={s.agent.stream_timeout ?? 300} min={30} max={1800} step={10} unit="s"
+          onCommit={agent("stream_timeout")} />
+        <SliderRow label={t("first_token_timeout")} desc={t("first_token_timeout_desc")} value={s.agent.first_token_timeout ?? 300} min={30} max={3600} step={10} unit="s"
+          onCommit={agent("first_token_timeout")} />
+        <SliderRow label={t("local_stream_timeout")} desc={t("local_stream_timeout_desc")} value={s.agent.local_stream_timeout ?? 0} min={0} max={3600} step={30}
+          zeroLabel="∞" unit="s" onCommit={agent("local_stream_timeout")} />
+        <SliderRow label={t("provider_retries")} desc={t("provider_retries_desc")} value={s.agent.provider_retries ?? 5} min={1} max={10}
+          onCommit={agent("provider_retries")} />
+      </Card>
+      <Card title={t("prompt_mode")} desc={t("prompt_mode_desc")}>
+        <div className="px-5 py-3.5">
+          <Segmented value={s.agent.prompt_mode || "auto"} onChange={agent("prompt_mode")}
+            options={[{ id: "auto", label: t("prompt_auto") }, { id: "lean", label: t("prompt_lean") }, { id: "full", label: t("prompt_full") }]} />
+        </div>
+      </Card>
+      <Card title={t("guard_card")} desc={t("guard_card_desc")}>
+        <Row tight label={t("guard_enabled")} desc={t("guard_enabled_desc")}>
+          <Toggle checked={s.local_guard?.enabled !== false} onChange={(v) => st.updateSettings({ local_guard: { enabled: v } })} />
+        </Row>
+        <Row tight label={t("guard_emergency")} desc={t("guard_emergency_desc")}>
+          <Toggle checked={!!s.local_guard?.emergency_unload} onChange={(v) => st.updateSettings({ local_guard: { emergency_unload: v } })} />
+        </Row>
       </Card>
       <p className="px-1 text-xs leading-relaxed text-muted">{t("security_note")}</p>
     </div>
@@ -838,16 +1198,6 @@ function UsageBar({ used, limit }) {
   );
 }
 
-function LimitInput({ value, onCommit, placeholder }) {
-  const [v, setV] = useState(value ?? "");
-  useEffect(() => setV(value ?? ""), [value]);
-  return (
-    <input value={v} inputMode="numeric" placeholder={placeholder} onChange={(e) => setV(e.target.value.replace(/[^\d]/g, ""))}
-      onBlur={() => String(value ?? "") !== v && onCommit(v ? Number(v) : null)}
-      className={`${inputCls} h-7 w-24 px-2 text-right text-xs`} />
-  );
-}
-
 function QuotaWindow({ t, name, w, limits, onLimit, now }) {
   const reqLimit = limits[`requests_${name}`], tokLimit = limits[`tokens_${name}`];
   return (
@@ -860,12 +1210,11 @@ function QuotaWindow({ t, name, w, limits, onLimit, now }) {
         <div key={kind} className="space-y-1">
           <div className="flex items-center justify-between gap-2 text-[11px]">
             <span className="text-muted">{t(`quota_${kind}`)}</span>
-            <span className="flex items-center gap-1.5">
-              <span className="whitespace-nowrap font-mono tabular-nums">{kind === "tokens" ? formatTokens(used) : used}{lim ? ` / ${kind === "tokens" ? formatTokens(lim) : lim}` : ""}</span>
-              <LimitInput value={lim} placeholder={t("quota_limit")} onCommit={(n) => onLimit(`${kind}_${name}`, n)} />
-            </span>
+            <span className="whitespace-nowrap font-mono tabular-nums">{kind === "tokens" ? formatTokens(used) : used}{lim ? ` / ${kind === "tokens" ? formatTokens(lim) : lim}` : ""}</span>
           </div>
           <UsageBar used={used} limit={lim} />
+          <RangeField value={lim || null} log min={kind === "tokens" ? 10000 : 10} max={kind === "tokens" ? 1e9 : 100000} auto={t("quota_limit")}
+            format={kind === "tokens" ? formatTokens : undefined} onCommit={(n) => onLimit(`${kind}_${name}`, n)} />
         </div>
       ))}
     </div>
@@ -907,6 +1256,43 @@ function QuotaPanel({ data, limits, onLimit, onClear }) {
             ))}
           </div>
         )}
+        {Object.keys(p.models || {}).length > 0 && (
+          <div className="overflow-x-auto rounded-xl border border-line">
+            <table className="w-full text-[11.5px]">
+              <thead><tr className="bg-panel text-left text-subtle">
+                <th className="px-2.5 py-1.5 font-medium">{t("model")}</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">5 {t("unit_h")} · {t("quota_requests")}</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">5 {t("unit_h")} · {t("quota_tokens")}</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">{t("quota_week")} · {t("quota_requests")}</th>
+                <th className="px-2.5 py-1.5 text-right font-medium">{t("quota_week")} · {t("quota_tokens")}</th>
+              </tr></thead>
+              <tbody>
+                {Object.entries(p.models).sort((a, b) => (b[1].week?.tokens || 0) - (a[1].week?.tokens || 0)).map(([mid, w]) => (
+                  <tr key={mid} className="border-t border-line">
+                    <td className="max-w-[260px] truncate px-2.5 py-1.5 font-mono" title={mid}>{mid.split(":").slice(1).join(":")}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{w["5h"]?.requests || 0}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{formatTokens(w["5h"]?.tokens || 0)}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{w.week?.requests || 0}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{formatTokens(w.week?.tokens || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {p.account && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted">
+            <span className="font-medium">{t("quota_account")}:</span>
+            {p.account.balance != null && <span>{t("quota_balance")}: {p.account.balance}</span>}
+            {p.account.credits_left != null && <span>{t("quota_credits_left")}: {Number(p.account.credits_left).toFixed(2)}</span>}
+            {p.account.credits_used != null && <span>{t("quota_credits_used")}: {Number(p.account.credits_used).toFixed(4)}</span>}
+            {p.account.free_tier != null && <span>{p.account.free_tier ? t("quota_free_tier") : t("quota_paid_tier")}</span>}
+            {p.account.rate?.requests && <span>{t("quota_rate")}: {p.account.rate.requests}/{p.account.rate.interval}</span>}
+            {p.account.remaining_cr != null && <span>{t("quota_credits_left")}: {p.account.remaining_cr}</span>}
+            {p.account.level != null && <span>{t("quota_level")}: {p.account.level}</span>}
+            {p.account.available === false && <span className="text-danger">{t("quota_no_balance")}</span>}
+          </div>
+        )}
       </div>
     );
   });
@@ -924,7 +1310,18 @@ function MultiModel() {
   const pool = (mm.pool || []).map((e) => (typeof e === "string" ? { model: e, tags: [] } : e));
   const setPool = (next) => save({ pool: next });
   const status = (id) => usage?.pool?.find((p) => p.model === id);
-  const clear = (key) => api.post(`/api/usage/clear?model=${encodeURIComponent(key)}`).then(load);
+  // Try again now: clears the wait and sends a one-token test request; the answer says if it works again.
+  const clear = async (key) => {
+    const st = useStore.getState();
+    const id = st.notify(t("quota_probing"), "busy");
+    try {
+      const r = await api.post(`/api/usage/clear?model=${encodeURIComponent(key)}`);
+      st.dismiss(id);
+      if (r.ok) st.notify(t("quota_probe_ok", { model: r.model || key, ms: r.ms ?? "" }), "ok");
+      else st.notify(t("quota_probe_failed", { model: r.model || key }), "error", r.error);
+    } catch (e) { st.dismiss(id); st.notify(e.message, "error"); }
+    load();
+  };
   const localIds = new Set(Object.entries(s.providers || {}).filter(([, c]) => c.local).map(([id]) => id));
   return (
     <div className="space-y-4">
@@ -932,6 +1329,7 @@ function MultiModel() {
         <Row tight label={t("enabled")}><Toggle checked={!!mm.enabled} onChange={(v) => save({ enabled: v })} /></Row>
         <Row tight label={t("mm_auto_switch")} desc={t("mm_auto_switch_desc")}><Toggle checked={mm.auto_switch !== false} onChange={(v) => save({ auto_switch: v })} /></Row>
         <Row tight label={t("mm_delegate")} desc={t("mm_delegate_desc")}><Toggle checked={mm.delegate !== false} onChange={(v) => save({ delegate: v })} /></Row>
+        <Row tight label={t("mm_prefer_fast")} desc={t("mm_prefer_fast_desc")}><Toggle checked={mm.prefer_fast !== false} onChange={(v) => save({ prefer_fast: v })} /></Row>
         <div className="flex gap-2 px-5 py-3 text-xs leading-snug text-muted"><Cpu size={14} className="mt-0.5 shrink-0" />{t("mm_local_note")}</div>
       </Card>
 
@@ -984,7 +1382,49 @@ function MultiModel() {
         <QuotaPanel data={usage} limits={mm.limits || {}} onClear={clear}
           onLimit={(pid, k, v) => save({ limits: { [pid]: { ...((mm.limits || {})[pid] || {}), [k]: v } } })} />
       </Card>
+
+      <ModelStats />
     </div>
+  );
+}
+
+// Measured per-model record (tasks, failures, first-token wait, turn time, prompt reading speed).
+const fmtMs = (v) => (v == null ? "–" : v >= 10000 ? `${Math.round(v / 1000)} s` : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
+function ModelStats() {
+  const t = useT();
+  const [data, setData] = useState(null);
+  const load = () => api.get("/api/models/stats").then((r) => setData(r.models || {})).catch(() => setData({}));
+  useEffect(() => { load(); }, []);
+  const rows = Object.entries(data || {}).sort((a, b) => (b[1].tasks || 0) - (a[1].tasks || 0));
+  const reset = async () => { await api.del("/api/models/stats"); load(); };
+  return (
+    <Card title={t("ms_title")} desc={t("ms_desc")}
+      action={<div className="flex gap-1">
+        <button onClick={load} title={t("refresh")} className="rounded-lg p-1.5 text-muted hover:bg-hover"><RefreshCw size={15} /></button>
+        {rows.length > 0 && <button onClick={reset} title={t("ms_reset")} className="rounded-lg p-1.5 text-muted hover:bg-hover hover:text-danger"><Trash2 size={15} /></button>}
+      </div>}>
+      {rows.length === 0 ? <div className="px-5 py-6 text-center text-[13px] text-muted">{t("ms_empty")}</div> : (
+        <div className="overflow-x-auto px-5 py-3">
+          <table className="w-full text-[12.5px]">
+            <thead><tr className="text-left text-subtle">
+              <th className="py-1.5 pr-3 font-medium">{t("ms_model")}</th><th className="px-2 font-medium">{t("ms_tasks")}</th>
+              <th className="px-2 font-medium">{t("ms_fail")}</th><th className="px-2 font-medium">{t("ms_first")}</th>
+              <th className="px-2 font-medium">{t("ms_turn")}</th><th className="px-2 font-medium">{t("ms_read")}</th>
+            </tr></thead>
+            <tbody>{rows.map(([m, v]) => (
+              <tr key={m} className="border-t border-line" title={v.last_error ? `${t("ms_last_error")}: ${v.last_error}` : ""}>
+                <td className="max-w-[260px] truncate py-1.5 pr-3 font-mono text-[12px]">{m}</td>
+                <td className="px-2 tabular-nums">{v.tasks || 0}</td>
+                <td className={`px-2 tabular-nums ${v.fail_pct >= 40 ? "text-danger" : v.fail_pct >= 15 ? "text-warn" : "text-ok"}`}>{v.tasks ? t("ms_pct", { n: v.fail_pct }) : "–"}</td>
+                <td className="px-2 tabular-nums">{fmtMs(v.first_ms)}</td>
+                <td className="px-2 tabular-nums">{fmtMs(v.turn_ms)}</td>
+                <td className="px-2 tabular-nums">{fmtMs(v.read_ms_per_1k)}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </Card>
   );
 }
 

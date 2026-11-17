@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api, setErrorTranslator } from "./api";
-import { docKind, isImage } from "./fileTypes";
+import { docKind, isAudio, isImage, isTextFile, isVideo, isWebPage } from "./fileTypes";
 
 // The device's position for map searches (the browser asks the user's permission once; Wi-Fi/GPS through the OS).
 function answerLocation(id) {
@@ -12,6 +12,12 @@ function answerLocation(id) {
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 120000 },
   );
 }
+
+// Throttle for the live "context" event's periodic full resync (see applyEvents): the quick per-event patch below
+// only ever touches `used`, so if the running model changes mid-task (quota auto-switch) its window/threshold
+// would otherwise stay stale until the panel is opened - this keeps them in sync without refetching every tick.
+let _ctxResyncAt = 0;
+let _ctxLiveAt = 0; // time of the last live context event (a slower /context answer must not overwrite it)
 
 const readB64 = (file) => new Promise((res) => {
   const r = new FileReader();
@@ -31,11 +37,12 @@ export function detectLanguage(available) {
   return "en";
 }
 
+const PAGE = 30; // messages per page when a chat opens / while scrolling up
 const PREFS_KEY = "aiiq.prefs";
 const loadPrefs = () => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { return {}; } };
 const savePrefs = (p) => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch {} };
 
-export const emptyRun = (extra = {}) => ({ id: null, text: "", steps: [], todos: [], approvals: [], status: "starting", error: null, role: null, ...extra });
+export const emptyRun = (extra = {}) => ({ id: null, text: "", steps: [], todos: [], approvals: [], status: "starting", error: null, role: null, started: Date.now(), ...extra });
 
 // Runs are kept per session, so a run keeps streaming in the background while another chat is open.
 export const useStore = create((set, get) => ({
@@ -69,6 +76,7 @@ export const useStore = create((set, get) => ({
   confirmState: null, // { title, message, confirmLabel, danger, resolve }
   saveState: { state: "idle", at: null, error: null }, // settings persistence indicator
   lastSeq: 0,
+  boot: "", // the backend's start id: a different one after a reconnect means the app restarted (see socket.js)
   fsTick: 0, // bumps whenever an agent writes/deletes a file -> file manager refreshes at once
 
   setView: (view) => set({ view, sidebarOpen: false }),
@@ -101,7 +109,7 @@ export const useStore = create((set, get) => ({
       throw e;
     }
   },
-  // File API base for the current chat; before a chat exists it targets the selected project or workspace/.
+  // File API base for the current chat; before a chat exists it targets the selected project (else no folder yet).
   fileApi(path) {
     const { sessionId, scope, projectId } = get();
     const q = !sessionId && scope === "project" && projectId ? `project_id=${projectId}` : "";
@@ -112,6 +120,10 @@ export const useStore = create((set, get) => ({
   async loadLanguage(code) {
     const dict = await api.get(`/api/languages/${code}`);
     get().setPref("lang", code);
+    // The backend writes notes, summaries and recovered-task messages in this language too.
+    if (get().settings && get().settings.language !== code) {
+      api.patch("/api/settings", { language: code }).then((s) => set((st) => ({ settings: { ...s, secrets: st.settings?.secrets } }))).catch(() => {});
+    }
     document.documentElement.lang = code;
     set({ dict });
     setErrorTranslator((c) => dict[`err_${c}`] || null);
@@ -129,19 +141,62 @@ export const useStore = create((set, get) => ({
     let lang = get().prefs.lang;
     if (!lang) lang = detectLanguage(await api.get("/api/languages").catch(() => [{ code: "en" }]));
     try { await get().loadLanguage(lang); } catch { await get().loadLanguage("en"); }
-    get().loadModels();
+    get().loadModels().then(() => get().startSync());
     get().loadCatalog();
     api.get("/api/processes").then((list) => set({ processes: Object.fromEntries(list.map((p) => [p.id, p])) }));
     if (projects[0]) set({ projectId: projects[0].id });
+    // "Open in new window": ?session=<id> opens that chat in this window.
+    const want = new URLSearchParams(location.search).get("session");
+    if (want && sessions.some((x) => x.id === want)) get().openSession(want);
   },
   // Each provider's models load in parallel and appear as soon as they arrive (no waiting for the slowest one).
-  async loadModels() {
+  // refresh: ask every provider again instead of the server's 5-minute cache (the refresh button).
+  async loadModels(refresh = false) {
     let providers;
     try { providers = await api.get("/api/models/providers"); } catch { return; }
     set((s) => ({ models: Object.fromEntries(Object.entries(providers).map(([pid, p]) =>
       [pid, s.models[pid] ? { ...s.models[pid], ...p } : { ...p, models: [], loading: true }])) }));
-    await Promise.all(Object.keys(providers).map((pid) => get().loadProviderModels(pid)));
+    await Promise.all(Object.keys(providers).map((pid) => get().loadProviderModels(pid, refresh)));
     get().ensureModel();
+  },
+  // Live sync: a local server (Ollama, LM Studio) that starts or stops, and settings changed in another window or
+  // by the backend, show up within seconds without a reload. One cheap request every 5 s (paused in hidden tabs).
+  startSync() {
+    if (get()._syncing) return;
+    set({ _syncing: true });
+    let rev = null;
+    let busy = false;
+    const listRev = {}; // provider -> fingerprint of its model list (a model pulled / loaded changes it)
+    const tick = async () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      try {
+        const h = await api.get("/api/models/health");
+        if (rev !== null && h.settings_rev !== rev && get().saveState?.state !== "saving") {
+          const before = JSON.stringify(get().settings?.providers || {});
+          await get().refreshSettings();
+          if (JSON.stringify(get().settings?.providers || {}) !== before) await get().loadModels(true);
+        }
+        rev = h.settings_rev;
+        for (const [pid, up] of Object.entries(h.local || {})) {
+          const p = get().models[pid];
+          const changed = up && h.models_rev?.[pid] && listRev[pid] && listRev[pid] !== h.models_rev[pid];
+          if (up && h.models_rev?.[pid]) listRev[pid] = h.models_rev[pid];
+          if (!p) { if (up) await get().loadModels(true); continue; }
+          if (p.loading) continue;
+          if (up && (p.error || !p.models.length || changed)) {
+            await get().loadProviderModels(pid, true);
+            get().ensureModel();
+          } else if (!up && !p.error) {
+            set((s) => ({ models: { ...s.models, [pid]: { ...s.models[pid], error: `${p.name} is unreachable`, code: "unavailable" } } }));
+          }
+        }
+      } catch { /* backend restarting: the next tick tries again */ }
+      busy = false;
+    };
+    setInterval(tick, 3000);
+    addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", () => !document.hidden && tick());
   },
   // If no model is chosen yet (fresh install) or the chosen one disappeared, use the first available model.
   ensureModel() {
@@ -215,7 +270,15 @@ export const useStore = create((set, get) => ({
   async loadContext() {
     const model = get().currentModel();
     if (!model) return;
-    try { set({ context: await api.get(`/api/sessions/${get().sessionId || "new"}/context?model=${encodeURIComponent(model)}`) }); } catch {}
+    const asked = Date.now(), sid = get().sessionId;
+    try {
+      const ctx = await api.get(`/api/sessions/${sid || "new"}/context?model=${encodeURIComponent(model)}`);
+      if (get().sessionId !== sid) return; // the user opened another chat meanwhile
+      // A live count that arrived while this request was on its way is newer than the answer: keep it.
+      const prev = get().context;
+      const keepLive = _ctxLiveAt > asked && prev && get().runs[sid];
+      set({ context: keepLive ? { ...ctx, used: prev.used } : ctx });
+    } catch {}
   },
 
   // projects & sessions
@@ -251,25 +314,165 @@ export const useStore = create((set, get) => ({
     if (get().sessionId === id) get().newChat();
   },
   newChat(projectId) {
-    set((s) => ({ sessionId: null, messages: [], attachments: [], view: "chat", sidebarOpen: false,
+    set((s) => ({ sessionId: null, messages: [], hasMore: false, loadingMessages: false, quotes: [], attachments: [], msgSel: null, view: "chat", sidebarOpen: false,
       ...(projectId ? { projectId, scope: "project" } : {}) }));
     get().loadContext();
   },
   selectProject(id) { set((s) => ({ projectId: id, scope: "project", expanded: { ...s.expanded, [id]: true } })); get().newChat(); },
   async openSession(id) {
     const s = get().sessions.find((x) => x.id === id);
-    set({ sessionId: id, view: "chat", sidebarOpen: false,
-      projectId: s?.project_id || get().projectId, scope: s?.project_id ? "project" : "computer" });
-    const [msgs, active] = await Promise.all([api.get(`/api/sessions/${id}/messages`), api.get(`/api/sessions/${id}/active`)]);
+    // The chat opens with its latest page (a long chat no longer loads every message at once); a loading state
+    // shows until it arrives, older pages load while scrolling up (loadOlder).
+    set({ sessionId: id, view: "chat", sidebarOpen: false, messages: [], hasMore: false, loadingMessages: true, msgSel: null,
+      projectId: s?.project_id || get().projectId, scope: s?.project_id ? "project" : "computer",
+      sessions: get().sessions.map((x) => (x.id === id && x.unread ? { ...x, unread: 0 } : x)) });
+    let page, active;
+    try {
+      [page, active] = await Promise.all([api.get(`/api/sessions/${id}/messages?limit=${PAGE}`), api.get(`/api/sessions/${id}/active`)]);
+    } catch (e) {
+      if (get().sessionId === id) set({ loadingMessages: false });
+      get().notify(e.message, "error");
+      return;
+    }
     if (get().sessionId !== id) return;
     set((st) => {
       const runs = { ...st.runs };
-      if (active?.run_id && !runs[id]) runs[id] = emptyRun({ id: active.run_id, text: active.text, steps: active.steps, todos: active.todos || [], role: active.role, status: "running" });
+      if (active?.run_id && !runs[id]) runs[id] = emptyRun({ id: active.run_id, text: active.text, steps: active.steps, todos: active.todos || [], role: active.role, status: "running", started: active.started ? active.started * 1000 : Date.now() });
+      // Live events may have created the run first (after a reload) with "now" as its start: the server's start
+      // time wins, so the elapsed time goes on instead of starting again at 0.
+      else if (active?.run_id && active.started) runs[id] = { ...runs[id], id: runs[id].id || active.run_id, started: active.started * 1000 };
       if (!active?.run_id) delete runs[id];
       // The live run's user message is already stored; the answer is not yet.
-      return { messages: msgs, runs };
+      return { messages: page.messages, hasMore: page.has_more, loadingMessages: false, runs };
     });
     get().loadContext();
+  },
+  hasMore: false,
+  loadingMessages: false,
+  loadingOlder: false,
+  async loadOlder() {
+    const { sessionId: id, messages, hasMore, loadingOlder } = get();
+    const first = messages.find((m) => typeof m.id === "number");
+    if (!id || !hasMore || loadingOlder || !first) return 0;
+    set({ loadingOlder: true });
+    try {
+      const page = await api.get(`/api/sessions/${id}/messages?limit=${PAGE}&before=${first.id}`);
+      if (get().sessionId !== id) return 0;
+      set((s) => ({ messages: [...page.messages, ...s.messages], hasMore: page.has_more }));
+      return page.messages.length;
+    } catch { return 0; } finally { set({ loadingOlder: false }); }
+  },
+  // Messages added live ("local-…" sent here, "run-…" answers) get their stored ids once saved, matched by role and
+  // text from the end: then they can be selected, deleted and quoted like any loaded message.
+  async syncIds(sid) {
+    if (get().sessionId !== sid || !get().messages.some((m) => typeof m.id !== "number")) return;
+    const page = await api.get(`/api/sessions/${sid}/messages?limit=${PAGE}`).catch(() => null);
+    if (!page || get().sessionId !== sid) return;
+    const stored = [...page.messages];
+    const taken = new Set(get().messages.filter((m) => typeof m.id === "number").map((m) => m.id));
+    set((s) => ({
+      messages: s.messages.map((m) => {
+        if (typeof m.id === "number") return m;
+        const hit = stored.slice().reverse().find((x) => !taken.has(x.id) && x.role === m.role && (x.content || "").trim() === (m.content || "").trim());
+        if (!hit) return m;
+        taken.add(hit.id);
+        return { ...m, id: hit.id, meta: { ...hit.meta, ...m.meta } };
+      }),
+    }));
+  },
+  // Select mode from a message's "select" button: live ids are resolved first, so every message can be picked.
+  async startSelect(m) {
+    const sid = get().sessionId;
+    set({ msgSel: new Set() });
+    if (sid) await get().syncIds(sid);
+    const cur = get().messages.find((x) => x === m || (x.role === m.role && x.content === m.content));
+    if (cur && typeof cur.id === "number") set({ msgSel: new Set([cur.id]) });
+  },
+  // Selection (chat list and messages): a Set of ids while select mode is on, null otherwise.
+  chatSel: null,
+  msgSel: null,
+  toggleSel(kind, id) {
+    set((s) => {
+      const cur = new Set(s[kind] || []);
+      cur.has(id) ? cur.delete(id) : cur.add(id);
+      return { [kind]: cur };
+    });
+  },
+  async deleteChats(ids) {
+    const t = get().t;
+    if (!ids.length || !(await get().confirm({ title: t("delete_chats", { n: ids.length }), message: t("confirm_delete_chats"),
+      confirmLabel: t("delete"), danger: true }))) return;
+    await api.post("/api/sessions/delete", { ids });
+    const gone = new Set(ids);
+    set((s) => ({ sessions: s.sessions.filter((x) => !gone.has(x.id)), chatSel: null }));
+    if (gone.has(get().sessionId)) get().newChat();
+  },
+  async deleteMessages(all) {
+    const t = get().t, sid = get().sessionId;
+    const sel = get().msgSel || new Set();
+    const ids = all ? [] : [...sel].filter((x) => typeof x === "number");
+    if (!sid || (!all && !ids.length)) return;
+    if (!(await get().confirm({ title: all ? t("delete_all_messages") : t("delete_messages", { n: ids.length }),
+      message: t("confirm_delete_messages"), confirmLabel: t("delete"), danger: true }))) return;
+    try {
+      await api.post(`/api/sessions/${sid}/messages/delete`, all ? { all: true } : { ids });
+    } catch (e) { return get().notify(e.message, "error"); }
+    const gone = new Set(ids);
+    set((s) => ({ messages: all ? [] : s.messages.filter((m) => !gone.has(m.id)), msgSel: null }));
+    get().loadContext();
+  },
+  async deleteMessage(m) {
+    const t = get().t, sid = get().sessionId;
+    if (!(await get().confirm({ title: t("delete_message"), message: t("confirm_delete_message"), confirmLabel: t("delete"), danger: true }))) return;
+    if (typeof m.id === "number") {
+      try { await api.del(`/api/sessions/${sid}/messages/${m.id}`); } catch (e) { return get().notify(e.message, "error"); }
+    } else if (sid) { // a message added live (id "run-..."/"local-..."): reload to learn its stored id, then delete
+      const page = await api.get(`/api/sessions/${sid}/messages?limit=${PAGE}`).catch(() => null);
+      const stored = page?.messages.slice().reverse().find((x) => x.role === m.role && x.content === m.content);
+      if (stored) await api.del(`/api/sessions/${sid}/messages/${stored.id}`).catch(() => {});
+    }
+    set((s) => ({ messages: s.messages.filter((x) => x !== m) }));
+    get().loadContext();
+  },
+  // "Add to chat": text selected in a message goes with the next message as a quote (optional comment).
+  quotes: [],
+  addQuote(q) { set((s) => ({ quotes: [...s.quotes, { ...q, id: Math.random().toString(36).slice(2) }] })); },
+  removeQuote(id) { set((s) => ({ quotes: s.quotes.filter((q) => q.id !== id) })); },
+  flash: null, // { messageId, text, at }: the quoted text blinks in its message
+  flashQuote(q) { set({ flash: { messageId: q.messageId, text: q.text, at: Date.now() } }); },
+  async moveSession(id, projectId) {
+    try { await api.patch(`/api/sessions/${id}`, { project_id: projectId || null, move: true }); }
+    catch (e) { return get().notify(e.message, "error"); }
+    await get().refreshSessions();
+    if (get().sessionId === id) set({ projectId: projectId || get().projectId, scope: projectId ? "project" : "computer" });
+    get().notify(get().t("chat_moved"), "ok");
+  },
+  async forkSession(id) {
+    try {
+      const s = await api.post(`/api/sessions/${id}/fork`);
+      await get().refreshSessions();
+      get().openSession(s.id);
+    } catch (e) { get().notify(e.message, "error"); }
+  },
+  async exportSession(id, mode = "copy") {
+    const r = await api.get(`/api/sessions/${id}/export`);
+    if (mode === "copy") { await navigator.clipboard.writeText(r.markdown); return get().notify(get().t("copied"), "ok"); }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([r.markdown], { type: "text/markdown" }));
+    a.download = `${(r.title || "chat").replace(/[\\/:*?"<>|]+/g, "_").slice(0, 60)}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  },
+  async pinProject(id, pinned) {
+    await api.patch(`/api/projects/${id}`, { pinned });
+    set({ projects: await api.get("/api/projects") });
+  },
+  async archiveProjectChats(id) {
+    const t = get().t;
+    if (!(await get().confirm({ title: t("archive_chats"), message: t("confirm_archive_chats"), confirmLabel: t("archive") }))) return;
+    await api.post(`/api/projects/${id}/archive_chats`);
+    await get().refreshSessions();
+    if (get().sessions.every((x) => x.id !== get().sessionId)) get().newChat(id);
   },
   async ensureSession() {
     if (get().sessionId) return get().sessionId;
@@ -290,7 +493,10 @@ export const useStore = create((set, get) => ({
       } catch (e) { get().notify(e.message, "error"); }
     }
   },
-  async refreshSessions() { set({ sessions: await api.get("/api/sessions") }); },
+  async refreshSessions() {
+    const list = await api.get("/api/sessions");
+    set({ sessions: list.map((x) => (x.id === get().sessionId ? { ...x, unread: 0 } : x)) }); // the open chat is read
+  },
 
   modelCaps(id = get().currentModel()) {
     const [pid, ...rest] = id.split(":");
@@ -298,21 +504,29 @@ export const useStore = create((set, get) => ({
   },
   async send(text, opts = {}) {
     const sid = await get().ensureSession();
-    const { attachments, settings } = get();
+    const { attachments, settings, quotes } = get();
+    if (quotes.length) { // quoted parts of earlier messages go first, each with its optional comment
+      text = quotes.map((q) => q.text.split("\n").map((l) => `> ${l}`).join("\n") + (q.comment ? `\n\n${q.comment}` : "")).join("\n\n")
+        + "\n\n" + text;
+      set({ quotes: [] });
+    }
     const images = attachments.filter((a) => a.kind === "image" && a.b64).map((a) => a.b64);
     if (images.length && get().modelCaps()?.vision === false) get().notify(get().t("no_vision_warning"), "warn");
     const meta = attachments.map(({ b64, ...a }) => a);
+    // The chat is working: the message is guidance for the running task (nothing stops, nothing restarts).
+    const busy = !!get().runs[sid] && get().runs[sid].status !== "error";
     set((s) => ({
-      messages: [...s.messages, { id: `local-${Date.now()}`, role: "user", content: text, meta: { attachments: meta } }],
-      runs: { ...s.runs, [sid]: emptyRun() },
+      messages: [...s.messages, { id: `local-${Date.now()}`, role: "user", content: text, meta: { attachments: meta, steer: busy } }],
+      runs: busy ? s.runs : { ...s.runs, [sid]: emptyRun() },
       attachments: [],
     }));
     try {
-      const { run_id } = await api.post(`/api/sessions/${sid}/chat`, {
+      const { run_id, steered } = await api.post(`/api/sessions/${sid}/chat`, {
         text, model: get().currentModel(), permission_mode: settings?.permission_mode,
         plan_mode: !!opts.planMode, goal_mode: !!opts.goalMode, images, attachments: meta, ui_lang: get().prefs.lang,
       });
-      set((s) => ({ runs: { ...s.runs, [sid]: { ...s.runs[sid], id: run_id, status: "running" } } }));
+      if (steered) { get().notify(get().t("steer_sent"), "ok"); return; }
+      set((s) => ({ runs: { ...s.runs, [sid]: { ...(s.runs[sid] || emptyRun()), id: run_id, status: "running" } } }));
       if (!get().sessions.find((x) => x.id === sid)?.title) get().refreshSessions();
     } catch (e) {
       set((s) => ({ runs: { ...s.runs, [sid]: { ...s.runs[sid], status: "error", error: e.message, errorCode: "request" } } }));
@@ -346,11 +560,21 @@ export const useStore = create((set, get) => ({
     finally { set({ compressing: false }); }
   },
   previewFile: (path, size) => set({ dialog: { type: "preview", path, size } }),
+  playMedia: (path) => set({ dialog: { type: "media", path, kind: isVideo(path) ? "video" : "audio" } }),
   viewImages: (paths, index = 0) => set({ dialog: { type: "images", paths, index } }),
   browse: (target) => set({ dialog: { type: "browser", ...target } }), // { path } in the working folder or { url }
-  async openFile(path) {
-    if (docKind(path)) return get().previewFile(path); // office/PDF documents open in the previewer
-    if (isImage(path)) return get().viewImages([path]);
+  // Each kind opens in its own viewer; editor=true opens any text file (also HTML) in the code editor.
+  async openFile(path, editor = false) {
+    if (!editor) {
+      if (docKind(path)) return get().previewFile(path); // office/PDF documents open in the previewer
+      if (isImage(path)) return get().viewImages([path]);
+      if (isVideo(path) || isAudio(path)) return get().playMedia(path); // video player / audio player with waveform
+      if (isWebPage(path)) return get().browse({ path });
+    }
+    if (!isTextFile(path)) { // binary without a viewer (db, zip, exe...): download it
+      window.open(get().fileApi(`/fs/raw?path=${encodeURIComponent(path)}`) + "&download=true");
+      return;
+    }
     const { content } = await api.get(get().fileApi(`/file?path=${encodeURIComponent(path)}`));
     get().openBuffer({ id: path, path, content, saved: content });
   },
@@ -380,6 +604,28 @@ export const useStore = create((set, get) => ({
     get().notify(get().t("saved"), "ok");
   },
 
+  // After a reconnect that could not be filled from the replay buffer (or a restarted app): what may have changed
+  // while this page was not listening is read again - the chat list, the open chat's messages (an answer that
+  // finished meanwhile) and the processes. Running tasks arrive as snapshots through the socket itself.
+  async resync() {
+    const sid = get().sessionId;
+    get().refreshSessions().catch(() => {});
+    api.get("/api/processes").then((list) => set({ processes: Object.fromEntries(list.map((p) => [p.id, p])) })).catch(() => {});
+    if (!sid) return;
+    try {
+      const page = await api.get(`/api/sessions/${sid}/messages?limit=${PAGE}`);
+      if (get().sessionId !== sid) return;
+      set((s) => {
+        // Messages already loaded further up stay; the latest page replaces everything from its first message on
+        // (live "run-…" / "local-…" entries are in it now with their stored ids).
+        const first = page.messages[0]?.id;
+        const older = first == null ? [] : s.messages.filter((m) => typeof m.id === "number" && m.id < first);
+        return { messages: [...older, ...page.messages], hasMore: older.length ? s.hasMore : page.has_more };
+      });
+      get().loadContext();
+    } catch {}
+  },
+
   // Events are applied in batches (one state update per animation frame) to avoid flicker.
   applyEvents(events) {
     const s = get();
@@ -391,21 +637,49 @@ export const useStore = create((set, get) => ({
       runs[sid] = { ...(runs[sid] || emptyRun({ status: "running" })) };
       return runs[sid];
     };
+    let boot = s.boot, resync = false;
+    const logCopied = new Set(); // a process's log array is copied once per batch, not once per line
     for (const e of events) {
-      lastSeq = Math.max(lastSeq, e.seq);
-      const p = e.payload;
+      const p = e.payload || {};
+      if (e.topic === "system") {
+        if (e.type === "hello") {
+          boot = p.boot;
+          if (p.reset) {
+            // The full state follows (a new page, the app restarted, or this client was away longer than the replay
+            // buffer reaches): the server's numbering counts from here, and every running task arrives as a snapshot.
+            lastSeq = e.seq || 0;
+            runs = {};
+            logs = {};
+            logCopied.clear();
+            resync = true;
+          }
+        }
+        continue;
+      }
+      lastSeq = Math.max(lastSeq, e.seq || 0);
+      if (e.topic === "run" && e.type === "snapshot") { // a running task as it is right now (see "hello")
+        if (runs === s.runs) runs = { ...runs };
+        runs[p.session_id] = emptyRun({ id: p.run_id, text: p.text || "", steps: p.steps || [], todos: p.todos || [], role: p.role,
+          chat: !!p.chat, approvals: p.approvals || [], status: "running", started: p.started ? p.started * 1000 : Date.now() });
+        continue;
+      }
       if (e.topic === "process") {
         if (e.type === "log") {
           if (logs === s.logs) logs = { ...logs };
-          logs[p.process_id] = [...(logs[p.process_id] || []), { stream: p.stream, line: p.line }].slice(-2000);
+          if (!logCopied.has(p.process_id)) { logs[p.process_id] = [...(logs[p.process_id] || [])]; logCopied.add(p.process_id); }
+          logs[p.process_id].push({ stream: p.stream, line: p.line });
         } else {
           if (processes === s.processes) processes = { ...processes };
           const next = { ...(processes[p.process_id] || { id: p.process_id, owner: p.owner }) };
           if (e.type === "started") Object.assign(next, { argv: p.argv, pid: p.pid, cwd: p.cwd, state: "running", started: e.ts });
-          if (e.type === "state") next.state = p.state;
+          if (e.type === "state") Object.assign(next, { state: p.state, ...("expires_at" in p ? { expires_at: p.expires_at } : {}) });
           if (e.type === "exit") Object.assign(next, { state: p.state, exit_code: p.exit_code });
           processes[p.process_id] = next;
         }
+        continue;
+      }
+      if (e.topic === "model" && e.type === "context") { // the backend grew a local window: picker and panel follow
+        setTimeout(() => get().loadContext(), 0);
         continue;
       }
       if (e.topic === "model") { modelStatus = { model: p.model, state: e.type, message: p.message }; continue; }
@@ -414,6 +688,10 @@ export const useStore = create((set, get) => ({
         continue;
       }
       if (e.topic !== "run") continue;
+      if (e.type === "title") { // the model named the chat after its first answer
+        set((st) => ({ sessions: st.sessions.map((x) => (x.id === p.session_id ? { ...x, title: p.title, title_auto: 2 } : x)) }));
+        continue;
+      }
       if (e.type.startsWith("approval.")) {
         const sid = Object.keys(runs).find((k) => runs[k].id === p.run_id);
         if (!sid) continue;
@@ -425,12 +703,20 @@ export const useStore = create((set, get) => ({
       const sid = p.session_id;
       if (!sid) continue;
       if (e.type === "done") {
+        // The error may have arrived in this same batch (only in the local copy yet): read it before the run goes.
+        const live = runs[sid] || s.runs[sid];
         if (runs[sid]) { if (runs === s.runs) runs = { ...runs }; delete runs[sid]; }
-        if (sid === s.sessionId) {
+        // A replayed "done" (the page loaded after the task ended) of an answer already loaded from the chat is not
+        // added a second time (it showed twice, and the copy could not be selected or deleted).
+        const known = messages.slice(-3).some((m) => m.role === "assistant" && typeof m.id === "number"
+          && (m.content || "").trim() === (p.text || "").trim());
+        if (sid === s.sessionId && !known) {
           messages = [...messages, { id: `run-${p.run_id}`, role: "assistant", content: p.text,
-            meta: { steps: p.steps, todos: p.todos, outputs: p.outputs, timing: p.timing, changes: p.changes, status: p.status, error: s.runs[sid]?.error, errorCode: s.runs[sid]?.errorCode } }];
+            meta: { steps: p.steps, todos: p.todos, outputs: p.outputs, timing: p.timing, changes: p.changes, status: p.status, error: live?.error, errorCode: live?.errorCode } }];
+          setTimeout(() => get().syncIds(sid), 400); // the stored ids replace the live ones (select, delete)
           context = p.context_used;
           setTimeout(() => get().loadContext(), 0); // refresh the detailed context stats
+          api.patch(`/api/sessions/${sid}`, { unread: false }).catch(() => {}); // seen: the answer is on screen
           const pr = s.prefs;  // spoken replies: only answers of a run seen live here (not history replays)
           if (pr.voiceReply && s.runs[sid] && p.status === "ok" && p.text) {
             import("./speech").then((sp) => sp.speak(`run-${p.run_id}`, p.text, sp.speechOpts(pr)));
@@ -440,7 +726,17 @@ export const useStore = create((set, get) => ({
         continue;
       }
       if (e.type === "context") { // live context use while the task runs (each model turn)
-        if (sid === s.sessionId) context = p.used;
+        if (sid === s.sessionId) {
+          context = p.used;
+          // The task's model can change mid-run (quota auto-switch, a team member's own model): refetch the
+          // window/threshold for it every few seconds so the ring's percentage never compares `used` against a
+          // stale cap (the bug a user would see as the ring reading red until the panel is opened and resyncs it).
+          const now = Date.now();
+          _ctxLiveAt = now;
+          // A model switch mid-task (quota switch, pool model): load that model's window at once.
+          const switched = p.model && s.context && s.context.model !== p.model;
+          if (switched || now - _ctxResyncAt > 4000) { _ctxResyncAt = now; get().loadContext(); }
+        }
         continue;
       }
       const run = touchRun(sid);
@@ -449,19 +745,30 @@ export const useStore = create((set, get) => ({
       if (e.type === "delta") run.text += p.text;
       else if (e.type === "reset_text") run.text = "";
       else if (e.type === "agent") run.role = p.role;
+      else if (e.type === "reply_mode") run.chat = !!p.chat;
       else if (e.type === "todos") run.todos = p.todos;
       else if (e.type === "step_remove") run.steps = run.steps.filter((x) => x.id !== p.step_id);
       else if (e.type === "error") { run.error = p.message; run.errorCode = p.code; }
       else if (e.type === "step") {
         if (p.step.status === "done" && ["write_file", "edit_file", "delete_file", "make_doc"].includes(p.step.data?.tool)) fsTick += 1;
         if (p.step.status === "done" && p.step.data?.tool === "save_catalog") get().loadCatalog(); // new skill/agent shows at once
+        // A Markdown file the task wrote in the open chat opens in the editor (Monaco) at once: once per file and run.
+        const mdPath = p.step.data?.path;
+        if (p.step.status === "done" && sid === s.sessionId && ["write_file", "edit_file"].includes(p.step.data?.tool)
+            && /\.(md|markdown|mdx)$/i.test(mdPath || "") && !(run.openedMd || []).includes(mdPath)) {
+          run.openedMd = [...(run.openedMd || []), mdPath];
+          setTimeout(() => get().openFile(mdPath).catch(() => {}), 0);
+        }
+        if (p.step.kind === "thinking" && (p.step.detail || "").length > 4000) p.step.detail = "…" + p.step.detail.slice(-4000);
         const i = run.steps.findIndex((x) => x.id === p.step.id);
         run.steps = i < 0 ? [...run.steps, p.step] : run.steps.map((x, j) => (j === i ? p.step : x));
       }
     }
-    set({ runs, processes, logs, messages, modelStatus, lastSeq, fsTick,
+    for (const id of logCopied) if (logs[id].length > 2000) logs[id] = logs[id].slice(-2000);
+    set({ runs, processes, logs, messages, modelStatus, lastSeq, fsTick, boot,
       ...(context != null && s.context ? { context: { ...s.context, used: context } } : {}) });
     if (refresh) get().refreshSessions();
+    if (resync && s.boot) get().resync(); // not on the first connection of a page (bootstrap loads everything)
   },
 }));
 

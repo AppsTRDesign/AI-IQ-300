@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { PenLine, X } from "lucide-react";
+import { ChevronRight, PenLine, X } from "lucide-react";
 import { useT } from "../lib/store";
 import { fileType, formatSize } from "../lib/fileTypes";
 
@@ -20,9 +20,27 @@ export function useOutside(ref, onClose, active = true, anchor = null) {
 
 export function Popover({ children, onClose, className = "" }) {
   const ref = useRef(null);
+  const [dx, setDx] = useState(0);
   useOutside(ref, onClose, true, () => ref.current?.parentElement);
+  // Anchored to its button, a wide popover could run off the left or right edge on a phone or a narrow window
+  // (the model picker went off-screen to the left): it is shifted back inside the viewport, 8 px from the edge.
+  useLayoutEffect(() => {
+    const fit = () => {
+      const el = ref.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const left = r.left - dx;
+      const right = r.right - dx;
+      const w = document.documentElement.clientWidth;
+      setDx(left < 8 ? 8 - left : right > w - 8 ? Math.max(8 - left, w - 8 - right) : 0);
+    };
+    fit();
+    addEventListener("resize", fit);
+    return () => removeEventListener("resize", fit);
+  }, [dx]);
   return (
-    <div ref={ref} className={`fade-in absolute z-40 rounded-2xl border border-line bg-elev p-1.5 shadow-xl shadow-black/10 ${className}`}>
+    <div ref={ref} style={dx ? { translate: `${dx}px 0` } : undefined}
+      className={`fade-in absolute z-40 rounded-2xl border border-line bg-elev p-1.5 shadow-xl shadow-black/10 ${className}`}>
       {children}
     </div>
   );
@@ -45,6 +63,36 @@ export function MenuItem({ icon: Icon, label, desc, onClick, right, danger, acti
 
 export const MenuSep = () => <div className="mx-2 my-1 border-t border-line" />;
 
+// A menu entry that opens a nested menu to the side on hover/click (flips left near the screen edge).
+export function SubMenu({ icon: Icon, label, children }) {
+  const [open, setOpen] = useState(false);
+  const [left, setLeft] = useState(false);
+  const ref = useRef(null);
+  const timer = useRef(null);
+  const show = () => {
+    clearTimeout(timer.current);
+    const r = ref.current?.getBoundingClientRect();
+    setLeft(!!r && r.right + 236 > innerWidth);
+    setOpen(true);
+  };
+  const hide = () => { timer.current = setTimeout(() => setOpen(false), 160); };
+  return (
+    <div ref={ref} className="relative" onMouseEnter={show} onMouseLeave={hide}>
+      <button onClick={(e) => { e.stopPropagation(); open ? setOpen(false) : show(); }}
+        className={`flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-[13px] hover:bg-hover ${open ? "bg-hover" : ""}`}>
+        {Icon && <Icon size={15} className="shrink-0 text-muted" />}
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <ChevronRight size={14} className="shrink-0 text-subtle" />
+      </button>
+      {open && (
+        <div className={`fade-in absolute top-[-6px] z-50 max-h-[60vh] w-56 overflow-y-auto rounded-2xl border border-line bg-elev p-1.5 shadow-xl shadow-black/15 ${left ? "right-full mr-1" : "left-full ml-1"}`}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Right-click / "..." menu positioned at the cursor, clamped to the viewport.
 export function ContextMenu({ x, y, onClose, children }) {
   const ref = useRef(null);
@@ -56,7 +104,7 @@ export function ContextMenu({ x, y, onClose, children }) {
   }, [x, y]);
   return (
     <div ref={ref} style={pos} onClick={onClose}
-      className="fade-in fixed z-50 w-56 rounded-2xl border border-line bg-elev p-1.5 shadow-xl shadow-black/15">
+      className="fade-in fixed z-50 w-60 rounded-2xl border border-line bg-elev p-1.5 shadow-xl shadow-black/15">
       {children}
     </div>
   );
@@ -92,7 +140,7 @@ export function Button({ variant = "default", className = "", ...p }) {
     primary: "bg-accent text-accent-fg hover:opacity-90 disabled:opacity-40",
     default: "border border-line bg-elev hover:bg-hover disabled:opacity-50",
     ghost: "hover:bg-hover",
-    danger: "border border-line text-danger hover:bg-hover",
+    danger: "border border-line text-danger hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
   }[variant];
   return <button {...p} className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-1.5 text-[13px] font-medium transition ${v} ${className}`} />;
 }

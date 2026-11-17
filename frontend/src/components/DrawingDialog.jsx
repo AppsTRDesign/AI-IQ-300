@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Circle, Eraser, Minus, Pencil, Redo2, RectangleHorizontal, Send, Trash2, Type, Undo2, X } from "lucide-react";
+import { ArrowUpRight, Circle, Eraser, Hand, Maximize, Minus, Pencil, Redo2, RectangleHorizontal, Send, Trash2, Type, Undo2, X, ZoomIn,
+  ZoomOut } from "lucide-react";
 import { useT } from "../lib/store";
 
 // Sketch pad and image editor: freehand pen, shapes, arrows, text, eraser, colors, undo/redo.
@@ -8,8 +9,9 @@ import { useT } from "../lib/store";
 const COLORS = ["#111827", "#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#ec4899", "#ffffff"];
 const SIZES = [2, 4, 8, 14];
 const TEXT_PX = { 2: 18, 4: 26, 8: 38, 14: 56 }; // on-screen font size per size choice
-const TOOLS = [["pen", Pencil], ["line", Minus], ["arrow", ArrowUpRight], ["rect", RectangleHorizontal], ["ellipse", Circle], ["text", Type], ["eraser", Eraser]];
+const TOOLS = [["hand", Hand], ["pen", Pencil], ["line", Minus], ["arrow", ArrowUpRight], ["rect", RectangleHorizontal], ["ellipse", Circle], ["text", Type], ["eraser", Eraser]];
 const MAX_SIDE = 4096;
+const ZOOM_MIN = 0.05, ZOOM_MAX = 8;
 const FONT = "600 {px}px Inter, 'Segoe UI', system-ui, sans-serif";
 const light = (hex) => {
   const n = parseInt(hex.slice(1), 16);
@@ -72,6 +74,10 @@ export default function DrawingDialog({ onClose, onSend, image }) {
   const draft = useRef(null);
   const view = useRef({ w: 1, h: 1, scale: 1, ox: 0, oy: 0 }); // document size and how it sits on screen
   const [, force] = useState(0);
+  const pan = useRef(null); // { x, y, ox, oy } while dragging the view
+  const moved = useRef(false); // the user zoomed or panned: a window resize keeps their view
+  const [space, setSpace] = useState(false); // Space held: temporary hand tool
+  const fitRef = useRef(() => {});
 
   useEffect(() => {
     if (!image) return;
@@ -132,11 +138,14 @@ export default function DrawingDialog({ onClose, onSend, image }) {
   renderRef.current = render;
 
   useEffect(() => {
-    const fit = () => {
+    const fit = (reset) => {
       const c = canvas.current, r = wrap.current.getBoundingClientRect(), dpr = devicePixelRatio || 1;
       c.width = r.width * dpr; c.height = r.height * dpr;
       c.style.width = `${r.width}px`; c.style.height = `${r.height}px`;
-      if (image && bg) {
+      if (reset === true) moved.current = false;
+      if (image && bg && moved.current) {
+        // the user's zoom and position stay as they are
+      } else if (image && bg) {
         const pad = r.width < 640 ? 12 : 32;
         const scale = Math.min((r.width - pad * 2) / bg.naturalWidth, (r.height - pad * 2) / bg.naturalHeight, 2);
         view.current = { w: bg.naturalWidth, h: bg.naturalHeight, scale,
@@ -145,12 +154,35 @@ export default function DrawingDialog({ onClose, onSend, image }) {
       renderRef.current();
       force((n) => n + 1);
     };
+    fitRef.current = () => fit(true);
     fit();
-    const ro = new ResizeObserver(fit);
+    const ro = new ResizeObserver(() => fit());
     ro.observe(wrap.current);
     return () => ro.disconnect();
   }, [bg, image]);
   useEffect(() => renderRef.current(), [shapes]);
+
+  // Zoom around a point of the canvas (the cursor, or the middle for the buttons).
+  const zoomAt = (factor, cx, cy) => {
+    const v = view.current, r = wrap.current.getBoundingClientRect();
+    const x = cx ?? r.width / 2, y = cy ?? r.height / 2;
+    const scale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.scale * factor));
+    view.current = { ...v, scale, ox: x - (x - v.ox) * (scale / v.scale), oy: y - (y - v.oy) * (scale / v.scale) };
+    moved.current = true;
+    render();
+    force((n) => n + 1);
+  };
+  const zoomTo = (scale) => zoomAt(scale / view.current.scale);
+  useEffect(() => {
+    const el = wrap.current;
+    const wheel = (e) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  });
 
   const undo = () => { if (shapes.length) { setRedo([...redo, shapes.at(-1)]); setShapes(shapes.slice(0, -1)); } };
   const redoOne = () => { if (redo.length) { setShapes([...shapes, redo.at(-1)]); setRedo(redo.slice(0, -1)); } };
@@ -159,11 +191,18 @@ export default function DrawingDialog({ onClose, onSend, image }) {
     const k = (e) => {
       if (e.target.tagName === "TEXTAREA") return;
       if (e.key === "Escape") onClose();
+      if (e.key === " " && !e.repeat) { e.preventDefault(); setSpace(true); }
+      if (!e.ctrlKey && !e.metaKey && (e.key === "+" || e.key === "=")) zoomAt(1.25);
+      if (!e.ctrlKey && !e.metaKey && e.key === "-") zoomAt(0.8);
+      if (!e.ctrlKey && !e.metaKey && e.key === "0") fitRef.current();
+      if (!e.ctrlKey && !e.metaKey && e.key === "1") zoomTo(1);
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redoOne() : undo(); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redoOne(); }
     };
+    const ku = (e) => { if (e.key === " ") setSpace(false); };
     addEventListener("keydown", k);
-    return () => removeEventListener("keydown", k);
+    addEventListener("keyup", ku);
+    return () => { removeEventListener("keydown", k); removeEventListener("keyup", ku); };
   });
 
   const pos = (e) => {
@@ -172,6 +211,12 @@ export default function DrawingDialog({ onClose, onSend, image }) {
   };
   const down = (e) => {
     if (image && !bg) return;
+    if (tool === "hand" || space || e.button === 1) {
+      e.preventDefault();
+      canvas.current.setPointerCapture(e.pointerId);
+      pan.current = { x: e.clientX, y: e.clientY, ox: view.current.ox, oy: view.current.oy };
+      return force((n) => n + 1);
+    }
     if (tool === "text") { e.preventDefault(); return setTyping(pos(e)); }
     canvas.current.setPointerCapture(e.pointerId);
     const w = (tool === "eraser" ? size * 3 : size) / view.current.scale; // same on-screen thickness at any zoom
@@ -179,6 +224,13 @@ export default function DrawingDialog({ onClose, onSend, image }) {
     render();
   };
   const move = (e) => {
+    if (pan.current) {
+      const pnt = pan.current;
+      view.current = { ...view.current, ox: pnt.ox + e.clientX - pnt.x, oy: pnt.oy + e.clientY - pnt.y };
+      moved.current = true;
+      render();
+      return force((n) => n + 1);
+    }
     if (!draft.current) return;
     const p = pos(e);
     if (draft.current.tool === "pen" || draft.current.tool === "eraser") draft.current.points.push(p);
@@ -186,6 +238,7 @@ export default function DrawingDialog({ onClose, onSend, image }) {
     render();
   };
   const up = () => {
+    if (pan.current) { pan.current = null; return force((n) => n + 1); }
     if (!draft.current) return;
     commit(draft.current);
     draft.current = null;
@@ -230,7 +283,7 @@ export default function DrawingDialog({ onClose, onSend, image }) {
           <button onClick={onClose} title={t("close")} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted hover:bg-hover"><X size={18} /></button>
         </div>
         <div ref={wrap} className={`relative min-h-0 flex-1 overflow-hidden ${image ? "bg-[repeating-conic-gradient(var(--panel)_0_25%,var(--elev)_0_50%)] bg-[length:22px_22px]" : "bg-white"}`}
-          style={{ cursor: tool === "text" ? "text" : tool === "eraser" ? "cell" : "crosshair" }}>
+          style={{ cursor: pan.current ? "grabbing" : tool === "hand" || space ? "grab" : tool === "text" ? "text" : tool === "eraser" ? "cell" : "crosshair" }}>
           <canvas ref={canvas} className="absolute inset-0 touch-none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} />
           {!image && !shapes.length && !draft.current && !typing && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-zinc-400">{t("draw_hint")}</div>
@@ -273,6 +326,15 @@ export default function DrawingDialog({ onClose, onSend, image }) {
             <button title={t("undo")} onClick={undo} disabled={!shapes.length} className={`${btn(false)} disabled:opacity-30`}><Undo2 size={16} /></button>
             <button title={t("redo")} onClick={redoOne} disabled={!redo.length} className={`${btn(false)} disabled:opacity-30`}><Redo2 size={16} /></button>
             <button title={t("clear")} onClick={() => { setRedo([...redo, ...shapes.slice().reverse()]); setShapes([]); }} disabled={!shapes.length} className={`${btn(false)} disabled:opacity-30`}><Trash2 size={16} /></button>
+          </div>
+          {sep}
+          <div className="flex items-center gap-0.5 sm:ml-auto">
+            <button title={`${t("zoom_out")} (-)`} onClick={() => zoomAt(0.8)} className={btn(false)}><ZoomOut size={16} /></button>
+            <button title={`${t("zoom_fit")} (0)`} onClick={() => fitRef.current()}
+              className="h-8 min-w-[52px] rounded-lg px-1.5 font-mono text-[12px] text-muted hover:bg-hover hover:text-fg">{Math.round(scale * 100)}%</button>
+            <button title={`${t("zoom_in")} (+)`} onClick={() => zoomAt(1.25)} className={btn(false)}><ZoomIn size={16} /></button>
+            <button title={`${t("zoom_fit")} (0)`} onClick={() => fitRef.current()} className={btn(false)}><Maximize size={15} /></button>
+            <button title={`${t("zoom_100")} (1)`} onClick={() => zoomTo(1)} className="h-8 rounded-lg px-1.5 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg">1:1</button>
           </div>
         </div>
       </div>

@@ -23,8 +23,9 @@ const tr = {
 | Klasör | İçerik |
 |---|---|
 | \`data/\` | Ayarlar, sohbet veritabanı, gizli anahtarlar |
-| \`workspace/\` | Projesiz sohbetlerin çalışma alanı |
-| \`chat/<id>-session/\` | Her sohbetin oturum kaydı (sohbet silinince silinir) |
+| \`chat/<id>/\` | Projesiz her sohbetin klasörü: dosyaları, indirilenler, üretilen her şey (sohbet silinince silinir) |
+| \`chat/<id>/.session/\` | O sohbetin gizli oturum kaydı: mesajlar, özetler, betikler |
+| \`chat/projects/\` | Klasör seçilmeden oluşturulan projeler |
 | \`skills/\`, \`agents/\` | Yetenek ve ajan dosyaları |
 | \`languages/\` | Arayüz dil dosyaları (tr.json, en.json…) |
 
@@ -34,6 +35,18 @@ const tr = {
 ## Yerel modeller
 - **Ollama** ve **LM Studio** anahtar istemez; uygulama açıkken modeller otomatik listelenir.
 - Yerel bir modele geçildiğinde diğer yerel modeller bellekten boşaltılır.
+
+## Bellek koruması (RAM / VRAM)
+- Yüklemeden önce: modelin ağırlıkları ve bağlam penceresi boş belleğe sığmıyorsa pencere sığacak boyuta indirilir; ağırlıklar tek başına sığmıyorsa model yüklenmez.
+- Çalışırken boş bellek azalırsa sırayla: uygulamanın kendi önbellekleri boşaltılır, kullanılmayan modeller bellekten çıkarılır, sonra çalışan modelin bağlam penceresi küçültülür (ör. 16K → 8K).
+- **Çalışan model kapatılmaz** ve sohbet hafızası silinmez: mesajlar, özet ve görev ilerlemesi uygulamada tutulur; görev küçük pencerede kaldığı yerden sürer.
+- Ekran kartı olan bilgisayarlarda VRAM de izlenir (NVIDIA, AMD, Intel; Windows ve Linux). Eşikler bilgisayarın toplam belleğine göre kendiliğinden ayarlanır.
+- Ayarlar > Güvenlik > "Yerel model belleği" bölümünden korumayı kapatabilir ya da "acil durumda modeli çıkar" seçeneğini açabilirsiniz (varsayılan kapalı).
+
+## İlk istem boyutu
+- Yavaş modeller (CPU'da yerel modeller, yoğun ücretsiz bulut modelleri) görevin ilk isteğindeki kuralları ve araç tanımlarını okurken bekletir. **Yalın istem** aynı bilgiyi yaklaşık yarı token ile verir: kısa kurallar, tek paragraflık yetenek dizini, kısa araç tanımları.
+- Model yeteneklerini bu dizinden bilir; gereken araç grubunu \`need_tools\`, beceriyi \`use_skill\` ile kendisi açar. Bir sohbette açılan gruplar o sohbetin sonraki görevlerinde açık kalır.
+- Ayarlar > Güvenlik > "İlk istem boyutu": Otomatik (yerel, küçük pencereli ve yavaş ölçülen modellerde yalın), Yalın ya da Tam.
 
 ## Bulut API'leri
 1. **Ayarlar > Sağlayıcılar**'ı açın, sağlayıcıyı etkinleştirin.
@@ -70,7 +83,7 @@ Gösterge simgeli **Çaba** menüsü modelin desteklediği düşünme seviyeleri
     { id: "chat", title: "Sohbet ve projeler", icon: "folder", articles: [
       { id: "projects", title: "Projeler ve sohbetler", summary: "Proje klasörü, sabitleme, arşiv.", md: `
 - Sol menüde **+** ile proje oluşturun; bilgisayarınızdan bir klasör seçin veya yeni klasör açın. Ajanın tüm çıktıları o klasöre yazılır.
-- Projesiz sohbetler \`workspace/\` klasöründe çalışır.
+- Projesiz her sohbet kendi klasöründe çalışır (\`chat/<sohbet kimliği>/\`); sohbetler birbirinin dosyalarını görmez. Yeni sohbetin klasörü ilk mesajla oluşur.
 - Sohbet ve projelere **sağ tıklayarak** sabitleyin, yeniden adlandırın, arşivleyin veya silin.
 - Proje menüsündeki **Proje kuralları** o projedeki her sohbetin uyacağı kuralları yazar (bkz. *Proje hafızası*).
 ` },
@@ -470,6 +483,45 @@ Yetenek adını yazmanız şart değil; model isteğe uyanı kendisi seçer. @re
 - Araçları her sohbette modele sunulur; salt okunur araçlar onaysız, diğerleri onayla çalışır.
 - Tokenlar gizli anahtar deposunda saklanır.
 ` },
+      { id: "browser", title: "Tarayıcı ajanı: gerçek bir pencerede gezinme", summary: "Siteye girip tıklama, form doldurma, giriş yapma; proje testi.", md: `
+Model artık **gerçek, görünür bir tarayıcı penceresinde** bir kullanıcı gibi gezinebilir: sayfa açar, elemanları okur, tıklar, form doldurur, tuş basar, bekler, ekran görüntüsü alır — kendi sitenizi test ederken ya da bir web uygulamasını kullanırken siz nasıl yapardınız, model de öyle yapar.
+
+## Pencere ve oturum
+- Pencere **kalıcı bir profille** açılır (\`data/browser-profile\`): bir sitede bir kez elle giriş yaparsanız, çerezler bu profilde kalır ve **sonraki görevlerde model sizi zaten giriş yapmış bulur**.
+- Profil yalnızca bu bilgisayarda saklanır, hiçbir yere gönderilmez. **Ayarlar > Web > Tarayıcı ajanı**'ndan pencereyi kapatabilir, görünür/gizli yapabilir veya tüm girişleri tek tıkla unutturabilirsiniz (profili siler).
+- Modelin kendi okuma tarayıcısından (araştırma, fetch_url) tamamen ayrıdır: o hep gizli çalışır ve hiçbir çerez tutmaz.
+
+## Nasıl "görür"
+Model ekran görüntüsünden tahmin etmez: sayfayı **erişilebilirlik ağacı** olarak okur — her tıklanabilir/yazılabilir öğenin rolü, adı, değeri ve kısa bir referansı (\`[e12]\`) ile. Bu referansla doğrudan o düğmeye tıklar veya o kutuya yazar; sayfa tasarımı değişse de bozulmaz. Her eylemden sonra sayfayı yeniden okur ve gerçekten olanı doğrular.
+
+| Araç | Ne yapar |
+|---|---|
+| **browser_navigate** | Bir adres açar (http(s) veya çalışma klasöründeki bir .html dosyası) |
+| **browser_snapshot** / **browser_find** | Sayfayı okur; metinle eleman arar |
+| **browser_click** / **browser_type** / **browser_key** / **browser_form** | Tıklar, yazar, tuş basar, birkaç alanı birden doldurur |
+| **browser_scroll** / **browser_wait** | Kaydırır; bir metnin çıkmasını/kaybolmasını bekler |
+| **browser_inspect** | Konsol hataları, başarısız ağ istekleri, çerez adları (giriş yapılmış mı?) |
+| **browser_screenshot** | Sekmenin görüntüsünü sohbette gösterir |
+| **browser_tabs** / **browser_batch** | Sekmeleri yönetir; birkaç adımı tek seferde çalıştırır |
+| **browser_handoff** | Pencereyi size bırakır (aşağıya bakın) |
+
+## Güvenlik kuralları
+- **Kart ve banka bilgisini model gerçek sitelerde asla yazmaz.** Ödeme gerektiğinde **browser_handoff** çağırır: pencere öne gelir, siz girersiniz, model "bitti" dediğinizde kaldığı yerden devam eder.
+- **Şifre:** **Tam erişim** kipinde, isteğinizde adını verdiğiniz sitede (ör. "siteadi.com'a şu e-posta ve şifreyle üye ol") model şifreyi kendisi yazar, kayıt/giriş düğmelerine onay sormadan basar. Diğer sitelerde ve diğer kiplerde girişi size bırakır.
+- Test şifreleri yalnızca **localhost / 127.0.0.1** gibi yerel geliştirme adreslerinde veya isteğinizde açıkça adını verdiğiniz bir *staging/dev/test* adresinde, projenin kendi örnek verisinden yazılabilir — gerçek bir sitede asla.
+- **Gönder, sil, satın al, yayınla, abonelikten çık** gibi geri dönüşü olmayan bir düğmeye tıklamadan önce sizden onay ister (yerel test ortamınız ve Tam erişimde adını verdiğiniz site hariç; ödeme her zaman size kalır).
+- **CAPTCHA veya bot doğrulaması model tarafından çözülmez**: model browser_handoff ile pencereyi size verir (tarayıcı gizli çalışıyorsa görünür pencere kendiliğinden açılır). Siz çözdüğünüz anda bu algılanır ve model "bitti" demenizi beklemeden kaldığı yerden devam eder.
+- confirm()/alert() gibi tarayıcı pencereleri varsayılan olarak reddedilir; onaylaması gerektiğinde açıkça belirtir.
+- **Açılır pencereler kendiliğinden kapanır:** her sitede bülten, kampanya, cinsiyet seçimi, uygulama reklamı gibi sayfanın önüne çıkan modallar algılanır ve kapatma düğmesiyle (×, Kapat, Şimdi değil…) ya da Escape ile kapatılır; çerez bandında her zaman **Tümünü Reddet** seçilir. Şifre/kart alanı olan pencerelere dokunulmaz. Ayarlar > Tarayıcı ajanı > Açılır pencereleri kapat.
+
+## Projeyi gerçek kullanıcı gibi test etmek
+"Projeyi test et" dediğinizde model artık yalnızca kod okumaz: projeyi başlatır (gerekirse), **gerçek tarayıcı penceresinde açar**, formları doldurur, düğmelere tıklar, sonucu kontrol eder, konsol hatalarına ve başarısız isteklere bakar — tıpkı sizin test ettiğiniz gibi. @tester ajanı bu akışı izler; bir takımda test aşaması da bu araçları kullanabilir.
+
+## Örnek istemler
+- *"localhost:5173'teki giriş formunu test et: yanlış şifreyle hata gösteriyor mu?"*
+- *"example.com sitesinde ürünü sepete ekle, fiyatı doğru mu kontrol et."*
+- *"Bu projeyi çalıştır ve ana sayfadaki tüm bağlantıları gerçek tarayıcıda dene."*
+` },
     ] },
     { id: "voice", title: "Ses", icon: "mic", articles: [
       { id: "speech", title: "Sesli yanıt ve sesli komut", summary: "Okutma, ses seçimi, komutlar.", md: `
@@ -536,8 +588,9 @@ const en = {
 | Folder | Contents |
 |---|---|
 | \`data/\` | Settings, chat database, secret keys |
-| \`workspace/\` | Working area of chats without a project |
-| \`chat/<id>-session/\` | Each chat's session record (deleted with the chat) |
+| \`chat/<id>/\` | Each chat without a project: its files, downloads and everything made (deleted with the chat) |
+| \`chat/<id>/.session/\` | That chat's hidden session record: messages, summaries, scripts |
+| \`chat/projects/\` | Projects created without choosing a folder |
 | \`skills/\`, \`agents/\` | Skill and agent files |
 | \`languages/\` | UI language files (tr.json, en.json…) |
 
@@ -547,6 +600,18 @@ const en = {
 ## Local models
 - **Ollama** and **LM Studio** need no key; their models are listed automatically while they run.
 - Switching to a local model unloads the other local models from memory.
+
+## Memory guard (RAM / VRAM)
+- Before loading: when a model's weights and context window do not fit in the free memory, the window is reduced to what fits; when the weights alone do not fit, the model is not loaded.
+- While running, when free memory gets low, in this order: the app's own caches are released, unused models are unloaded, then the context window of the model in use is made smaller (e.g. 16K → 8K).
+- **The model in use is not closed** and no chat memory is lost: messages, the summary and the task's progress live in the app; the task continues in the smaller window where it stopped.
+- On computers with a graphics card, VRAM is watched too (NVIDIA, AMD, Intel; Windows and Linux). The limits follow the computer's total memory by themselves.
+- Settings > Security > "Local model memory" turns the guard off or turns "unload the model in an emergency" on (off by default).
+
+## First prompt size
+- Slow models (local models on a CPU, busy free cloud models) make you wait while they read the rules and tool definitions of a task's first request. The **lean prompt** says the same in about half the tokens: short rules, a one-paragraph capability index, short tool definitions.
+- The model knows its abilities from that index; it opens the tool group it needs with \`need_tools\` and a skill with \`use_skill\`. Groups opened in a chat stay open for that chat's next tasks.
+- Settings > Security > "First prompt size": Automatic (lean for local models, small windows and models measured as slow), Lean or Full.
 
 ## Cloud APIs
 1. Open **Settings > Providers** and enable the provider.
@@ -583,7 +648,7 @@ The **Effort** menu (gauge icon) shows the thinking levels the model supports. O
     { id: "chat", title: "Chats and projects", icon: "folder", articles: [
       { id: "projects", title: "Projects and chats", summary: "Project folder, pinning, archive.", md: `
 - Create a project with **+** in the sidebar; choose a folder on your computer or create a new one. All agent output is written there.
-- Chats without a project work in \`workspace/\`.
+- Each chat without a project works in its own folder (\`chat/<chat id>/\`); chats never see each other's files. A new chat's folder is made with its first message.
 - **Right-click** chats and projects to pin, rename, archive or delete them.
 - **Project rules** in the project menu sets the rules every chat of the project follows (see *Project memory*).
 ` },
@@ -982,6 +1047,45 @@ You don't have to type the skill; the model picks the one that fits. The @resear
 - **Settings > MCP**: add an MCP server by command (stdio) or HTTP address.
 - Its tools are offered in every chat; read-only tools run without asking, the others ask.
 - Tokens are kept in the secret store.
+` },
+      { id: "browser", title: "Browser agent: acting in a real window", summary: "Opening a site, clicking, filling forms, signing in; testing a project.", md: `
+The model can now navigate a **real, visible browser window** like a person: open a page, read what is on it, click, fill forms, press keys, wait, take a screenshot - the same way you would when testing your own site or using a web app.
+
+## Window and sign-ins
+- The window opens with a **lasting profile** (\`data/browser-profile\`): sign in once by hand on a site, and the cookies stay in that profile, so **later tasks find you already signed in**.
+- The profile is kept only on this computer and never sent anywhere. **Settings > Web > Browser agent** can close the window, make it visible or hidden, and forget every sign-in with one click (deletes the profile).
+- It is entirely separate from the model's own reading browser (research, fetch_url): that one always runs hidden and never keeps cookies.
+
+## How it "sees" the page
+The model does not guess from a screenshot: it reads the page as an **accessibility tree** - every clickable/typable element's role, name, value and state, each with a short reference (\`[e12]\`). It clicks or types using that reference directly, so a redesigned page does not break it. After every action it reads the page again and checks what really happened.
+
+| Tool | What it does |
+|---|---|
+| **browser_navigate** | Opens an address (http(s), or a .html file in the working folder) |
+| **browser_snapshot** / **browser_find** | Reads the page; finds an element by its text |
+| **browser_click** / **browser_type** / **browser_key** / **browser_form** | Clicks, types, presses keys, fills several fields at once |
+| **browser_scroll** / **browser_wait** | Scrolls; waits for a text to appear/disappear |
+| **browser_inspect** | Console errors, failed requests, cookie names (are you signed in?) |
+| **browser_screenshot** | Shows the tab in the chat |
+| **browser_tabs** / **browser_batch** | Manages tabs; runs several steps at once |
+| **browser_handoff** | Hands the window to you (see below) |
+
+## Safety rules
+- **The model never types card or bank details on a real site.** When a payment is needed it calls **browser_handoff**: the window comes to the front, you enter them, and the model continues once you say it is done.
+- **Passwords:** in **Full access** mode, on the site your request names (e.g. "sign me up on mysite.com with this e-mail and password"), the model types the password itself and presses the sign-up/sign-in buttons without asking. On other sites and in the other modes it hands the sign-in to you.
+- Test credentials are typed only on **localhost / 127.0.0.1** (or a *staging/dev/test* address you explicitly name in your request), from the project's own test data - never on a real site.
+- It asks for your OK before clicking an irreversible button - **send, delete, buy, publish, unsubscribe** - except on your own local test environment and, in Full access, on the site you named (payments always stay with you).
+- **CAPTCHAs and bot checks are never solved by the model**: it hands the window to you with browser_handoff (a hidden browser opens a visible window by itself). As soon as you solve it this is detected and the model continues without waiting for you to say "done".
+- Browser dialogs (confirm()/alert()) are dismissed by default; it says plainly when one needs your confirmation.
+- **Pop-ups close by themselves:** on every site, modals in front of the page (newsletter, campaign, gender picker, app ads...) are detected and closed with their close button (×, Close, Not now...) or Escape; cookie banners always get **Reject all**. Windows with a password/card field are left alone. Settings > Browser agent > Close pop-ups.
+
+## Testing a project like a real user
+When you say "test this", the model no longer just reads code: it starts the project (if needed), **opens it in the real browser window**, fills forms, clicks through, checks the result, and looks at console errors and failed requests - the way you would test it yourself. The @tester agent follows this flow; a team's testing stage can use these tools too.
+
+## Example prompts
+- *"Test the sign-in form at localhost:5173: does a wrong password show an error?"*
+- *"Add the product to the cart on example.com and check the price is right."*
+- *"Run this project and try every link on the home page in the real browser."*
 ` },
     ] },
     { id: "voice", title: "Voice", icon: "mic", articles: [

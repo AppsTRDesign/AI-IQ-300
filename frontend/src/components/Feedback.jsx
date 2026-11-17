@@ -16,8 +16,9 @@ export function Toaster() {
     if (ms.state === "switching") busyId.current = st.notify(t("model_switching", { model: ms.model }), "busy");
     else if (ms.state === "ready") st.notify(ms.message ? t(`model_msg_${ms.message}`) : t("model_ready", { model: ms.model }), ms.message ? "info" : "ok");
     else if (ms.state === "error") st.notify(t("model_load_failed"), "error", ms.message);
+    else if (ms.state === "memory") st.notify(t("ram_guard_title"), "warn", ms.message); // the RAM guard unloaded a model
     if (ms.state !== "switching") useStore.setState({ modelStatus: null });
-  }, [ms?.state, ms?.model]);
+  }, [ms?.state, ms?.model, ms?.message]);
   const ICON = { ok: CheckCircle2, error: AlertCircle, busy: Loader2, warn: AlertTriangle, info: Info };
   const COLOR = { ok: "text-ok", error: "text-danger", busy: "text-accent animate-spin", warn: "text-warn", info: "text-accent" };
   return (

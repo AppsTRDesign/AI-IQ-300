@@ -76,6 +76,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothin
 
 /* Range slider */
 input[type="range"].slider { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; background: var(--active); outline: none; }
+input[type="range"].slider.range-fill { background: linear-gradient(to right, var(--accent) 0 var(--pct, 0%), var(--active) var(--pct, 0%) 100%); }
 input[type="range"].slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); box-shadow: 0 1px 4px rgb(0 0 0 / .3); cursor: pointer; }
 input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); cursor: pointer; }
 
@@ -100,6 +101,10 @@ input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border
 .note-md .prose-chat h1, .note-md .prose-chat h2, .note-md .prose-chat h3 { font-size: 13.5px; margin: 0.5rem 0 0.2rem; color: var(--fg); opacity: 0.85; }
 .note-md .prose-chat p { margin: 0.25rem 0; }
 .note-md .prose-chat ul, .note-md .prose-chat ol { margin: 0.2rem 0; }
+/* One line of the reasoning being written: quieter, italic, never more than two lines. */
+.note-thought .prose-chat { font-style: italic; opacity: 0.85; display: -webkit-box; -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical; overflow: hidden; }
+.note-thought .prose-chat p { margin: 0; display: inline; }
 .note-tail { display: flex; flex-direction: column; justify-content: flex-end; max-height: 11rem; overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem); mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem); }
 
@@ -112,3 +117,56 @@ input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border
 .guide-md .prose-chat th { background: var(--hover); text-align: left; font-weight: 600; }
 .guide-md .prose-chat blockquote { background: var(--hover); border-left-color: var(--accent); border-radius: 0 10px 10px 0; padding: 0.5rem 0.9rem; margin: 0.8rem 0; }
 .guide-md .prose-chat li { margin: 0.2rem 0; }
+
+/* Math (KaTeX) in chat: display formulas scroll sideways instead of breaking the layout. */
+.prose-chat .katex { font-size: 1.07em; }
+.prose-chat .katex-display { margin: 0.6rem 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.prose-chat .katex-error { color: var(--danger); font-family: var(--font-mono); font-size: 0.88em; }
+
+/* Message actions (copy / delete / read aloud): on hover, always on touch screens. */
+.msg-actions { opacity: 0; transition: opacity .15s; }
+.msg:hover .msg-actions, .msg:focus-within .msg-actions { opacity: 1; }
+@media (hover: none) { .msg-actions { opacity: 1; } }
+
+/* A quote chip was clicked: the message blinks and the quoted words are marked (light and dark themes). */
+@keyframes flashmsg {
+  0%, 50%, 100% { box-shadow: 0 0 0 0 transparent; }
+  25%, 75% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent); }
+}
+.flash-msg { animation: flashmsg 1.4s ease-in-out 2; border-radius: 18px; }
+::highlight(aiiq-flash) { background-color: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--fg); }
+.dark ::highlight(aiiq-flash) { background-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+@keyframes chipflash { 0%, 100% { background: var(--hover); } 50% { background: color-mix(in srgb, var(--accent) 30%, var(--hover)); } }
+.chip-flash { animation: chipflash .45s ease-in-out 4; }
+
+/* Rich message box (contenteditable): lists, headings, quotes and code as they will be sent. */
+.rich-input { outline: none; white-space: pre-wrap; word-break: break-word; }
+.rich-input:empty::before { content: attr(data-placeholder); color: var(--subtle); pointer-events: none; }
+.rich-input ul { list-style: disc; padding-left: 1.4rem; margin: 0.15rem 0; }
+.rich-input ol { list-style: decimal; padding-left: 1.4rem; margin: 0.15rem 0; }
+.rich-input h1 { font-size: 1.25rem; font-weight: 650; }
+.rich-input h2 { font-size: 1.12rem; font-weight: 650; }
+.rich-input h3 { font-size: 1.02rem; font-weight: 650; }
+.rich-input blockquote { border-left: 3px solid var(--line); padding-left: 0.7rem; color: var(--muted); }
+.rich-input code { background: var(--hover); padding: 0.05rem 0.3rem; border-radius: 5px; font-family: var(--font-mono); font-size: 0.88em; }
+.rich-input pre { background: var(--hover); padding: 0.4rem 0.6rem; border-radius: 8px; font-family: var(--font-mono); font-size: 0.86em; }
+.rich-input a { color: var(--accent); text-decoration: underline; }
+.rich-input .mention { border-radius: 5px; padding: 0 2px; }
+.rich-input .mention-agent { background: rgb(139 92 246 / .15); color: rgb(124 58 237); }
+.dark .rich-input .mention-agent { color: rgb(196 181 253); }
+.rich-input .mention-skill { background: var(--accent-soft); color: var(--accent); }
+
+/* A long chat title scrolls to its end and back while hovered. */
+@keyframes titlescroll { from { transform: translateX(0); } to { transform: translateX(var(--shift, 0)); } }
+.rich-input pre { white-space: pre-wrap; margin: 0.2rem 0; }
+.rich-input blockquote { margin: 0.2rem 0; }
+
+/* video player */
+input[type="range"].video-range { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 999px; background: rgb(255 255 255 / .3); outline: none; cursor: pointer; }
+input[type="range"].video-range::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+input[type="range"].video-range::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
+.animate-ping-once { animation: pingonce .65s ease-out forwards; }
+@keyframes pingonce { 0% { opacity: 0; transform: translate(-50%, -50%) scale(.85); } 25% { opacity: 1; transform: translate(-50%, -50%) scale(1); } 100% { opacity: 0; transform: translate(-50%, -50%) scale(1.08); } }
+video::cue { background: rgb(0 0 0 / .72); color: #fff; font-size: 1.05em; line-height: 1.35; }
+.video-ui-on video::-webkit-media-text-track-container { transform: translateY(-3.4rem); transition: transform .2s; }
+video::-webkit-media-text-track-container { transition: transform .2s; }

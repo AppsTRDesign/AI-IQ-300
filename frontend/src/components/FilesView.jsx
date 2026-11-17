@@ -2,11 +2,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight, Download, FilePlus2, Folder, FolderOpen, FolderPlus, HardDrive, History, LayoutGrid, List, Loader2,
   PanelLeft, Pencil, RefreshCw, Search, SquareArrowOutUpRight, Trash2, Upload, X,
-  Maximize2, Globe,
+  Maximize2, Globe, Play,
 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
-import { CATEGORIES, docKind, fileCategory, fileType, formatSize, isImage, isTextFile, isWebPage } from "../lib/fileTypes";
+import { CATEGORIES, docKind, fileCategory, fileType, formatSize, isAudio, isImage, isTextFile, isVideo, isWebPage } from "../lib/fileTypes";
 import { DocBody } from "./DocPreview";
 import { ContextMenu, MenuItem, MenuSep, Modal } from "./ui";
 import CodeBlock from "./CodeBlock";
@@ -62,6 +62,8 @@ function Preview({ item, onClose }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {cat === "image" && <button onClick={() => st.viewImages([item.path])} className="block w-full"><img src={raw} alt={item.name} className="mx-auto max-h-72 cursor-zoom-in rounded-xl border border-line bg-bg object-contain" /></button>}
+        {isVideo(item.name) && <button onClick={() => st.playMedia(item.path)} className="group relative block w-full overflow-hidden rounded-xl border border-line bg-black"><video src={raw + "#t=0.5"} preload="metadata" muted className="pointer-events-none w-full" /><span className="absolute inset-0 grid place-items-center"><span className="grid h-12 w-12 place-items-center rounded-full bg-black/60 text-white ring-1 ring-white/20 transition group-hover:scale-110 group-hover:bg-accent"><Play size={20} fill="currentColor" className="ml-0.5" /></span></span></button>}
+        {isAudio(item.name) && <audio src={raw} controls preload="metadata" className="w-full" />}
         {docKind(item.name) && <div className="h-80"><DocBody key={`${item.path}:${item.mtime}`} path={item.path} /></div>}
         {text != null && text !== "" && <CodeBlock code={text.length > 60000 ? text.slice(0, 60000) + "\n…" : text} language={item.ext} path={item.path} />}
         {text === "" && <div className="text-xs text-subtle">{t("empty_file")}</div>}
@@ -74,20 +76,23 @@ function Preview({ item, onClose }) {
       </div>
       <div className="flex gap-2 border-t border-line p-3">
         {isImage(item.name) && <button onClick={() => st.viewImages([item.path])} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><Maximize2 size={14} /> {t("view_image")}</button>}
+        {(isVideo(item.name) || isAudio(item.name)) && <button onClick={() => st.playMedia(item.path)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><Play size={14} /> {t("media_play")}</button>}
         {isWebPage(item.name) && <button onClick={() => st.browse({ path: item.path })} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><Globe size={14} /> {t("open_browser")}</button>}
         {docKind(item.name) && <button onClick={() => st.previewFile(item.path, item.size)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><Maximize2 size={14} /> {t("preview")}</button>}
-        {isTextFile(item.name) && <button onClick={() => st.openFile(item.path)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><SquareArrowOutUpRight size={14} /> {t("open_editor")}</button>}
+        {isTextFile(item.name) && <button onClick={() => st.openFile(item.path, true)} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-accent py-2 text-[13px] font-medium text-accent-fg"><SquareArrowOutUpRight size={14} /> {t("open_editor")}</button>}
         <a href={raw + "&download=true"} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-line py-2 text-[13px] font-medium hover:bg-hover"><Download size={14} /> {t("download")}</a>
       </div>
     </aside>
   );
 }
 
-// Full file manager over the chat's working folder (project folder, or workspace/ for chats without a project).
+// Full file manager over the chat's working folder (project folder, or chat/<id>/ for chats without a project).
 export default function FilesView() {
   const t = useT();
   const scopeKey = useStore((x) => `${x.sessionId}|${x.projectId}|${x.scope}`);
   const fsTick = useStore((x) => x.fsTick);
+  const chatId = useStore((x) => x.sessionId);
+  const chatTitle = useStore((x) => x.sessions.find((s) => s.id === x.sessionId)?.title || "");
   const st = useStore.getState();
   const [cwd, setCwd] = useState("");
   const [data, setData] = useState({ root: "", items: [] });
@@ -104,7 +109,7 @@ export default function FilesView() {
   const [tree, setTree] = useState(true);
   const [hist, setHist] = useState(null);
   const [drag, setDrag] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // true until the first listing: never flash "folder is empty"
   const fileRef = useRef(null);
 
   const list = useCallback((path) => api.get(st.fileApi(`/fs/list?path=${encodeURIComponent(path)}`)), [scopeKey]);
@@ -119,7 +124,7 @@ export default function FilesView() {
     setLoading(false);
   }, [list]);
 
-  useEffect(() => { setCwd(""); setKids({}); setOpen(new Set([""])); setSel(null); }, [scopeKey]);
+  useEffect(() => { setCwd(""); setKids({}); setOpen(new Set([""])); setSel(null); setData({ root: "", items: [] }); setLoading(true); }, [scopeKey]);
   useEffect(() => { load(cwd); }, [cwd, load]);
   useEffect(() => { if (fsTick) load(cwd, true); }, [fsTick]); // an agent changed files: refresh at once
   useEffect(() => { // live view while visible
@@ -172,6 +177,8 @@ export default function FilesView() {
     load(cwd, true);
   };
   const openItem = (it) => (it.dir ? go(it.path) : setSel(it));
+  // Double click: each kind opens in its own viewer (image viewer, media player, document preview, editor).
+  const launch = (it) => (it.dir ? go(it.path) : useStore.getState().openFile(it.path).catch(() => setSel(it)));
   const showHistory = async () => {
     try { setHist(await api.get(st.fileApi("/history"))); } catch { setHist([]); }
   };
@@ -182,9 +189,22 @@ export default function FilesView() {
   };
 
   const crumbs = cwd ? cwd.split("/") : [];
-  const rootName = data.root.split(/[\\/]/).filter(Boolean).pop() || "workspace";
+  // a chat's own folder (chat/<id>) is shown with the chat's title instead of its id
+  const rootParts = data.root.split(/[\\/]/).filter(Boolean);
+  const ownChat = rootParts[rootParts.length - 1] === chatId && rootParts[rootParts.length - 2] === "chat";
+  const rootName = (ownChat && chatTitle) || rootParts.pop() || "chat";
   const btn = "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] hover:bg-hover";
   const ctx = useCallback((e, it) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, it }); }, []);
+
+  if (data.pending) { // a new chat: its folder chat/<id>/ is made with the first message
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+        <FolderOpen size={40} className="text-subtle opacity-50" />
+        <div className="text-[14px] font-semibold">{t("chat_folder_pending")}</div>
+        <div className="max-w-md text-[12.5px] leading-relaxed text-subtle">{t("chat_folder_pending_desc")}</div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -264,7 +284,7 @@ export default function FilesView() {
               )}
               <tbody>
                 {items.map((it) => (
-                  <tr key={it.path} onClick={(e) => { e.stopPropagation(); openItem(it); }} onContextMenu={(e) => ctx(e, it)}
+                  <tr key={it.path} onClick={(e) => { e.stopPropagation(); openItem(it); }} onDoubleClick={(e) => { e.stopPropagation(); launch(it); }} onContextMenu={(e) => ctx(e, it)}
                     className={`cursor-pointer border-b border-line/60 ${sel?.path === it.path ? "bg-accent-soft" : "hover:bg-hover"}`}>
                     <td className="px-4 py-1.5">
                       <div className="flex min-w-0 items-center gap-2.5">
@@ -286,7 +306,7 @@ export default function FilesView() {
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-2 p-3">
               {items.map((it) => (
-                <button key={it.path} onClick={(e) => { e.stopPropagation(); openItem(it); }} onContextMenu={(e) => ctx(e, it)}
+                <button key={it.path} onClick={(e) => { e.stopPropagation(); openItem(it); }} onDoubleClick={(e) => { e.stopPropagation(); launch(it); }} onContextMenu={(e) => ctx(e, it)}
                   className={`flex flex-col items-center gap-2 rounded-2xl border p-3 text-center ${sel?.path === it.path ? "border-accent bg-accent-soft" : "border-transparent hover:bg-hover"}`}>
                   {!it.dir && fileCategory(it.name) === "image"
                     ? <img src={st.fileApi(`/fs/raw?path=${encodeURIComponent(it.path)}`)} alt="" className="h-14 w-14 rounded-lg object-cover" loading="lazy" />
@@ -310,7 +330,7 @@ export default function FilesView() {
             <>
               <MenuItem icon={menu.it.dir ? FolderOpen : SquareArrowOutUpRight} label={t(menu.it.dir ? "open" : "preview")} onClick={() => openItem(menu.it)} />
               {!menu.it.dir && isWebPage(menu.it.name) && <MenuItem icon={Globe} label={t("open_browser")} onClick={() => st.browse({ path: menu.it.path })} />}
-              {!menu.it.dir && isTextFile(menu.it.name) && <MenuItem icon={SquareArrowOutUpRight} label={t("open_editor")} onClick={() => st.openFile(menu.it.path)} />}
+              {!menu.it.dir && isTextFile(menu.it.name) && <MenuItem icon={SquareArrowOutUpRight} label={t("open_editor")} onClick={() => st.openFile(menu.it.path, true)} />}
               {menu.it.dir && <MenuItem icon={FilePlus2} label={t("new_file_here")} onClick={() => startCreate("newfile", menu.it.path)} />}
               {menu.it.dir && <MenuItem icon={FolderPlus} label={t("new_folder_here")} onClick={() => startCreate("mkdir", menu.it.path)} />}
               {!menu.it.root && <MenuItem icon={Pencil} label={t("rename")} shortcut="R" onClick={() => {

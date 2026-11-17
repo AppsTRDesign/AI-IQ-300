@@ -18,6 +18,7 @@ import { ConfirmDialog, Toaster } from "./components/Feedback";
 const EditorPane = lazy(() => import("./components/EditorPane"));
 const DocPreviewDialog = lazy(() => import("./components/DocPreview"));
 const ImageViewer = lazy(() => import("./components/MediaViewer").then((m) => ({ default: m.ImageViewer })));
+const MediaPlayer = lazy(() => import("./components/MediaPlayer"));
 const BrowserDialog = lazy(() => import("./components/MediaViewer").then((m) => ({ default: m.BrowserDialog })));
 
 const VIEWS = { chat: ChatView, home: ChatView, settings: SettingsView, skills: CatalogView, agents: CatalogView, files: FilesView,
@@ -96,6 +97,7 @@ export default function App() {
         {dialog?.type === "preview" && <DocPreviewDialog />}
         {dialog?.type === "images" && <ImageViewer />}
         {dialog?.type === "browser" && <BrowserDialog />}
+        {dialog?.type === "media" && <MediaPlayer />}
       </Suspense>
       <ConfirmDialog />
       <Toaster />

@@ -5,7 +5,7 @@ import { useT } from "../lib/store";
 
 /**
  * Searchable, grouped, keyboard-navigable select rendered in a portal (never clipped by cards).
- * options: [{ value, label, group?, hint?, badge?, disabled? }]
+ * options: [{ value, label, group?, hint?, badge?, icons?, keywords?, disabled? }] (icons: a small node, e.g. capability icons)
  */
 export default function Select({ value, onChange, options, placeholder, searchable, className = "", allowClear, renderValue, mono }) {
   const t = useT();
@@ -21,7 +21,7 @@ export default function Select({ value, onChange, options, placeholder, searchab
 
   const filtered = useMemo(() => {
     const n = q.trim().toLowerCase();
-    return n ? options.filter((o) => `${o.label} ${o.group || ""} ${o.hint || ""}`.toLowerCase().includes(n)) : options;
+    return n ? options.filter((o) => `${o.label} ${o.group || ""} ${o.hint || ""} ${o.keywords || ""}`.toLowerCase().includes(n)) : options;
   }, [options, q]);
 
   useLayoutEffect(() => {
@@ -66,6 +66,7 @@ export default function Select({ value, onChange, options, placeholder, searchab
         <span className={`min-w-0 flex-1 truncate ${current ? "" : "text-subtle"} ${mono ? "font-mono text-xs" : ""}`}>
           {current ? (renderValue ? renderValue(current) : current.label) : (value || placeholder || t("select"))}
         </span>
+        {current?.icons}
         {current?.badge && <span className="shrink-0 rounded-md bg-hover px-1.5 py-px text-[10px] text-muted">{current.badge}</span>}
         {allowClear && value && (
           <span role="button" onClick={(e) => { e.stopPropagation(); onChange(""); }} className="rounded p-0.5 text-subtle hover:text-fg"><X size={13} /></span>
@@ -100,6 +101,7 @@ export default function Select({ value, onChange, options, placeholder, searchab
                       <span className={`block truncate ${mono ? "font-mono text-xs" : ""}`}>{o.label}</span>
                       {o.hint && <span className="block truncate text-[11px] text-subtle">{o.hint}</span>}
                     </span>
+                    {o.icons}
                     {o.badge && <span className="shrink-0 rounded-md bg-hover px-1.5 py-px text-[10px] text-muted">{o.badge}</span>}
                     {o.value === value && <Check size={14} className="shrink-0 text-accent" />}
                   </button>

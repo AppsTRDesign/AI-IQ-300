@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import { AlertCircle, ArrowRight, Circle, CheckCircle2, ChevronDown, ChevronRight, Clock, FileCode2, ListChecks, Loader2, MessagesSquare, Users } from "lucide-react";
 import { useT } from "../lib/store";
+import { formatTokens } from "../lib/fileTypes";
 
 const STATE = {
   queued: [Clock, "text-subtle", "team_queued"], running: [Loader2, "text-accent", "team_running"],
@@ -22,6 +23,7 @@ function Member({ c, staged }) {
       <div className="mt-1 truncate font-mono text-[11px] text-subtle" title={c.model}>{c.model || "—"}</div>
       <div className="mt-1 flex items-center gap-2 text-[11px] text-muted">
         <span>{t("team_steps", { n: c.steps })}</span>
+        {c.context > 0 && <span className="shrink-0" title={t("team_tokens_hint")}>{t("team_tokens", { ctx: formatTokens(c.context), total: formatTokens(c.tokens || 0) })}</span>}
         {c.last && c.state === "running" && <span className="truncate font-mono">{c.last}</span>}
       </div>
       {c.files?.length > 0 && (

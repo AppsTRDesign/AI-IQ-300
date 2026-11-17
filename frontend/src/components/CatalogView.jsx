@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { rankCatalog } from "./CatalogPicker";
 import Editor from "@monaco-editor/react";
-import { Bot, Download, FileUp, Link2, Loader2, Lock, Pencil, Plus, Sparkles, Terminal, Trash2 } from "lucide-react";
+import { Bot, Download, FileUp, Link2, Loader2, Lock, Pencil, Plus, Search, Sparkles, Terminal, Trash2 } from "lucide-react";
 import { loc, useStore, useT } from "../lib/store";
+
+const PAGE = 24;
 import { api } from "../lib/api";
 import { Button, Modal, inputCls } from "./ui";
 
@@ -56,6 +59,15 @@ export default function CatalogView() {
   useEffect(() => { load(); }, [kind]);
   const Icon = kind === "skills" ? Sparkles : Bot;
   const prefix = kind === "skills" ? "/" : "@";
+  // Search (names, titles, descriptions) and a page at a time: more cards load while scrolling down.
+  const [q, setQ] = useState("");
+  const [shown, setShown] = useState(PAGE);
+  const found = useMemo(() => rankCatalog(items, q), [items, q]);
+  useEffect(() => setShown(PAGE), [q, kind]);
+  const onScroll = (e) => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 300 && shown < found.length) setShown((n) => n + PAGE);
+  };
 
   const importUrl = async (e) => {
     e.preventDefault();
@@ -79,7 +91,7 @@ export default function CatalogView() {
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto" onScroll={onScroll}>
       <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
         <div className="mb-5 flex flex-wrap items-center gap-3">
           <div className="flex-1">
@@ -99,8 +111,16 @@ export default function CatalogView() {
           <Button disabled={!url || busy}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} {t("import")}</Button>
         </form>
 
+        <div className="mb-4 flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-subtle" />
+            <input className={`${inputCls} pl-9`} value={q} onChange={(e) => setQ(e.target.value)} placeholder={t(kind === "skills" ? "search_skills" : "search_agents")} />
+          </div>
+          <span className="shrink-0 text-xs text-subtle">{found.length} / {items.length}</span>
+        </div>
+
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {items.map((x) => {
+          {found.slice(0, shown).map((x) => {
             const ItemIcon = x.builtin ? Terminal : Icon;
             return (
               <div key={x.name} className="group flex flex-col rounded-2xl border border-line bg-elev p-4 transition hover:shadow-md">
@@ -122,6 +142,12 @@ export default function CatalogView() {
             );
           })}
         </div>
+        {shown < found.length && (
+          <div className="flex justify-center py-5">
+            <Button onClick={() => setShown((n) => n + PAGE)}>{t("load_more")}</Button>
+          </div>
+        )}
+        {found.length === 0 && <div className="py-10 text-center text-[13px] text-subtle">{t("no_results")}</div>}
       </div>
       {edit && <EditorModal kind={kind} {...edit} onClose={() => setEdit(null)} onSaved={refresh} />}
     </div>

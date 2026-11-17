@@ -4,7 +4,8 @@ export const AUTHOR = {
   github: "https://github.com/AppsTRDesign",
   site: "https://wplugins.shop",
 };
-export const VERSION = "0.8.3";
+// From the VERSION file at the project root (vite.config.js); change it there or with set_version.py.
+export const VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
 
 const tr = {
   about: {

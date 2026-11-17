@@ -1,10 +1,11 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import {
   AlertTriangle, Archive, Brain, Bug, Check, ChevronDown, ChevronRight, FileCode2, FileText, FolderTree, GitCommit, Globe,
   Image, ListChecks, Loader2, MessageSquareText, Play, Search, ShieldAlert, Terminal, X, Trash2, Square, Cloud, Sparkles, RotateCw,
-  FilePen, FileSearch, Users, BookMarked, Plug, Camera, MapPin,
+  FilePen, FileSearch, Users, BookMarked, Plug, Camera, MapPin, CornerDownRight, Cpu,
 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
+import { api } from "../lib/api";
 import CodeBlock from "./CodeBlock";
 import Markdown from "./Markdown";
 
@@ -19,7 +20,7 @@ const KIND = {
   budget: [AlertTriangle, "step_budget"], skill: [Sparkles, "step_skill"], retry: [RotateCw, "step_retry"],
   edit: [FilePen, "step_edit"], grep: [FileSearch, "step_grep"], delegate: [Users, "step_delegate"], memory: [BookMarked, "step_memory"],
   mcp: [Plug, "step_mcp"], team: [Users, "step_team"], screenshot: [Camera, "step_screenshot"], catalog: [Sparkles, "step_catalog"],
-  places: [MapPin, "step_places"],
+  places: [MapPin, "step_places"], photo: [Image, "step_photo"], system: [Cpu, "step_system"], system_info: [Cpu, "step_system"],
 };
 
 // Internal titles that only repeat the step kind are not shown; error codes (retry) are shown by their name.
@@ -31,7 +32,7 @@ const shownTitle = (t, step) => {
 };
 
 // While a file step runs (e.g. waiting for approval) nothing has changed yet: present tense.
-const RUNNING_KEY = { file: "step_file_running", edit: "step_edit_running", delete: "step_delete_running", screenshot: "step_screenshot_running" };
+const RUNNING_KEY = { photo: "step_photo_running", file: "step_file_running", edit: "step_edit_running", delete: "step_delete_running", screenshot: "step_screenshot_running" };
 
 // Unified diff (edit_file step, approval card): added lines green, removed red, hunk headers muted.
 export function DiffView({ diff, height = "max-h-80" }) {
@@ -46,17 +47,64 @@ export function DiffView({ diff, height = "max-h-80" }) {
   );
 }
 
-const Step = memo(function Step({ step }) {
+// A compress step's detail is a small JSON object ({before, after, compressed, mode}), never shown raw: a plain
+// sentence with the token drop and, for a summary pass, how many messages were folded into it.
+function CompressSummary({ detail, t }) {
+  let c;
+  try { c = JSON.parse(detail); } catch { c = null; }
+  if (!c || typeof c.before !== "number" || typeof c.after !== "number") {
+    return <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-code p-2.5 font-mono text-xs text-muted">{detail}</pre>;
+  }
+  const pct = c.before > 0 ? Math.round((1 - c.after / c.before) * 100) : 0;
+  return (
+    <div className="rounded-xl border border-line bg-panel/60 px-3 py-2 text-xs text-muted">
+      <div className="font-mono text-fg/80">
+        {c.before.toLocaleString()} → {c.after.toLocaleString()} {t("unit_tokens")}
+        {pct > 0 && <span className="ml-1.5 text-ok">(−%{pct})</span>}
+      </div>
+      {c.mode === "summary" && c.compressed != null && (
+        <div className="mt-0.5 text-subtle">{t("compress_messages_folded", { n: c.compressed })}</div>
+      )}
+      {c.mode === "trim" && <div className="mt-0.5 text-subtle">{t("compress_trim_desc")}</div>}
+    </div>
+  );
+}
+
+const Step = memo(function Step({ step: given }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const [Icon, key] = KIND[step.kind] || [AlertTriangle, step.kind];
+  // A stored step whose long detail came cut (see the messages API): the whole of it loads when it is opened.
+  const [full, setFull] = useState(null);
+  useEffect(() => {
+    if (!open || full || !given.lazy) return;
+    api.get(`/api/messages/${given.lazy.mid}/steps/${given.lazy.i}`).then(setFull).catch(() => {});
+  }, [open, full, given.lazy]);
+  const step = full || given;
+  if (step.kind === "note" && step.title === "steer") {
+    // A message the user sent while the task ran: shown as the user's own words, where the model picked it up.
+    return (
+      <div className="fade-in my-1 flex items-start gap-2 rounded-xl border border-accent/30 bg-accent-soft/60 px-2.5 py-1.5 text-[13px]">
+        <span className="mt-px grid h-5 w-5 shrink-0 place-items-center rounded-md bg-accent text-accent-fg"><CornerDownRight size={12} /></span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
+            {t("steer_applied")}<Check size={12} />
+          </div>
+          <div className="whitespace-pre-wrap break-words text-fg/90">{step.detail}</div>
+        </div>
+      </div>
+    );
+  }
+  const [Icon, key0] = KIND[step.kind] || [AlertTriangle, step.kind];
+  // A stream that stopped mid-file is not a busy provider: its own heading (the file is kept and continued).
+  const key = step.kind === "retry" && step.title === "stalled" ? "step_retry_stalled" : key0;
   const d = step.data || {};
   const running = step.status === "running";
   const showTitle = !["thinking", "note", "compress"].includes(step.kind);
   const noteLine = step.kind === "note" ? (step.detail || "").split("\n").find((l) => l.trim())?.replace(/[#*`>]/g, "").trim() : "";
-  const lines = step.kind === "edit" && step.status === "done" && d.added != null ? ` · +${d.added} −${d.removed}` : "";
-  const chars = step.kind === "retry" ? ` · ${d.seconds} ${t("unit_s")} · #${d.attempt}` : step.kind !== "prepare" ? "" : (d.chars ? ` · ${d.chars > 999 ? (d.chars / 1000).toFixed(1) + "K" : d.chars} ${t("chars")}` : "")
-    + (d.seconds ? ` · ${d.seconds} ${t("unit_s")}` : "");
+  const lines = (step.kind === "edit" || step.kind === "file") && step.status === "done" && d.added != null ? ` · +${d.added} −${d.removed}` : "";
+  // The live label already names the file and its characters: only the elapsed time is added here (it was shown twice).
+  const chars = step.kind === "retry" ? ` · ${d.seconds} ${t("unit_s")} · #${d.attempt}` : step.kind !== "prepare" ? ""
+    : (d.seconds ? ` · ${fmtDur(t, d.seconds * 1000)}` : "");
   return (
     <div className="text-[13px]">
       <button onClick={() => step.detail && setOpen(!open)}
@@ -66,7 +114,7 @@ const Step = memo(function Step({ step }) {
         </span>
         <span className={`shrink-0 font-medium ${running ? "shimmer" : "text-fg/80"}`}>{t(running && RUNNING_KEY[step.kind] || key)}</span>
         {noteLine && <span className="truncate text-xs text-subtle">{noteLine}</span>}
-        {showTitle && <span className="truncate font-mono text-xs text-subtle">{step.kind === "prepare" ? t(`tool_${step.title}`) : shownTitle(t, step)}{chars}{lines}</span>}
+        {showTitle && <span className="truncate font-mono text-xs text-subtle">{step.kind === "prepare" ? prepareLabel(t, d, step.title) : shownTitle(t, step)}{chars}{lines}</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1">
           {step.status === "error" && <X size={13} className="text-danger" />}
           {step.status === "done" && step.kind !== "thinking" && <Check size={13} className="text-ok opacity-0 group-hover:opacity-100" />}
@@ -87,6 +135,19 @@ const Step = memo(function Step({ step }) {
             </>
           ) : step.kind === "note" ? (
             <div className="note-md max-h-80 overflow-auto rounded-xl border border-line bg-panel/60 px-3 py-1.5"><Markdown text={step.detail} /></div>
+          ) : step.kind === "compress" ? (
+            <CompressSummary detail={step.detail} t={t} />
+          ) : ["run", "start"].includes(d.tool) && (d.command || d.args?.argv) ? (
+            <>
+              {/* The exact command that ran (shell, folder), then its output. */}
+              <div className="mb-1 flex flex-wrap items-center gap-x-2 text-[11px] text-subtle">
+                <span className="rounded bg-hover px-1.5 py-px font-mono">{d.args?.shell || (d.args?.argv ? "exec" : "")}</span>
+                {d.args?.cwd && <span className="truncate font-mono">{d.args.cwd}</span>}
+              </div>
+              <CodeBlock code={d.command || (Array.isArray(d.args.argv) ? d.args.argv.join(" ") : String(d.args.argv))}
+                language={{ powershell: "powershell", powershell5: "powershell", pwsh: "powershell", bash: "shell", cmd: "bat", python: "python", node: "javascript", php: "php" }[d.args?.shell] || "shell"} />
+              <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-code p-2.5 font-mono text-xs text-muted">{step.detail}</pre>
+            </>
           ) : (
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-code p-2.5 font-mono text-xs text-muted">{step.detail}</pre>
           )}
@@ -135,6 +196,43 @@ function ShotStrip({ shots }) {
 // current step, so a long task never turns into a long list; a click opens every step (live or finished).
 const sec = (ms) => (ms >= 10000 ? (ms / 1000).toFixed(0) : (ms / 1000).toFixed(1));
 
+// "42 sn", "1 dk 30 sn", "1 sa 4 dk": how long a task has been (or was) running.
+export function fmtDur(t, ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} ${t("unit_s")}`;
+  if (s < 3600) return `${Math.floor(s / 60)} ${t("unit_m")} ${s % 60} ${t("unit_s")}`;
+  return `${Math.floor(s / 3600)} ${t("unit_h")} ${Math.floor((s % 3600) / 60)} ${t("unit_m")}`;
+}
+
+// Ticks every second while the task runs.
+function Elapsed({ since }) {
+  const t = useT();
+  const [, tick] = useState(0);
+  useEffect(() => { const i = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(i); }, []);
+  return <span className="font-mono text-[12px] tabular-nums text-accent">· {fmtDur(t, Date.now() - (since || Date.now()))}</span>;
+}
+
+// What the model is doing while a "preparing" step shows: waiting for the first token, writing the answer or a tool
+// call (streamed or sent at the end by the provider).
+function prepareLabel(t, d, title) {
+  const tok = d.prompt_tokens ? (d.prompt_tokens >= 1000 ? `${(d.prompt_tokens / 1000).toFixed(1)}K` : d.prompt_tokens) : "?";
+  // The model only while waiting for its first answer (which one is slow to start); while it writes, the file and
+  // its size say everything ("auto · 15.5K" repeated what was already there).
+  const model = d.model && d.phase === "first" ? ` · ${String(d.model).split(":").slice(1).join(":")}` : "";
+  // Always concrete: which file and how many characters so far, or how long nothing came and what happens next.
+  const kb = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
+  const target = d.target ? ` · ${d.target}` : "";
+  const text = d.phase === "first" ? t("prep_first", { tok })
+    : d.phase === "tool_stream" ? `${t("prep_tool_stream")}: ${t(`tool_${title}`)}${target} · ${t("prep_chars", { n: kb(d.chars || 0) })}`
+      : d.phase === "tool_silent"
+        ? (d.local ? t("prep_tool_silent_local", { s: d.idle || 0 })
+          : d.switch_in != null ? t("prep_tool_silent_switch", { s: d.idle || 0, left: d.switch_in })
+            : t("prep_tool_silent_wait", { s: d.idle || 0 }))
+        : d.phase === "stalled" ? (d.stall_in != null ? t("prep_stalled", { s: d.idle || 0, left: d.stall_in }) : t("prep_stalled_local", { s: d.idle || 0 }))
+          : d.phase === "writing" ? t("prep_writing") : t(`tool_${title}`);
+  return text + model;
+}
+
 // Where a finished task spent its time: first answer, the model (waiting for its first token), tools, team, overhead.
 function TimingRow({ timing }) {
   const t = useT();
@@ -157,10 +255,16 @@ function TimingRow({ timing }) {
   );
 }
 
-function ActivityTrace({ steps, live, timing }) {
+const STEP_WINDOW = 60;
+
+function ActivityTrace({ steps, live, timing, started }) {
   const t = useT();
   const [open, setOpen] = useState(false);
+  const [all, setAll] = useState(false);
   if (!steps?.length) return null;
+  // Long tasks have hundreds of steps: the open list shows the latest ones (older on demand), so the browser does
+  // not lay out and re-render every step on each live update.
+  const shown = open && !all && steps.length > STEP_WINDOW ? steps.slice(-STEP_WINDOW) : steps;
   const errors = steps.filter((s) => s.status === "error").length;
   const current = live ? [...steps].reverse().find((s) => s.status === "running") || steps[steps.length - 1] : null;
   const shots = shotsOf(steps);
@@ -171,12 +275,18 @@ function ActivityTrace({ steps, live, timing }) {
         {live && <Loader2 size={12} className="animate-spin text-accent" />}
         {t(live ? "steps_live" : "steps", { n: steps.length })}
         {errors > 0 && <span className="rounded bg-danger/10 px-1 text-[11px] text-danger">{errors}</span>}
-        {!live && timing?.total_ms != null && <span className="text-[12px] text-subtle">· {sec(timing.total_ms)} {t("unit_s")}</span>}
+        {live && <Elapsed since={started} />}
+        {!live && timing?.total_ms != null && <span className="text-[12px] text-subtle">· {fmtDur(t, timing.total_ms)}</span>}
       </button>
       {open && timing?.total_ms != null && <TimingRow timing={timing} />}
       {(open || current) && (
         <div className="ml-2 mt-1 border-l border-line pl-2">
-          {open ? steps.map((s) => <Step key={s.id} step={s} />) : <Step key={current.id} step={current} />}
+          {open && shown.length < steps.length && (
+            <button onClick={() => setAll(true)} className="mb-1 rounded-lg px-1.5 py-0.5 text-[12px] text-accent hover:bg-hover">
+              {t("steps_earlier", { n: steps.length - shown.length })}
+            </button>
+          )}
+          {open ? shown.map((s) => <Step key={s.id} step={s} />) : <Step key={current.id} step={current} />}
         </div>
       )}
       {shots.length > 0 && <ShotStrip shots={shots} />}

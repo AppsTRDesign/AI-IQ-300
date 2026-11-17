@@ -61,3 +61,5 @@ export const docKind = (name = "") => DOC_KINDS[name.split(".").pop().toLowerCas
 const ext = (name = "") => name.split(".").pop().toLowerCase();
 export const isImage = (name) => CATEGORY.image.includes(ext(name));
 export const isWebPage = (name) => ["html", "htm"].includes(ext(name));
+export const isVideo = (name) => ["mp4", "webm", "mov", "mkv", "avi", "m4v", "ogv"].includes(ext(name));
+export const isAudio = (name) => ["mp3", "wav", "ogg", "flac", "m4a", "aac", "opus", "weba"].includes(ext(name));

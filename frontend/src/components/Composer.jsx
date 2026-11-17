@@ -2,11 +2,14 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp, Bot, Camera, Check, ChevronDown, Chrome, Cpu, Cloud, FileSpreadsheet, FileText, FileType2, FolderGit2, FolderUp, ListTodo, Loader2, Mic,
   Paperclip, PenTool, Plus, Presentation, RefreshCw, Search, Settings2, Shield, ShieldCheck, ShieldAlert, SlidersHorizontal, Sparkles, Square, Target, Gauge, AudioLines,
+  MessageSquareQuote, Pencil, Trash2, X, Brain,
 } from "lucide-react";
 import { loc, useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
 import { formatTokens } from "../lib/fileTypes";
-import { FileChip, MenuItem, MenuSep, Popover } from "./ui";
+import { FileChip, MenuItem, MenuSep, Popover, useOutside } from "./ui";
+import RichInput from "./RichInput";
+import CatalogPicker from "./CatalogPicker";
 import ContextPanel from "./ContextPanel";
 import DrawingDialog from "./DrawingDialog";
 import { CapIcons } from "./Caps";
@@ -33,8 +36,8 @@ const PermissionMenu = memo(function PermissionMenu() {
   return (
     <div className="relative">
       <button onClick={() => setOpen(!open)}
-        className={`flex h-8 shrink-0 items-center gap-1 rounded-full px-2 text-[13px] hover:bg-hover sm:px-2.5 ${mode === "full" ? "text-warn" : "text-muted"}`}>
-        <cur.icon size={15} /><span className="hidden sm:inline">{t(cur.key)}</span><ChevronDown size={13} />
+        title={t(cur.key)} className={`flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 text-[13px] hover:bg-hover md:px-2.5 ${mode === "full" ? "text-warn" : "text-muted"}`}>
+        <cur.icon size={15} className="shrink-0" /><span className="hidden whitespace-nowrap md:inline">{t(cur.key)}</span><ChevronDown size={13} className="shrink-0" />
       </button>
       {open && (
         <Popover onClose={() => setOpen(false)} className="bottom-full left-0 mb-2 w-[300px]">
@@ -88,6 +91,32 @@ const EffortMenu = memo(function EffortMenu() {
   );
 });
 
+// ---------- thinking on/off ----------
+// Shown only when the model's API data says it can think (Ollama capabilities, OpenRouter reasoning, Anthropic...);
+// saved in the model profile, which every request of that model follows.
+const ThinkToggle = memo(function ThinkToggle() {
+  const t = useT();
+  const model = useStore((s) => s.prefs.model || s.settings?.active_model || "");
+  const caps = useStore((s) => s.modelCaps(model));
+  const prof = useStore((s) => s.settings?.model_profiles?.[model]) || {};
+  if (!model || !(caps?.can_think ?? caps?.thinking)) return null;
+  const on = prof.thinking !== "off";
+  const flip = async () => {
+    const st = useStore.getState();
+    try {
+      await api.put("/api/models/profile", { vision: "auto", streaming: "auto", tools: "auto", ...prof, model, thinking: on ? "off" : "on" });
+      await st.refreshSettings();
+      st.loadProviderModels(model.split(":")[0]);
+    } catch (e) { st.notify(t("profile_save_failed"), "error", e.message); }
+  };
+  return (
+    <button onClick={flip} title={t(on ? "think_on_hint" : "think_off_hint")}
+      className={`flex h-8 shrink-0 items-center gap-1 rounded-full px-1.5 text-[12.5px] hover:bg-hover sm:px-2 ${on ? "text-accent" : "text-muted"}`}>
+      <Brain size={14} /><span className="hidden sm:inline">{t(on ? "think_on" : "think_off")}</span>
+    </button>
+  );
+});
+
 // ---------- model picker ----------
 // Context window of a local model, editable right here (synced with Settings > Context and the context panel).
 function ContextEditor({ id, max, current, onDone }) {
@@ -113,6 +142,9 @@ function ContextEditor({ id, max, current, onDone }) {
   );
 }
 
+// Provider id as shown before a model name: "ollama_cloud" -> "ollama-cloud".
+const prefixOf = (pid) => String(pid || "").replace(/_/g, "-");
+
 const ModelPicker = memo(function ModelPicker() {
   const t = useT();
   const models = useStore((s) => s.models);
@@ -124,12 +156,26 @@ const ModelPicker = memo(function ModelPicker() {
   const [q, setQ] = useState("");
   const [edit, setEdit] = useState(null);
   const [loading, setLoading] = useState(false);
-  const groups = useMemo(() => Object.entries(models)
-    .map(([pid, p]) => ({ pid, ...p, models: p.models.filter((m) => !q || `${pid}:${m.id}`.toLowerCase().includes(q.toLowerCase())) }))
-    .sort((a, b) => b.local - a.local), [models, q]);
+  // Every model carries its provider prefix (ollama:, ollama-cloud:, openrouter:...): searching "openrouter:" or
+  // "cloud qwen" finds the right one among providers that serve models of the same name.
+  const groups = useMemo(() => {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    return Object.entries(models)
+      .map(([pid, p]) => ({ pid, ...p, models: p.models.filter((m) => {
+        const hay = `${prefixOf(pid)}:${m.id} ${pid}:${m.id} ${p.name || ""}`.toLowerCase();
+        return words.every((w) => hay.includes(w));
+      }) }))
+      .filter((g) => !q || g.models.length)
+      .sort((a, b) => b.local - a.local);
+  }, [models, q]);
+  const pidOf = model.split(":")[0];
   const short = model.split(":").slice(1).join(":") || model || t("select_model");
   const switching = status?.state === "switching" && status.model === model;
-  const refresh = async () => { setLoading(true); await useStore.getState().loadModels(); setLoading(false); };
+  const refresh = async () => {
+    if (loading) return;
+    setLoading(true);
+    try { await useStore.getState().loadModels(true); } finally { setLoading(false); }
+  };
   // The window actually used: the saved override, the live value of the active model, or the model maximum.
   // Local models without a saved size run with the model file's num_ctx, else the backend default (router.LOCAL_DEFAULT_CTX).
   const currentOf = (id, m, local) => overrides[id] || (ctx?.model === id ? ctx.current : null)
@@ -139,7 +185,7 @@ const ModelPicker = memo(function ModelPicker() {
     <div className="relative min-w-0 max-w-[150px] shrink sm:max-w-[240px]">
       <button onClick={() => setOpen(!open)} className={`flex h-8 max-w-full items-center gap-1 rounded-full px-2 text-[13px] hover:bg-hover sm:px-2.5 ${open ? "bg-hover text-fg" : "text-muted"}`}>
         {switching ? <Loader2 size={13} className="shrink-0 animate-spin text-accent" /> : null}
-        <span className="truncate">{short}</span>
+        <span className="truncate">{model && pidOf && <span className="text-subtle">{prefixOf(pidOf)}:</span>}{short}</span>
         {ctx?.model === model && ctx.current && <span className="hidden shrink-0 font-mono text-[10.5px] text-subtle sm:inline">{formatTokens(ctx.current)}</span>}
         <ChevronDown size={13} className={`shrink-0 transition ${open ? "rotate-180" : ""}`} />
       </button>
@@ -170,7 +216,8 @@ const ModelPicker = memo(function ModelPicker() {
                       <div key={id}>
                         <div onClick={() => { useStore.getState().selectModel(id); setOpen(false); setEdit(null); }} role="button"
                           className={`group flex cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-2 text-[13px] transition ${active ? "border-accent/40 bg-accent-soft" : "border-transparent hover:bg-hover"}`}>
-                          <span className={`min-w-0 flex-1 truncate ${active ? "font-medium" : ""}`}>{m.id}</span>
+                          <span className={`min-w-0 flex-1 truncate ${active ? "font-medium" : ""}`} title={`${prefixOf(g.pid)}:${m.id}`}>
+                            <span className="font-normal text-subtle">{prefixOf(g.pid)}:</span>{m.id}</span>
                           <CapIcons m={m} />
                           {cur && (
                             <button onClick={(e) => { e.stopPropagation(); if (g.local) setEdit(edit === id ? null : id); }}
@@ -200,32 +247,50 @@ const ModelPicker = memo(function ModelPicker() {
   );
 });
 
-// ---------- textarea with highlighted @agent and /skill tokens ----------
-function MentionInput({ value, onChange, onKeyDown, onPaste, taRef, placeholder }) {
-  const catalog = useStore((s) => s.catalog);
-  const overlay = useRef(null);
-  const names = useMemo(() => ({ "@": new Set(catalog.agents.map((x) => x.name)), "/": new Set(catalog.skills.map((x) => x.name)) }), [catalog]);
-  const parts = useMemo(() => value.split(/((?:^|(?<=\s))[@/][\w-]+)/g).map((p, i) => {
-    const m = /^([@/])([\w-]+)$/.exec(p);
-    if (m && names[m[1]].has(m[2])) {
-      return <span key={i} className={`rounded ${m[1] === "@" ? "bg-violet-500/15 text-violet-600 dark:text-violet-300" : "bg-accent-soft text-accent"}`}>{p}</span>;
-    }
-    return <span key={i}>{p}</span>;
-  }), [value, names]);
-  useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    if (value) ta.style.height = Math.min(ta.scrollHeight, 260) + "px";
-  }, [value]);
-  const cls = "max-h-[260px] w-full whitespace-pre-wrap break-words px-4 pb-1 pt-3.5 text-[14.5px] leading-6";
+// ---------- quotes added from messages ("Add to chat") ----------
+function QuoteChips() {
+  const t = useT();
+  const quotes = useStore((s) => s.quotes);
+  const [open, setOpen] = useState(false);
+  const [edit, setEdit] = useState(null);
+  const [flashing, setFlashing] = useState(false);
+  const ref = useRef(null);
+  useOutside(ref, () => { setOpen(false); setEdit(null); }, open);
+  if (!quotes.length) return null;
+  const st = useStore.getState();
+  const show = (q) => { st.flashQuote(q); setFlashing(true); setTimeout(() => setFlashing(false), 1900); };
   return (
-    <div className="relative">
-      <div ref={overlay} aria-hidden className={`${cls} pointer-events-none absolute inset-0 overflow-hidden text-fg`}>{parts}{"​"}</div>
-      <textarea ref={taRef} rows={1} value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste}
-        onScroll={(e) => { if (overlay.current) overlay.current.scrollTop = e.target.scrollTop; }}
-        placeholder={placeholder} spellCheck={false}
-        className={`${cls} relative block resize-none bg-transparent text-transparent caret-[var(--fg)] outline-none placeholder:text-subtle`} />
+    <div ref={ref} className="relative px-3 pt-3" onMouseEnter={() => setOpen(true)}>
+      <div className={`inline-flex items-center gap-1.5 rounded-xl border border-line bg-hover px-2.5 py-1 text-[12.5px] font-medium ${flashing ? "chip-flash" : ""}`}>
+        <button onClick={() => (quotes.length === 1 ? show(quotes[0]) : setOpen(!open))} className="flex items-center gap-1.5">
+          <MessageSquareQuote size={14} className="text-accent" />{t("quotes_n", { n: quotes.length })}
+        </button>
+        <button onClick={() => useStore.setState({ quotes: [] })} title={t("remove")} className="rounded-full p-0.5 text-subtle hover:bg-active hover:text-fg"><X size={12} /></button>
+      </div>
+      {open && (
+        <div className="fade-in absolute bottom-full left-3 z-40 mb-1 w-[min(420px,calc(100vw-40px))] rounded-2xl border border-line bg-elev p-1.5 shadow-xl"
+          onMouseLeave={() => !edit && setOpen(false)}>
+          {quotes.map((q, i) => (
+            <div key={q.id} className="group flex items-start gap-2 rounded-xl px-2.5 py-2 hover:bg-hover">
+              <span className="mt-0.5 text-xs text-subtle">{i + 1}.</span>
+              <div className="min-w-0 flex-1 cursor-pointer" onClick={() => show(q)} title={t("show_in_chat")}>
+                <div className="text-[11px] text-subtle">{t("selected_text")}:</div>
+                <div className="line-clamp-2 text-[13px]">{q.text}</div>
+                {edit === q.id ? (
+                  <input autoFocus defaultValue={q.comment} placeholder={t("quote_comment_ph")} onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { useStore.setState((s) => ({ quotes: s.quotes.map((x) => (x.id === q.id ? { ...x, comment: e.target.value } : x)) })); setEdit(null); }
+                      if (e.key === "Escape") setEdit(null);
+                    }}
+                    className="mt-1 w-full rounded-lg border border-line bg-bg px-2 py-1 text-[12.5px] outline-none focus:border-accent" />
+                ) : q.comment ? <div className="mt-0.5 text-[12.5px] text-muted">“{q.comment}”</div> : null}
+              </div>
+              <button onClick={() => setEdit(q.id)} title={t("edit")} className="rounded p-1 text-subtle hover:text-fg"><Pencil size={13} /></button>
+              <button onClick={() => st.removeQuote(q.id)} title={t("remove")} className="rounded p-1 text-subtle hover:text-danger"><Trash2 size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -237,8 +302,10 @@ export default function Composer() {
   const attachments = useStore((s) => s.attachments);
   const catalog = useStore((s) => s.catalog);
   const lang = useStore((s) => s.prefs.lang);
-  const [text, setText] = useState("");
+  const [text, setTextState] = useState("");
+  const [before, setBefore] = useState(""); // text before the caret (for / and @ suggestions)
   const [menu, setMenu] = useState(false);
+  const [picker, setPicker] = useState(null); // "/" or "@" browse list opened from the + menu
   const [planMode, setPlanMode] = useState(false);
   const [goalMode, setGoalMode] = useState(false);
   const [drawing, setDrawing] = useState(false);
@@ -247,27 +314,38 @@ export default function Composer() {
   const [sel, setSel] = useState(0);
   const [editing, setEditing] = useState(null); // index of the attached image open in the editor
   const fileInput = useRef(null);
-  const ta = useRef(null);
+  const ta = useRef(null); // the rich editor's handle
   const st = useStore.getState();
+  const names = useMemo(() => ({ "@": new Set(catalog.agents.map((x) => x.name)), "/": new Set(catalog.skills.map((x) => x.name)) }), [catalog]);
+  // Callers that used to set the textarea value: plain text into the editor (function form keeps working).
+  const setText = (v) => {
+    const next = typeof v === "function" ? v(ta.current?.getMarkdown() || "") : v;
+    if (!next) ta.current?.clear(); else ta.current?.setText(next);
+  };
 
   useEffect(() => { ta.current?.focus(); }, [sessionId]);
+  useEffect(() => {
+    const f = () => ta.current?.focus();
+    addEventListener("aiiq:focus-composer", f);
+    return () => removeEventListener("aiiq:focus-composer", f);
+  }, []);
 
   const mention = useMemo(() => {
-    const m = text.match(/(?:^|\s)([@/])([\w-]*)$/);
+    const m = before.match(/(?:^|[\s\u00a0])([@/])([\w-]*)$/);
     if (!m) return null;
     const list = m[1] === "/" ? catalog.skills : catalog.agents;
-    const items = list.filter((x) => x.name.startsWith(m[2].toLowerCase())).slice(0, 8);
-    return items.length ? { trigger: m[1], items } : null;
-  }, [text, catalog]);
-  useEffect(() => setSel(0), [mention?.items.length, mention?.trigger]);
+    return list.length ? { trigger: m[1], query: m[2] } : null;
+  }, [before, catalog]);
+  const pickItems = useRef([]);
+  useEffect(() => setSel(0), [mention?.query, mention?.trigger]);
 
   const submit = (override) => {
-    const value = (override ?? text).trim();
-    if (!value || running) return;
+    const value = (override ?? ta.current?.getMarkdown() ?? text).trim();
+    if (!value) return; // while a task runs the message steers it (store.send)
     st.send(value, { planMode, goalMode });
-    if (override == null) setText("");
+    if (override == null) ta.current?.clear();
   };
-  const insert = (name) => { setText((x) => x.replace(/([@/])([\w-]*)$/, `$1${name} `)); ta.current?.focus(); };
+  const insert = (name, sig = mention?.trigger) => { ta.current?.insertMention(sig, name); setPicker(null); };
   const addFiles = (files) => st.addAttachments(files);
   // A whole folder goes into the chat's working folder with its structure; the message mentions where it is.
   const addFolder = async (files) => {
@@ -284,8 +362,7 @@ export default function Composer() {
     st.dismiss(id);
     st.notify(t("folder_uploaded", { name: top, n: ok }), ok === files.length ? "ok" : "warn");
     useStore.setState((s) => ({ fsTick: s.fsTick + 1 }));
-    setText((x) => `${x ? x + " " : ""}${t("folder_ref", { name: top })} `);
-    ta.current?.focus();
+    ta.current?.insertText(`${ta.current?.getMarkdown() ? " " : ""}${t("folder_ref", { name: top })} `);
   };
   // Files and folders dropped anywhere on the chat (ChatView's drop zone) arrive here.
   const dropRef = useRef(null);
@@ -296,24 +373,30 @@ export default function Composer() {
     return () => removeEventListener("aiiq:drop", on);
   }, []);
   const onKeyDown = (e) => {
-    if (mention) {
-      if (e.key === "ArrowDown") { e.preventDefault(); return setSel((sel + 1) % mention.items.length); }
-      if (e.key === "ArrowUp") { e.preventDefault(); return setSel((sel - 1 + mention.items.length) % mention.items.length); }
-      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); return insert(mention.items[sel].name); }
+    const n = pickItems.current.length;
+    if (mention && n) {
+      if (e.key === "ArrowDown") { e.preventDefault(); return setSel((sel + 1) % n); }
+      if (e.key === "ArrowUp") { e.preventDefault(); return setSel((sel - 1 + n) % n); }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); return insert(pickItems.current[sel].name); }
+      if (e.key === "Escape") { e.preventDefault(); return setBefore(""); }
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
   };
   const mic = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return st.notify(t("mic_unsupported"), "error");
     const r = new SR();
     r.lang = lang === "tr" ? "tr-TR" : lang;
-    r.onresult = (e) => setText((x) => (x ? x + " " : "") + e.results[0][0].transcript);
+    r.onresult = (e) => ta.current?.insertText((ta.current?.getMarkdown() ? " " : "") + e.results[0][0].transcript);
     r.onend = () => setListening(false);
     setListening(true);
     r.start();
   };
-  const prefix = (p) => { setText((x) => p + x); setMenu(false); ta.current?.focus(); };
+  const prefix = (p) => { setText((x) => p + x); setMenu(false); };
+  const plusRef = useRef(null);
+  const menuRef = useRef(null);
+  useOutside(menuRef, () => setMenu(false), menu, () => plusRef.current);
+  const pickerRef = useRef(null);
+  useOutside(pickerRef, () => setPicker(null), !!picker);
 
   // Voice task control (lib/voiceControl): commands run the app, other speech is dictated into the box.
   const [voice, setVoice] = useState("off");
@@ -364,7 +447,7 @@ export default function Composer() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-2.5 pb-[max(10px,env(safe-area-inset-bottom))] sm:px-4 sm:pb-5">
+    <div className="mx-auto w-full max-w-[60rem] px-2.5 pb-[max(10px,env(safe-area-inset-bottom))] sm:px-4 sm:pb-5">
       <div className="relative rounded-[26px] border border-line bg-elev shadow-[0_2px_12px_rgb(0_0_0/0.06)] transition focus-within:shadow-[0_4px_20px_rgb(0_0_0/0.09)]">
         {attachments.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-3 pt-3">
@@ -375,41 +458,48 @@ export default function Composer() {
           </div>
         )}
 
-        {mention && (
-          <div className="fade-in absolute bottom-full left-2 z-40 mb-2 w-[min(340px,calc(100vw-24px))] rounded-2xl border border-line bg-elev p-1.5 shadow-xl">
-            <div className="px-2.5 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{mention.trigger === "@" ? t("agents") : t("skills")}</div>
-            {mention.items.map((x, i) => (
-              <MenuItem key={x.name} icon={mention.trigger === "@" ? Bot : Sparkles} active={i === sel}
-                label={`${mention.trigger}${x.name}`} desc={loc(x, "description")} onClick={() => insert(x.name)} />
-            ))}
+        <QuoteChips />
+
+        {mention && !picker && (
+          <CatalogPicker trigger={mention.trigger} query={mention.query} typed sel={sel}
+            onSel={(i, items) => { pickItems.current = items; setSel(i); }} onPick={(name) => insert(name)} />
+        )}
+        {picker && (
+          <div ref={pickerRef}>
+            <CatalogPicker trigger={picker} onPick={(name) => insert(name, picker)} onClose={() => setPicker(null)} />
           </div>
         )}
 
-        <MentionInput value={text} onChange={setText} onKeyDown={onKeyDown} taRef={ta} placeholder={t("placeholder")}
+        {menu && (
+          <div ref={menuRef} className="fade-in absolute bottom-full left-0 right-0 z-40 mb-2 max-h-[min(520px,62vh)] overflow-y-auto rounded-2xl border border-line bg-elev p-1.5 shadow-xl">
+            <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("add")}</div>
+            <MenuItem icon={Paperclip} label={t("files_and_folders")} desc={t("files_desc")} onClick={() => { fileInput.current.click(); setMenu(false); }} />
+            <MenuItem icon={FolderUp} label={t("folder")} onClick={() => { folderInput.current.click(); setMenu(false); }} />
+            <MenuItem icon={Sparkles} label={t("skills")} desc={t("skills_pick_desc")} shortcut="/" onClick={() => { setMenu(false); setPicker("/"); }} />
+            <MenuItem icon={Bot} label={t("agents")} desc={t("agents_pick_desc")} shortcut="@" onClick={() => { setMenu(false); setPicker("@"); }} />
+            <MenuItem icon={Chrome} label={t("add_chrome")} desc={t("add_chrome_desc")} onClick={() => prefix("@tester ")} />
+            <MenuItem icon={FolderGit2} label={t("work_in_project")} onClick={() => { useStore.setState({ dialog: { type: "project" } }); setMenu(false); }} />
+            <MenuItem icon={Target} label={t("goal")} desc={t("goal_desc")} onClick={() => { setGoalMode(!goalMode); setMenu(false); ta.current?.focus(); }} right={goalMode && <Check size={14} className="mt-0.5 text-accent" />} />
+            <MenuItem icon={ListTodo} label={t("plan_mode")} desc={t("plan_mode_desc")} onClick={() => { setPlanMode(!planMode); setMenu(false); ta.current?.focus(); }} right={planMode && <Check size={14} className="mt-0.5 text-accent" />} />
+            <MenuItem icon={PenTool} label={t("drawing")} desc={t("drawing_desc")} onClick={() => { setDrawing(true); setMenu(false); }} />
+            <div className="min-[420px]:hidden"><MenuItem icon={AudioLines} label={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")} onClick={() => { setMenu(false); toggleVoice(); }} /></div>
+            <MenuItem icon={Camera} label={t("web_shot")} desc={t("web_shot_desc")} onClick={() => prefix(t("web_shot_prefix"))} />
+            <MenuSep />
+            <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("plugins")}</div>
+            <MenuItem icon={FileText} label={t("documents")} desc={t("documents_desc")} onClick={() => prefix("/docs Word: ")} />
+            <MenuItem icon={FileType2} label={t("pdf")} desc={t("pdf_desc")} onClick={() => prefix("/docs PDF: ")} />
+            <MenuItem icon={FileSpreadsheet} label={t("spreadsheets")} desc={t("spreadsheets_desc")} onClick={() => prefix("/docs Excel: ")} />
+            <MenuItem icon={Presentation} label={t("presentations")} desc={t("presentations_desc")} onClick={() => prefix("/docs PowerPoint: ")} />
+          </div>
+        )}
+
+        <RichInput ref={ta} names={names} placeholder={t("placeholder")} onKeyDown={onKeyDown} onSubmit={() => submit()}
+          onChange={(md, b) => { setTextState(md); setBefore(b); }}
           onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }} />
 
         <div className="flex items-center gap-0.5 px-2 pb-2">
           <div className="relative">
-            <button onClick={() => setMenu(!menu)} className="grid h-8 w-8 place-items-center rounded-full text-muted hover:bg-hover" title={t("add")}><Plus size={18} /></button>
-            {menu && (
-              <Popover onClose={() => setMenu(false)} className="bottom-full left-0 mb-2 w-64">
-                <MenuItem icon={Paperclip} label={t("files")} onClick={() => { fileInput.current.click(); setMenu(false); }} />
-                <MenuItem icon={FolderUp} label={t("folder")} onClick={() => { folderInput.current.click(); setMenu(false); }} />
-                <MenuItem icon={Chrome} label={t("add_chrome")} desc={t("add_chrome_desc")} onClick={() => prefix("@tester ")} />
-                <MenuItem icon={FolderGit2} label={t("work_in_project")} onClick={() => { useStore.setState({ dialog: { type: "project" } }); setMenu(false); }} />
-                <MenuItem icon={Target} label={t("goal")} desc={t("goal_desc")} onClick={() => { setGoalMode(!goalMode); setMenu(false); ta.current?.focus(); }} right={goalMode && <Check size={14} className="mt-0.5 text-accent" />} />
-                <MenuItem icon={ListTodo} label={t("plan_mode")} desc={t("plan_mode_desc")} onClick={() => { setPlanMode(!planMode); setMenu(false); ta.current?.focus(); }} right={planMode && <Check size={14} className="mt-0.5 text-accent" />} />
-                <MenuItem icon={PenTool} label={t("drawing")} desc={t("drawing_desc")} onClick={() => { setDrawing(true); setMenu(false); }} />
-                <div className="min-[420px]:hidden"><MenuItem icon={AudioLines} label={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")} onClick={() => { setMenu(false); toggleVoice(); }} /></div>
-                <MenuItem icon={Camera} label={t("web_shot")} desc={t("web_shot_desc")} onClick={() => prefix(t("web_shot_prefix"))} />
-                <MenuSep />
-                <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("plugins")}</div>
-                <MenuItem icon={FileText} label={t("documents")} onClick={() => prefix("/docs Word: ")} />
-                <MenuItem icon={FileType2} label={t("pdf")} onClick={() => prefix("/docs PDF: ")} />
-                <MenuItem icon={FileSpreadsheet} label={t("spreadsheets")} onClick={() => prefix("/docs Excel: ")} />
-                <MenuItem icon={Presentation} label={t("presentations")} onClick={() => prefix("/docs PowerPoint: ")} />
-              </Popover>
-            )}
+            <button ref={plusRef} onClick={() => setMenu(!menu)} className={`grid h-8 w-8 place-items-center rounded-full hover:bg-hover ${menu ? "bg-hover text-fg" : "text-muted"}`} title={t("add")}><Plus size={18} className={`transition ${menu ? "rotate-45" : ""}`} /></button>
           </div>
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { addFiles([...e.target.files]); e.target.value = ""; }} />
           <input ref={folderInput} type="file" multiple hidden webkitdirectory="" directory="" onChange={(e) => { addFolder([...e.target.files]); e.target.value = ""; }} />
@@ -424,13 +514,17 @@ export default function Composer() {
           <div className="flex-1" />
           <ModelPicker />
           <EffortMenu />
+          <ThinkToggle />
           <ContextPanel />
           <button onClick={toggleVoice} title={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")}
             className={`h-8 w-8 shrink-0 place-items-center rounded-full hover:bg-hover ${voice === "on" ? "grid bg-accent-soft text-accent" : "hidden text-muted min-[420px]:grid"}`}>
             <AudioLines size={17} className={voice === "on" ? "animate-pulse" : ""} /></button>
           <button onClick={mic} title={t("dictate")} className={`grid h-8 w-8 shrink-0 place-items-center rounded-full hover:bg-hover ${listening ? "text-danger" : "text-muted"}`}><Mic size={17} /></button>
           {running ? (
-            <button onClick={st.cancelRun} title={t("stop")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-fg text-bg"><Square size={11} fill="currentColor" /></button>
+            <>
+              {text.trim() && <button onClick={() => submit()} title={t("steer_send")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-accent-fg"><ArrowUp size={17} /></button>}
+              <button onClick={st.cancelRun} title={t("stop")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-fg text-bg"><Square size={11} fill="currentColor" /></button>
+            </>
           ) : (
             <button onClick={() => submit()} disabled={!text.trim()} title={t("send")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition disabled:opacity-35"><ArrowUp size={17} /></button>
           )}

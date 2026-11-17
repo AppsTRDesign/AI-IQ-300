@@ -156,6 +156,8 @@ function ContextPanel() {
                   <Loader2 size={13} className="shrink-0 animate-spin text-accent" />
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{(p.argv || []).slice(-1)[0]?.split(/[\\/]/).pop() || p.id}</span>
                   {p.started && <span className="text-[11px] text-subtle">{elapsed(t, p.started)}</span>}
+                  {p.expires_at && <span className="text-[11px] text-warn" title={t("server_ttl_desc")}>
+                    {t("stops_in", { m: Math.max(1, Math.ceil((p.expires_at - Date.now() / 1000) / 60)) })}</span>}
                   <button title={t("stop")} onClick={() => api.post(`/api/processes/${p.id}/stop`)} className="rounded p-0.5 text-danger hover:bg-hover"><Square size={11} fill="currentColor" /></button>
                 </div>
               ))}
