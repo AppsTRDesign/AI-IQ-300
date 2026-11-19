@@ -19,6 +19,10 @@ const EditorPane = lazy(() => import("./components/EditorPane"));
 const DocPreviewDialog = lazy(() => import("./components/DocPreview"));
 const ImageViewer = lazy(() => import("./components/MediaViewer").then((m) => ({ default: m.ImageViewer })));
 const MediaPlayer = lazy(() => import("./components/MediaPlayer"));
+const VideoStudio = lazy(() => import("./components/VideoStudio"));
+const LogoMaker = lazy(() => import("./components/LogoMaker"));
+const TTSDialog = lazy(() => import("./components/VoiceLibrary").then((m) => ({ default: m.TTSDialog })));
+const STTDialog = lazy(() => import("./components/VoiceLibrary").then((m) => ({ default: m.STTDialog })));
 const BrowserDialog = lazy(() => import("./components/MediaViewer").then((m) => ({ default: m.BrowserDialog })));
 
 const VIEWS = { chat: ChatView, home: ChatView, settings: SettingsView, skills: CatalogView, agents: CatalogView, files: FilesView,
@@ -98,6 +102,10 @@ export default function App() {
         {dialog?.type === "images" && <ImageViewer />}
         {dialog?.type === "browser" && <BrowserDialog />}
         {dialog?.type === "media" && <MediaPlayer />}
+        {dialog?.type === "studio" && <VideoStudio />}
+        {dialog?.type === "logo" && <LogoMaker />}
+        {dialog?.type === "tts" && <TTSDialog />}
+        {dialog?.type === "stt" && <STTDialog />}
       </Suspense>
       <ConfirmDialog />
       <Toaster />

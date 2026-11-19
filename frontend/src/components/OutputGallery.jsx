@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Download, Film, Loader2, Mic2, Music2, Pause, Play, SquareArrowOutUpRight } from "lucide-react";
+import { Clapperboard, Check, Download, Film, Loader2, Mic2, Music2, Pause, Play, SquareArrowOutUpRight } from "lucide-react";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
 import { fileType, isAudio, isImage, isVideo, isWebPage } from "../lib/fileTypes";
@@ -95,6 +95,7 @@ function MediaCard({ path, tts }) {
           <span className="block truncate text-xs text-subtle">{t(video ? "media_video" : "media_audio")}{voice ? ` · ${voice}` : ""}</span>
         </span>
         {tts && <button onClick={() => setPick(!pick)} className={`shrink-0 rounded-lg px-2 py-1 text-[11px] font-medium ${pick ? "bg-accent text-accent-fg" : "bg-hover text-muted hover:text-fg"}`}><Mic2 size={12} className="mr-1 inline" />{t("voice_change")}</button>}
+        {video && <button onClick={() => useStore.getState().openStudio(path)} title={t("vs_edit_in_studio")} className="flex shrink-0 items-center gap-1 rounded-lg bg-accent/10 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/20"><Clapperboard size={12} />{t("vs_studio_short")}</button>}
         <a href={rawUrl(path) + "&download=true"} title={t("download")} className="shrink-0 rounded-lg p-1.5 text-subtle hover:bg-hover hover:text-fg"><Download size={14} /></a>
         <button onClick={() => useStore.getState().openFile(path)} title={t("open")} className="shrink-0 rounded-lg p-1.5 text-subtle hover:bg-hover hover:text-fg"><SquareArrowOutUpRight size={14} /></button>
       </div>
@@ -121,7 +122,7 @@ export default function OutputGallery({ paths, steps }) {
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {images.map((p, i) => (
-            <button key={p} onClick={() => st.viewImages(images, i)} title={p}
+            <button type="button" key={p} onClick={() => st.viewImages(images, i)} title={p}
               className="group relative h-36 w-36 overflow-hidden rounded-2xl border border-line bg-[conic-gradient(#8881_25%,transparent_0_50%,#8881_0_75%,transparent_0)] bg-[length:16px_16px] shadow-sm transition hover:shadow-md sm:h-44 sm:w-44">
               <img src={rawUrl(p)} alt={nameOf(p)} loading="lazy" className="h-full w-full object-contain transition group-hover:scale-[1.03]" />
               <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-4 text-left text-[11px] font-medium text-white">{nameOf(p)}</span>
@@ -134,7 +135,7 @@ export default function OutputGallery({ paths, steps }) {
           {pages.map((p) => {
             const Icon = fileType(p).icon;
             return (
-              <button key={p} onClick={() => st.browse({ path: p })} title={p}
+              <button type="button" key={p} onClick={() => st.browse({ path: p })} title={p}
                 className="group flex w-full max-w-sm items-center gap-3 rounded-2xl border border-line bg-elev p-2.5 pr-4 text-left shadow-[0_1px_4px_rgb(0_0_0/0.04)] transition hover:border-subtle hover:shadow-md">
                 <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#e34f26] text-white shadow-sm"><Icon size={22} /></span>
                 <span className="min-w-0 flex-1">

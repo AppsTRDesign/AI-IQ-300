@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, ExternalLink, Files, Gauge, Github, Globe, ListTree, Map, Mic, Rocket,
-  Search, ShieldCheck, Sparkles, Star, Folder, Users, Wrench, Check, X,
+  Search, ShieldCheck, Sparkles, Star, Folder, Users, Wrench, Check, X, Clapperboard,
 } from "lucide-react";
 import { useStore } from "../lib/store";
 import { AUTHOR, VERSION, pagesFor } from "../content/pages";
@@ -10,7 +10,7 @@ import { Logo } from "./Brand";
 import Markdown from "./Markdown";
 
 const ICONS = { rocket: Rocket, folder: Folder, bot: Bot, wrench: Wrench, shield: ShieldCheck, gauge: Gauge, files: Files, globe: Globe,
-  help: CircleHelp, users: Users, mic: Mic };
+  help: CircleHelp, users: Users, mic: Mic, film: Clapperboard };
 
 const Shell = ({ children }) => (
   <div className="min-h-0 flex-1 overflow-y-auto">

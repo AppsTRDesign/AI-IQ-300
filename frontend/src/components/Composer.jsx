@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import {
+import { Film, Palette, Volume2, FileAudio, Image as ImageIcon, Clapperboard,
   ArrowUp, Bot, Camera, Check, ChevronDown, Chrome, Cpu, Cloud, FileSpreadsheet, FileText, FileType2, FolderGit2, FolderUp, ListTodo, Loader2, Mic,
   Paperclip, PenTool, Plus, Presentation, RefreshCw, Search, Settings2, Shield, ShieldCheck, ShieldAlert, SlidersHorizontal, Sparkles, Square, Target, Gauge, AudioLines,
   MessageSquareQuote, Pencil, Trash2, X, Brain,
@@ -473,23 +473,32 @@ export default function Composer() {
         {menu && (
           <div ref={menuRef} className="fade-in absolute bottom-full left-0 right-0 z-40 mb-2 max-h-[min(520px,62vh)] overflow-y-auto rounded-2xl border border-line bg-elev p-1.5 shadow-xl">
             <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("add")}</div>
-            <MenuItem icon={Paperclip} label={t("files_and_folders")} desc={t("files_desc")} onClick={() => { fileInput.current.click(); setMenu(false); }} />
-            <MenuItem icon={FolderUp} label={t("folder")} onClick={() => { folderInput.current.click(); setMenu(false); }} />
-            <MenuItem icon={Sparkles} label={t("skills")} desc={t("skills_pick_desc")} shortcut="/" onClick={() => { setMenu(false); setPicker("/"); }} />
-            <MenuItem icon={Bot} label={t("agents")} desc={t("agents_pick_desc")} shortcut="@" onClick={() => { setMenu(false); setPicker("@"); }} />
-            <MenuItem icon={Chrome} label={t("add_chrome")} desc={t("add_chrome_desc")} onClick={() => prefix("@tester ")} />
-            <MenuItem icon={FolderGit2} label={t("work_in_project")} onClick={() => { useStore.setState({ dialog: { type: "project" } }); setMenu(false); }} />
-            <MenuItem icon={Target} label={t("goal")} desc={t("goal_desc")} onClick={() => { setGoalMode(!goalMode); setMenu(false); ta.current?.focus(); }} right={goalMode && <Check size={14} className="mt-0.5 text-accent" />} />
-            <MenuItem icon={ListTodo} label={t("plan_mode")} desc={t("plan_mode_desc")} onClick={() => { setPlanMode(!planMode); setMenu(false); ta.current?.focus(); }} right={planMode && <Check size={14} className="mt-0.5 text-accent" />} />
-            <MenuItem icon={PenTool} label={t("drawing")} desc={t("drawing_desc")} onClick={() => { setDrawing(true); setMenu(false); }} />
-            <div className="min-[420px]:hidden"><MenuItem icon={AudioLines} label={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")} onClick={() => { setMenu(false); toggleVoice(); }} /></div>
-            <MenuItem icon={Camera} label={t("web_shot")} desc={t("web_shot_desc")} onClick={() => prefix(t("web_shot_prefix"))} />
+            <MenuItem icon={Paperclip} color="bg-blue-500/15 text-blue-500" label={t("files_and_folders")} desc={t("files_desc")} onClick={() => { fileInput.current.click(); setMenu(false); }} />
+            <MenuItem icon={FolderUp} color="bg-sky-500/15 text-sky-500" label={t("folder")} onClick={() => { folderInput.current.click(); setMenu(false); }} />
+            <MenuItem icon={Sparkles} color="bg-amber-500/15 text-amber-500" label={t("skills")} desc={t("skills_pick_desc")} shortcut="/" onClick={() => { setMenu(false); setPicker("/"); }} />
+            <MenuItem icon={Bot} color="bg-violet-500/15 text-violet-500" label={t("agents")} desc={t("agents_pick_desc")} shortcut="@" onClick={() => { setMenu(false); setPicker("@"); }} />
+            <MenuItem icon={Chrome} color="bg-green-500/15 text-green-600" label={t("add_chrome")} desc={t("add_chrome_desc")} onClick={() => prefix("@tester ")} />
+            <MenuItem icon={FolderGit2} color="bg-indigo-500/15 text-indigo-500" label={t("work_in_project")} onClick={() => { useStore.setState({ dialog: { type: "project" } }); setMenu(false); }} />
+            <MenuItem icon={Target} color="bg-rose-500/15 text-rose-500" label={t("goal")} desc={t("goal_desc")} onClick={() => { setGoalMode(!goalMode); setMenu(false); ta.current?.focus(); }} right={goalMode && <Check size={14} className="mt-0.5 text-accent" />} />
+            <MenuItem icon={ListTodo} color="bg-teal-500/15 text-teal-500" label={t("plan_mode")} desc={t("plan_mode_desc")} onClick={() => { setPlanMode(!planMode); setMenu(false); ta.current?.focus(); }} right={planMode && <Check size={14} className="mt-0.5 text-accent" />} />
+            <MenuItem icon={PenTool} color="bg-fuchsia-500/15 text-fuchsia-500" label={t("drawing")} desc={t("drawing_desc")} onClick={() => { setDrawing(true); setMenu(false); }} />
+            <div className="min-[420px]:hidden"><MenuItem icon={AudioLines} color="bg-emerald-500/15 text-emerald-500" label={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")} onClick={() => { setMenu(false); toggleVoice(); }} /></div>
+            <MenuItem icon={Camera} color="bg-cyan-500/15 text-cyan-500" label={t("web_shot")} desc={t("web_shot_desc")} onClick={() => prefix(t("web_shot_prefix"))} />
+            <MenuSep />
+            <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("create_menu")}</div>
+            <MenuItem icon={Clapperboard} color="bg-violet-500/15 text-violet-500" label={t("vs_title")} desc={t("vs_menu_desc")} onClick={() => { useStore.getState().openStudio(""); setMenu(false); }} />
+            <MenuItem icon={Film} color="bg-pink-500/15 text-pink-500" label={t("make_video")} desc={t("make_video_desc")} onClick={() => prefix(t("make_video_prefix"))} />
+            <MenuItem icon={Sparkles} color="bg-rose-500/15 text-rose-500" label={t("make_aiclip")} desc={t("make_aiclip_desc")} onClick={() => prefix(t("make_aiclip_prefix"))} />
+            <MenuItem icon={Palette} color="bg-amber-500/15 text-amber-500" label={t("lm_title")} desc={t("lm_menu_desc")} onClick={() => { useStore.setState({ dialog: { type: "logo" } }); setMenu(false); }} />
+            <MenuItem icon={ImageIcon} color="bg-orange-500/15 text-orange-500" label={t("make_image")} desc={t("make_image_desc")} onClick={() => prefix(t("make_image_prefix"))} />
+            <MenuItem icon={Volume2} color="bg-emerald-500/15 text-emerald-500" label={t("vl_tts_title")} desc={t("vl_tts_menu_desc")} onClick={() => { useStore.setState({ dialog: { type: "tts" } }); setMenu(false); }} />
+            <MenuItem icon={FileAudio} color="bg-sky-500/15 text-sky-500" label={t("vl_stt_title")} desc={t("vl_stt_menu_desc")} onClick={() => { useStore.setState({ dialog: { type: "stt" } }); setMenu(false); }} />
             <MenuSep />
             <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("plugins")}</div>
-            <MenuItem icon={FileText} label={t("documents")} desc={t("documents_desc")} onClick={() => prefix("/docs Word: ")} />
-            <MenuItem icon={FileType2} label={t("pdf")} desc={t("pdf_desc")} onClick={() => prefix("/docs PDF: ")} />
-            <MenuItem icon={FileSpreadsheet} label={t("spreadsheets")} desc={t("spreadsheets_desc")} onClick={() => prefix("/docs Excel: ")} />
-            <MenuItem icon={Presentation} label={t("presentations")} desc={t("presentations_desc")} onClick={() => prefix("/docs PowerPoint: ")} />
+            <MenuItem icon={FileText} color="bg-blue-600/15 text-blue-600" label={t("documents")} desc={t("documents_desc")} onClick={() => prefix("/docs Word: ")} />
+            <MenuItem icon={FileType2} color="bg-red-500/15 text-red-500" label={t("pdf")} desc={t("pdf_desc")} onClick={() => prefix("/docs PDF: ")} />
+            <MenuItem icon={FileSpreadsheet} color="bg-green-600/15 text-green-600" label={t("spreadsheets")} desc={t("spreadsheets_desc")} onClick={() => prefix("/docs Excel: ")} />
+            <MenuItem icon={Presentation} color="bg-orange-600/15 text-orange-600" label={t("presentations")} desc={t("presentations_desc")} onClick={() => prefix("/docs PowerPoint: ")} />
           </div>
         )}
 

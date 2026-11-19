@@ -2,11 +2,12 @@ import { memo, useEffect, useState } from "react";
 import {
   AlertTriangle, Archive, Brain, Bug, Check, ChevronDown, ChevronRight, FileCode2, FileText, FolderTree, GitCommit, Globe,
   Image, ListChecks, Loader2, MessageSquareText, Play, Search, ShieldAlert, Terminal, X, Trash2, Square, Cloud, Sparkles, RotateCw,
-  FilePen, FileSearch, Users, BookMarked, Plug, Camera, MapPin, CornerDownRight, Cpu,
+  FilePen, FileSearch, Users, BookMarked, Plug, Camera, MapPin, CornerDownRight, Cpu, Copy, Download,
 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
 import CodeBlock from "./CodeBlock";
+import { stripActionEcho, toolErrorLine } from "../lib/errors";
 import Markdown from "./Markdown";
 
 const KIND = {
@@ -28,7 +29,10 @@ const HIDDEN_TITLES = new Set(["thinking", "tools", "context", "planner", "debug
   "iteration budget exhausted", "unavailable"]);
 const shownTitle = (t, step) => {
   if (step.kind === "retry") { const k = `cd_${step.title}`; const v = t(k); return v === k ? step.title : v; }
-  return step.title === step.kind || HIDDEN_TITLES.has(step.title) ? "" : step.title;
+  const title = step.title === step.kind || HIDDEN_TITLES.has(step.title) ? "" : step.title;
+  // Downloaded photos: the service they came from (Pexels, Pixabay, Unsplash, Openverse...).
+  const from = step.data?.providers?.length ? step.data.providers.join(", ") : "";
+  return from ? `${from} · ${title}` : title;
 };
 
 // While a file step runs (e.g. waiting for approval) nothing has changed yet: present tense.
@@ -100,7 +104,8 @@ const Step = memo(function Step({ step: given }) {
   const d = step.data || {};
   const running = step.status === "running";
   const showTitle = !["thinking", "note", "compress"].includes(step.kind);
-  const noteLine = step.kind === "note" ? (step.detail || "").split("\n").find((l) => l.trim())?.replace(/[#*`>]/g, "").trim() : "";
+  const noteText = step.kind === "note" ? stripActionEcho(step.detail) : "";
+  const noteLine = step.kind === "note" ? noteText.split("\n").find((l) => l.trim())?.replace(/[#*`>]/g, "").trim() : "";
   const lines = (step.kind === "edit" || step.kind === "file") && step.status === "done" && d.added != null ? ` · +${d.added} −${d.removed}` : "";
   // The live label already names the file and its characters: only the elapsed time is added here (it was shown twice).
   const chars = step.kind === "retry" ? ` · ${d.seconds} ${t("unit_s")} · #${d.attempt}` : step.kind !== "prepare" ? ""
@@ -123,7 +128,7 @@ const Step = memo(function Step({ step: given }) {
       </button>
       {open && step.detail && (
         <div className="fade-in ml-7 mt-1">
-          {d.tool === "write_file" ? (
+          {d.tool === "write_file" && step.kind !== "note" ? (
             <>
               <CodeBlock code={step.detail} language={d.language} path={d.path} />
               <button onClick={() => useStore.getState().openFile(d.path)} className="text-xs text-accent hover:underline">{t("open_editor")}</button>
@@ -134,9 +139,11 @@ const Step = memo(function Step({ step: given }) {
               <button onClick={() => useStore.getState().openFile(d.path)} className="text-xs text-accent hover:underline">{t("open_editor")}</button>
             </>
           ) : step.kind === "note" ? (
-            <div className="note-md max-h-80 overflow-auto rounded-xl border border-line bg-panel/60 px-3 py-1.5"><Markdown text={step.detail} /></div>
+            <div className="note-md max-h-80 overflow-auto rounded-xl border border-line bg-panel/60 px-3 py-1.5"><Markdown text={noteText} /></div>
           ) : step.kind === "compress" ? (
             <CompressSummary detail={step.detail} t={t} />
+          ) : ["retry", "fallback"].includes(step.kind) ? (
+            <ProviderIssue step={step} t={t} />
           ) : ["run", "start"].includes(d.tool) && (d.command || d.args?.argv) ? (
             <>
               {/* The exact command that ran (shell, folder), then its output. */}
@@ -146,16 +153,46 @@ const Step = memo(function Step({ step: given }) {
               </div>
               <CodeBlock code={d.command || (Array.isArray(d.args.argv) ? d.args.argv.join(" ") : String(d.args.argv))}
                 language={{ powershell: "powershell", powershell5: "powershell", pwsh: "powershell", bash: "shell", cmd: "bat", python: "python", node: "javascript", php: "php" }[d.args?.shell] || "shell"} />
+              {step.status === "error" && toolErrorLine(t, step.detail) && (
+                <div className="mt-1 rounded-lg bg-danger/5 px-2.5 py-1.5 text-[12.5px] text-danger">{toolErrorLine(t, step.detail)}</div>
+              )}
               <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-code p-2.5 font-mono text-xs text-muted">{step.detail}</pre>
             </>
           ) : (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-code p-2.5 font-mono text-xs text-muted">{step.detail}</pre>
+            <>
+              {step.status === "error" && toolErrorLine(t, step.detail) && (
+                <div className="mb-1 rounded-lg bg-danger/5 px-2.5 py-1.5 text-[12.5px] text-danger">{toolErrorLine(t, step.detail)}</div>
+              )}
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-code p-2.5 font-mono text-xs text-muted">{step.detail}</pre>
+            </>
           )}
         </div>
       )}
     </div>
   );
 });
+
+// A retry or a switch to another model: what happened in the user's language (from the error code), the provider's
+// own English message only under "technical detail".
+function ProviderIssue({ step, t }) {
+  const d = step.data || {};
+  const code = step.kind === "retry" ? step.title : d.reason || "";
+  const k = `err_${code}`;
+  const what = t(k) === k ? "" : t(k);
+  return (
+    <div className="space-y-1.5 rounded-xl border border-line bg-panel/60 px-3 py-2 text-[12.5px]">
+      {step.kind === "fallback" && d.from && <div className="font-medium">{t("fb_switched", { from: d.from, to: d.to || step.title })}</div>}
+      <div className="text-muted">{what || t("err_generic")}</div>
+      {step.kind === "retry" && d.seconds != null && <div className="text-subtle">{t("retry_wait", { s: d.seconds, n: d.attempt || 1 })}</div>}
+      {step.detail && (
+        <details className="text-[11px] text-subtle">
+          <summary className="cursor-pointer select-none">{t("tech_detail")}</summary>
+          <pre className="mt-1 whitespace-pre-wrap font-mono">{step.detail}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
 
 // Screenshots the model took while working, shown inline (also while the step list is collapsed);
 // a click opens them in the image viewer.
@@ -166,24 +203,37 @@ const rawUrl = (path) => useStore.getState().fileApi(`/fs/raw?path=${encodeURICo
 function ShotStrip({ shots }) {
   const t = useT();
   const paths = shots.map((s) => s.data.screenshot);
+  // One compact, scrollable row: phone-sized shots in a phone frame, desktop shots in a browser frame. (Full-width
+  // 300 px cards, several per task, pushed the conversation far down.)
   return (
-    <div className="ml-2 mt-1.5 flex flex-wrap gap-2 pl-2">
+    <div className="ml-2 mt-1.5 flex snap-x gap-2.5 overflow-x-auto pb-1.5 pl-2 [scrollbar-width:thin]">
       {shots.map((s, i) => {
         const [w, h] = s.data.size || [];
+        const phone = w && h && h > w * 1.2;
         let host = s.data.url || "";
         try { host = new URL(host).host || host; } catch {}
+        const open = (e) => { e.preventDefault(); e.stopPropagation(); useStore.getState().viewImages(paths, i); };
         return (
-          <button key={s.id} onClick={() => useStore.getState().viewImages(paths, i)} title={`${t("open_image")} · ${s.data.title || s.data.url || ""}`}
-            className="group w-[min(100%,300px)] overflow-hidden rounded-xl border border-line bg-elev text-left shadow-[0_1px_4px_rgb(0_0_0/0.05)] transition hover:border-accent/50 hover:shadow-md">
-            <div className="relative h-[168px] overflow-hidden bg-panel">
-              <img src={rawUrl(s.data.screenshot)} alt={s.data.title || host} loading="lazy"
-                className="h-full w-full object-cover object-top transition duration-300 group-hover:scale-[1.02]" />
-              <span className="absolute right-1.5 top-1.5 rounded-md bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 transition group-hover:opacity-100">{t("open_image")}</span>
-            </div>
-            <div className="flex items-center gap-1.5 border-t border-line px-2.5 py-1.5">
-              <Camera size={12} className="shrink-0 text-subtle" />
-              <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-fg/80">{s.data.title || host}</span>
-              {w && h && <span className="shrink-0 font-mono text-[10.5px] text-subtle">{w}×{h}</span>}
+          <button type="button" key={s.id} onClick={open} title={`${t("open_image")} · ${s.data.title || s.data.url || ""}`}
+            className={`group shrink-0 snap-start text-left ${phone ? "w-[112px]" : "w-[232px]"}`}>
+            {phone ? (
+              <div className="relative h-[220px] overflow-hidden rounded-[20px] border-[3px] border-fg/85 bg-panel shadow-[0_6px_18px_rgb(0_0_0/0.18)] transition group-hover:-translate-y-0.5 group-hover:shadow-[0_10px_24px_rgb(0_0_0/0.25)]">
+                <span className="absolute left-1/2 top-1 z-10 h-1.5 w-8 -translate-x-1/2 rounded-full bg-fg/85" />
+                <img src={rawUrl(s.data.screenshot)} alt={s.data.title || host} loading="lazy" className="h-full w-full object-cover object-top" />
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-xl border border-line bg-elev shadow-[0_4px_14px_rgb(0_0_0/0.10)] transition group-hover:-translate-y-0.5 group-hover:border-accent/50 group-hover:shadow-[0_8px_22px_rgb(0_0_0/0.16)]">
+                <div className="flex items-center gap-1 border-b border-line bg-panel px-2 py-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#ff5f57]" /><span className="h-1.5 w-1.5 rounded-full bg-[#febc2e]" /><span className="h-1.5 w-1.5 rounded-full bg-[#28c840]" />
+                  <span className="ml-1 min-w-0 flex-1 truncate rounded bg-hover px-1.5 font-mono text-[9.5px] text-subtle">{host}</span>
+                </div>
+                <img src={rawUrl(s.data.screenshot)} alt={s.data.title || host} loading="lazy" className="h-[130px] w-full object-cover object-top" />
+              </div>
+            )}
+            <div className="mt-1 flex items-center gap-1 px-0.5">
+              <Camera size={11} className="shrink-0 text-subtle" />
+              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-fg/75">{s.data.title || host}</span>
+              {w && h && <span className="shrink-0 font-mono text-[9.5px] text-subtle">{w}×{h}</span>}
             </div>
           </button>
         );
@@ -221,13 +271,16 @@ function prepareLabel(t, d, title) {
   const model = d.model && d.phase === "first" ? ` · ${String(d.model).split(":").slice(1).join(":")}` : "";
   // Always concrete: which file and how many characters so far, or how long nothing came and what happens next.
   const kb = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n));
-  const target = d.target ? ` · ${d.target}` : "";
+  // The file it is about; a write / edit whose path has not arrived yet says so (the model wrote the content first).
+  const fileTool = ["write_file", "edit_file", "make_doc", "read_file"].includes(d.tool || title);
+  const target = d.target ? ` · ${d.target}` : (fileTool && d.phase === "tool_stream" ? ` · ${t("prep_target_pending")}` : "");
   const text = d.phase === "first" ? t("prep_first", { tok })
     : d.phase === "tool_stream" ? `${t("prep_tool_stream")}: ${t(`tool_${title}`)}${target} · ${t("prep_chars", { n: kb(d.chars || 0) })}`
       : d.phase === "tool_silent"
         ? (d.local ? t("prep_tool_silent_local", { s: d.idle || 0 })
           : d.switch_in != null ? t("prep_tool_silent_switch", { s: d.idle || 0, left: d.switch_in })
             : t("prep_tool_silent_wait", { s: d.idle || 0 }))
+        : d.phase === "after_think" ? t("prep_after_think", { s: d.idle || 0 })
         : d.phase === "stalled" ? (d.stall_in != null ? t("prep_stalled", { s: d.idle || 0, left: d.stall_in }) : t("prep_stalled_local", { s: d.idle || 0 }))
           : d.phase === "writing" ? t("prep_writing") : t(`tool_${title}`);
   return text + model;
@@ -257,6 +310,53 @@ function TimingRow({ timing }) {
 
 const STEP_WINDOW = 60;
 
+// The task's steps as Markdown (copy or .md download): what ran, on which file, with the notes, reasoning, errors
+// and outputs as they were stored (long stored details come cut; opened steps load in full).
+export function stepsMarkdown(t, steps, timing) {
+  const out = [`## ${t("steps", { n: steps.length })}` + (timing?.total_ms != null ? ` · ${fmtDur(t, timing.total_ms)}` : ""), ""];
+  for (const s of steps) {
+    if (s.kind === "prepare") continue;
+    const [, key0] = KIND[s.kind] || [null, s.kind];
+    const key = s.kind === "retry" && s.title === "stalled" ? "step_retry_stalled" : key0;
+    const d = s.data || {};
+    const mark = s.status === "error" ? "❌" : s.status === "running" ? "⏳" : "✅";
+    const title = ["thinking", "note", "compress"].includes(s.kind) ? "" : ` \`${shownTitle(t, s)}\``;
+    const lines = d.added != null ? ` (+${d.added} −${d.removed})` : "";
+    out.push(`- ${mark} **${t(key)}**${title}${lines}`);
+    const detail = String((s.kind === "note" ? stripActionEcho(s.detail) : s.detail) || "").trim();
+    if (detail) {
+      const fence = s.kind === "note" || s.kind === "thinking" ? null : "```";
+      const body = detail.length > 6000 ? detail.slice(0, 6000) + "\n…" : detail;
+      out.push(fence ? `  ${fence}\n${body.split("\n").map((l) => "  " + l).join("\n")}\n  ${fence}`
+        : body.split("\n").map((l) => "  > " + l).join("\n"));
+    }
+  }
+  return out.join("\n") + "\n";
+}
+
+function TraceExport({ steps, timing }) {
+  const t = useT();
+  const md = () => stepsMarkdown(t, steps, timing);
+  const copy = async (e) => {
+    e.stopPropagation();
+    try { await navigator.clipboard.writeText(md()); useStore.getState().notify(t("steps_copied"), "ok"); }
+    catch (err) { useStore.getState().notify(err.message, "error"); }
+  };
+  const save = (e) => {
+    e.stopPropagation();
+    const url = URL.createObjectURL(new Blob([md()], { type: "text/markdown;charset=utf-8" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: `steps-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md` });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+  return (
+    <span className="ml-1 inline-flex items-center gap-0.5">
+      <button onClick={copy} title={t("steps_copy_md")} className="rounded-md p-1 text-subtle hover:bg-hover hover:text-fg"><Copy size={12} /></button>
+      <button onClick={save} title={t("steps_export_md")} className="rounded-md p-1 text-subtle hover:bg-hover hover:text-fg"><Download size={12} /></button>
+    </span>
+  );
+}
+
 function ActivityTrace({ steps, live, timing, started }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -270,7 +370,7 @@ function ActivityTrace({ steps, live, timing, started }) {
   const shots = shotsOf(steps);
   return (
     <div className="mb-2">
-      <button onClick={() => setOpen(!open)} className="flex items-center gap-1.5 rounded-lg px-1.5 py-0.5 text-[13px] text-muted hover:bg-hover">
+      <button onClick={() => setOpen(!open)} className="inline-flex items-center gap-1.5 rounded-lg px-1.5 py-0.5 text-[13px] text-muted hover:bg-hover">
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         {live && <Loader2 size={12} className="animate-spin text-accent" />}
         {t(live ? "steps_live" : "steps", { n: steps.length })}
@@ -278,6 +378,7 @@ function ActivityTrace({ steps, live, timing, started }) {
         {live && <Elapsed since={started} />}
         {!live && timing?.total_ms != null && <span className="text-[12px] text-subtle">· {fmtDur(t, timing.total_ms)}</span>}
       </button>
+      <TraceExport steps={steps} timing={timing} />
       {open && timing?.total_ms != null && <TimingRow timing={timing} />}
       {(open || current) && (
         <div className="ml-2 mt-1 border-l border-line pl-2">

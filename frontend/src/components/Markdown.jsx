@@ -58,11 +58,40 @@ const makeComponents = (chips) => ({
     }
     return <CodeBlock code={content} language={(className || "").replace("language-", "")} />;
   },
+  img({ src, alt }) {
+    // A picture the model wrote with a path in the chat folder (images/x.jpg): served by the file API, not by the
+    // app's own address (it showed as a broken image, mostly while the answer was still streaming).
+    const st = useStore.getState();
+    const local = src && !/^(https?:|data:|blob:|\/)/i.test(src);
+    const url = local ? st.fileApi(`/fs/raw?path=${encodeURIComponent(src.replace(/^\.\//, ""))}`) : src;
+    if (!url) return null;
+    return (
+      <img src={url} alt={alt || ""} loading="lazy"
+        className="my-2 inline-block max-h-64 max-w-[min(100%,460px)] cursor-zoom-in rounded-xl border border-line bg-panel object-contain shadow-[0_2px_10px_rgb(0_0_0/0.08)] transition hover:border-accent/50 hover:shadow-md"
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); local ? st.viewImages([src.replace(/^\.\//, "")]) : window.open(url, "_blank", "noreferrer"); }}
+        onError={(e) => { e.currentTarget.style.display = "none"; }} />
+    );
+  },
   a({ href, children }) {
     if (href?.startsWith("#mention-")) return <MentionChip token={decodeURIComponent(href.slice(9))} />;
     // Local dev servers (http://localhost:3000) open in the in-app browser.
     if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(href || "")) {
       return <a href={href} onClick={(e) => { e.preventDefault(); useStore.getState().browse({ url: href }); }}>{children}</a>;
+    }
+    // A file of the chat folder (screenshots/home.png, docs/report.pdf): as a plain link the browser went to
+    // <app>/screenshots/home.png, the app answered with its own page and the chat "reloaded". Open it in the app.
+    if (href && !/^([a-z][a-z0-9+.-]*:|#|\/\/|\/api\/)/i.test(href)) {
+      const path = decodeURIComponent(href.replace(/^\.?\//, "").split(/[?#]/)[0]);
+      const open = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const st = useStore.getState();
+        if (isImage(path)) st.viewImages([path]);
+        else if (docKind(path)) st.previewFile(path);
+        else if (isWebPage(path)) st.browse({ path });
+        else st.openFile(path);
+      };
+      return <a href={href} onClick={open} title={path}>{children}</a>;
     }
     return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
   },

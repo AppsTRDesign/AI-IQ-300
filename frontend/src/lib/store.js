@@ -160,43 +160,50 @@ export const useStore = create((set, get) => ({
     get().ensureModel();
   },
   // Live sync: a local server (Ollama, LM Studio) that starts or stops, and settings changed in another window or
-  // by the backend, show up within seconds without a reload. One cheap request every 5 s (paused in hidden tabs).
+  // by the backend, show up within seconds without a reload. The server watches and pushes a "health" event over the
+  // WebSocket only when something changed; the page asks itself only at start, when it gets focus again (at most every
+  // 30 s) and once a minute as a safety net. Polling every 3 s filled the server log with health requests.
+  _health: { rev: null, listRev: {}, busy: false },
+  async applyHealth(h) {
+    const hs = get()._health;
+    if (!h || hs.busy) return;
+    hs.busy = true;
+    try {
+      if (hs.rev !== null && h.settings_rev !== hs.rev && get().saveState?.state !== "saving") {
+        const before = JSON.stringify(get().settings?.providers || {});
+        await get().refreshSettings();
+        if (JSON.stringify(get().settings?.providers || {}) !== before) await get().loadModels(true);
+      }
+      hs.rev = h.settings_rev;
+      for (const [pid, up] of Object.entries(h.local || {})) {
+        const p = get().models[pid];
+        const changed = up && h.models_rev?.[pid] && hs.listRev[pid] && hs.listRev[pid] !== h.models_rev[pid];
+        if (up && h.models_rev?.[pid]) hs.listRev[pid] = h.models_rev[pid];
+        if (!p) { if (up) await get().loadModels(true); continue; }
+        if (p.loading) continue;
+        if (up && (p.error || !p.models.length || changed)) {
+          await get().loadProviderModels(pid, true);
+          get().ensureModel();
+        } else if (!up && !p.error) {
+          set((s) => ({ models: { ...s.models, [pid]: { ...s.models[pid], error: `${p.name} is unreachable`, code: "unavailable" } } }));
+        }
+      }
+    } catch { /* backend restarting: the next check tries again */ }
+    hs.busy = false;
+  },
   startSync() {
     if (get()._syncing) return;
     set({ _syncing: true });
-    let rev = null;
-    let busy = false;
-    const listRev = {}; // provider -> fingerprint of its model list (a model pulled / loaded changes it)
-    const tick = async () => {
-      if (busy || document.hidden) return;
-      busy = true;
-      try {
-        const h = await api.get("/api/models/health");
-        if (rev !== null && h.settings_rev !== rev && get().saveState?.state !== "saving") {
-          const before = JSON.stringify(get().settings?.providers || {});
-          await get().refreshSettings();
-          if (JSON.stringify(get().settings?.providers || {}) !== before) await get().loadModels(true);
-        }
-        rev = h.settings_rev;
-        for (const [pid, up] of Object.entries(h.local || {})) {
-          const p = get().models[pid];
-          const changed = up && h.models_rev?.[pid] && listRev[pid] && listRev[pid] !== h.models_rev[pid];
-          if (up && h.models_rev?.[pid]) listRev[pid] = h.models_rev[pid];
-          if (!p) { if (up) await get().loadModels(true); continue; }
-          if (p.loading) continue;
-          if (up && (p.error || !p.models.length || changed)) {
-            await get().loadProviderModels(pid, true);
-            get().ensureModel();
-          } else if (!up && !p.error) {
-            set((s) => ({ models: { ...s.models, [pid]: { ...s.models[pid], error: `${p.name} is unreachable`, code: "unavailable" } } }));
-          }
-        }
-      } catch { /* backend restarting: the next tick tries again */ }
-      busy = false;
+    let last = 0;
+    const tick = async (force) => {
+      if (document.hidden || (!force && Date.now() - last < 30000)) return;
+      last = Date.now();
+      try { await get().applyHealth(await api.get("/api/models/health")); } catch { /* backend restarting */ }
     };
-    setInterval(tick, 3000);
-    addEventListener("focus", tick);
-    document.addEventListener("visibilitychange", () => !document.hidden && tick());
+    tick(true);
+    setInterval(() => tick(true), 60000);
+    addEventListener("focus", () => tick(false));
+    document.addEventListener("visibilitychange", () => !document.hidden && tick(false));
   },
   // If no model is chosen yet (fresh install) or the chosen one disappeared, use the first available model.
   ensureModel() {
@@ -402,10 +409,23 @@ export const useStore = create((set, get) => ({
     const t = get().t;
     if (!ids.length || !(await get().confirm({ title: t("delete_chats", { n: ids.length }), message: t("confirm_delete_chats"),
       confirmLabel: t("delete"), danger: true }))) return;
-    await api.post("/api/sessions/delete", { ids });
+    // Gone from the list at once (also a chat that is still working); the server stops their tasks and removes the
+    // folders in the background. Waiting for the answer first looked like nothing happened until a reload.
     const gone = new Set(ids);
-    set((s) => ({ sessions: s.sessions.filter((x) => !gone.has(x.id)), chatSel: null }));
+    const before = get().sessions;
+    set((s) => ({ sessions: s.sessions.filter((x) => !gone.has(x.id)), chatSel: null,
+      runs: Object.fromEntries(Object.entries(s.runs).filter(([k]) => !gone.has(k))) }));
     if (gone.has(get().sessionId)) get().newChat();
+    const busy = get().notify(t("deleting_chats", { n: ids.length }), "busy");
+    try {
+      await api.post("/api/sessions/delete", { ids });
+      get().dismiss(busy);
+      get().notify(t("deleted_chats", { n: ids.length }), "ok");
+    } catch (e) {
+      get().dismiss(busy);
+      set({ sessions: before });
+      get().notify(e.message, "error");
+    }
   },
   async deleteMessages(all) {
     const t = get().t, sid = get().sessionId;
@@ -414,11 +434,17 @@ export const useStore = create((set, get) => ({
     if (!sid || (!all && !ids.length)) return;
     if (!(await get().confirm({ title: all ? t("delete_all_messages") : t("delete_messages", { n: ids.length }),
       message: t("confirm_delete_messages"), confirmLabel: t("delete"), danger: true }))) return;
+    // Removed from the screen at once (a running task is stopped by the server first); restored if it fails.
+    const gone = new Set(ids);
+    const before = get().messages;
+    set((s) => ({ messages: all ? [] : s.messages.filter((m) => !gone.has(m.id)), msgSel: null }));
+    const n = all ? before.length : ids.length;
+    const busy = get().notify(t("deleting_messages", { n }), "busy");
     try {
       await api.post(`/api/sessions/${sid}/messages/delete`, all ? { all: true } : { ids });
-    } catch (e) { return get().notify(e.message, "error"); }
-    const gone = new Set(ids);
-    set((s) => ({ messages: all ? [] : s.messages.filter((m) => !gone.has(m.id)), msgSel: null }));
+    } catch (e) { get().dismiss(busy); set({ messages: before }); return get().notify(e.message, "error"); }
+    get().dismiss(busy);
+    get().notify(t("deleted_messages", { n }), "ok");
     get().loadContext();
   },
   async deleteMessage(m) {
@@ -561,6 +587,8 @@ export const useStore = create((set, get) => ({
   },
   previewFile: (path, size) => set({ dialog: { type: "preview", path, size } }),
   playMedia: (path) => set({ dialog: { type: "media", path, kind: isVideo(path) ? "video" : "audio" } }),
+  // Video Studio: a video, its <name>.timeline.json, or "" for a new project
+  openStudio: (path = "") => set({ dialog: { type: "studio", path } }),
   viewImages: (paths, index = 0) => set({ dialog: { type: "images", paths, index } }),
   browse: (target) => set({ dialog: { type: "browser", ...target } }), // { path } in the working folder or { url }
   // Each kind opens in its own viewer; editor=true opens any text file (also HTML) in the code editor.
@@ -678,6 +706,14 @@ export const useStore = create((set, get) => ({
         }
         continue;
       }
+      if (e.topic === "session" && e.type === "deleted") { // deleted here or in another window: gone from the list
+        if (Date.now() / 1000 - e.ts < 60) refresh = true;
+        continue;
+      }
+      if (e.topic === "health") { // local servers / settings changed (pushed by the server, no polling)
+        setTimeout(() => get().applyHealth(p), 0);
+        continue;
+      }
       if (e.topic === "model" && e.type === "context") { // the backend grew a local window: picker and panel follow
         setTimeout(() => get().loadContext(), 0);
         continue;
@@ -735,7 +771,9 @@ export const useStore = create((set, get) => ({
           _ctxLiveAt = now;
           // A model switch mid-task (quota switch, pool model): load that model's window at once.
           const switched = p.model && s.context && s.context.model !== p.model;
-          if (switched || now - _ctxResyncAt > 4000) { _ctxResyncAt = now; get().loadContext(); }
+          // The live count itself comes with this event; the detailed panel data is refetched rarely (a request every
+          // 4 s for the whole task, scanning every stored step, was most of the server log during long tasks).
+          if (switched || now - _ctxResyncAt > 30000) { _ctxResyncAt = now; get().loadContext(); }
         }
         continue;
       }

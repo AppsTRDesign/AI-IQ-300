@@ -46,11 +46,13 @@ export function Popover({ children, onClose, className = "" }) {
   );
 }
 
-export function MenuItem({ icon: Icon, label, desc, onClick, right, danger, active, shortcut }) {
+export function MenuItem({ icon: Icon, label, desc, onClick, right, danger, active, shortcut, color }) {
   return (
     <button onClick={onClick}
       className={`flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left text-[13px] hover:bg-hover ${danger ? "text-danger" : ""} ${active ? "bg-hover" : ""}`}>
-      {Icon && <Icon size={15} className={`mt-0.5 shrink-0 ${danger ? "" : "text-muted"}`} />}
+      {Icon && (color
+        ? <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg ${color}`}><Icon size={14} /></span>
+        : <Icon size={15} className={`mt-0.5 shrink-0 ${danger ? "" : "text-muted"}`} />)}
       <span className="min-w-0 flex-1">
         <span className="block truncate">{label}</span>
         {desc && <span className="mt-0.5 block text-xs leading-snug text-muted">{desc}</span>}

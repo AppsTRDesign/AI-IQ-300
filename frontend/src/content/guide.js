@@ -216,6 +216,25 @@ Listede olmayan bir araç kurulu değildir; model önce kontrol eder ya da kurul
 ## Sürüme uygun komut yeteneği
 \`/host-commands\` (otomatik de seçilir): bir bayrak ya da cmdlet o sürümde var mı emin değilse, model önce yerel yardıma (\`--help\`, \`Get-Help\`, \`man\`), sonra o sürümün resmî belgesine bakar (Microsoft Learn, git-scm.com, docs.python.org, nodejs.org…). Eski sürümler için o sürümün belgesini seçer. Sonucu doğrular, hata tekrar ederse teşhis yazar.
 ` },
+      { id: "testing", title: "Projeyi localhost'ta ve mobilde test etme", summary: "localhost-project ve mobile-app-test yetenekleri, mobile_env.", md: `
+**Web projeleri (PHP, ASP.NET, Node, Python, Ruby, Java, Go, Rust, statik, Docker Compose):** "şu projeyi localhost'ta kur ve test et" deyin; **localhost-project** yeteneği kendiliğinden yüklenir:
+1. Depoyu bulur ya da sizinkini alır (ZIP tek adımda indirilir, git şart değil), yığını tanır.
+2. Eksik çalışma ortamını ve paketleri kurar; veritabanında önce SQLite. Veritabanı sunucusu, XAMPP, Docker gibi büyük kurulumlar için önce size sorar.
+3. Python paketleri her zaman doğru ortama gider: uygulamanın kendi \`.venv\`'i, ya da proje kendi venv'ini kullanıyorsa o venv (önce içinde ne kurulu olduğu sorgulanır).
+4. Sunucuyu başlatır (port doluysa kendi eski sunucusunu kapatır ya da boş port seçer), sayfaları, formları, girişleri gerçek tarayıcıda dener; projenin kendi testlerini çalıştırır, rapor yazar.
+
+**Mobil uygulamalar (Android, iOS, Flutter, React Native, Expo, Capacitor):** **mobile-app-test** yeteneği:
+- Hızlı yol: web derlemesi tarayıcıda telefon boyutunda test edilir.
+- Tam yol: \`mobile_env\` aracı Android emülatörünü (Windows, macOS, Linux) kurar ve başlatır, APK'yı yükler, ekran görüntüsü alır, **Maestro** UI akışlarını çalıştırır. iOS simülatörü yalnızca macOS + Xcode'da.
+- Kurulum: \`install.bat\` / \`install.sh\` sonunda sorar (\`AIIQ_MOBILE=1\` sormadan kurar); Java 17+ gerekir. Ajan da gerektiğinde \`mobile_env action=setup\` ile kurabilir (birkaç GB, bir kez).
+
+**Takılmazlar:** aynı hata tekrar gelince model denediği komutları görür ve farklı bir yol seçmek zorundadır; yaygın hatalar için bilinen çözümler (program PATH'te yok, yanlış yol, izin, dolu port, eksik paket) otomatik verilir.
+` },
+      { id: "settings-buttons", title: "Ayar düğmeleri: ∞, Kapalı, Otomatik", summary: "Kaydırıcıda zor seçilen özel değerler tek dokunuşla.", md: `
+- Sayısal ayarlarda kaydırıcının yanında **∞** (sınırsız) ya da **Kapalı** düğmesi vardır: özel değeri tek dokunuşla seçer; seçiliyken vurgulu görünür.
+- **Otomatik** (↺) düğmesi ayarı uygulamanın kendi seçtiği değere döndürür.
+- Kutuya elle de yazabilirsiniz; Enter ya da kutudan çıkmak kaydeder. Telefonda düğmeler yalnızca simgeyle görünür.
+` },
     ] },
     { id: "multi", title: "Çoklu model ve takımlar", icon: "users", articles: [
       { id: "multi-overview", title: "Genel bakış", summary: "Tek model, başka modele sorma, ajan takımı: farkları.", md: `
@@ -482,6 +501,8 @@ Yetenek adını yazmanız şart değil; model isteğe uyanı kendisi seçer. @re
 - **Ayarlar > MCP**: komut (stdio) ya da HTTP adresiyle bir MCP sunucusu ekleyin.
 - Araçları her sohbette modele sunulur; salt okunur araçlar onaysız, diğerleri onayla çalışır.
 - Tokenlar gizli anahtar deposunda saklanır.
+- **Hazır sunucular** (anahtarsız): DeepWiki (GitHub belgeleri), Context7 (kütüphane belgeleri), Sequential Thinking (adım adım düşünme), Fetch (web sayfası okuma), Memory (kalıcı bilgi grafiği), Everything (test). Bağlı olanlar ✓ ile soluk görünür.
+- Ajan gerektiğinde \`mcp_search\` ile resmi kayıt / npm / GitHub'da sunucu bulup \`mcp_add\` ile kendisi bağlar; oturum isteyenlerde (OAuth) Oturum aç düğmesi çıkar.
 ` },
       { id: "browser", title: "Tarayıcı ajanı: gerçek bir pencerede gezinme", summary: "Siteye girip tıklama, form doldurma, giriş yapma; proje testi.", md: `
 Model artık **gerçek, görünür bir tarayıcı penceresinde** bir kullanıcı gibi gezinebilir: sayfa açar, elemanları okur, tıklar, form doldurur, tuş basar, bekler, ekran görüntüsü alır — kendi sitenizi test ederken ya da bir web uygulamasını kullanırken siz nasıl yapardınız, model de öyle yapar.
@@ -521,6 +542,48 @@ Model ekran görüntüsünden tahmin etmez: sayfayı **erişilebilirlik ağacı*
 - *"localhost:5173'teki giriş formunu test et: yanlış şifreyle hata gösteriyor mu?"*
 - *"example.com sitesinde ürünü sepete ekle, fiyatı doğru mu kontrol et."*
 - *"Bu projeyi çalıştır ve ana sayfadaki tüm bağlantıları gerçek tarayıcıda dene."*
+` },
+    ] },
+    { id: "create", title: "Oluşturma ve medya", icon: "film", articles: [
+      { id: "studio", title: "Video Stüdyosu", summary: "Zaman çizelgesi, sürüklenen yazılar, efektler, müzik, AI ile canlı düzenleme.", md: `
+**Açmak:** (+) > Oluştur > **Video Stüdyosu**, ya da sohbetteki bir video kartında **Stüdyo**.
+
+- **Önizleme:** her yazı, logo ve görsel katmanı resmin üstünde sürüklenir; köşedeki mavi noktayla boyutlanır.
+- **Neye tıklarsanız o açılır:** önizlemedeki bir yazı, görsel ya da resmin kendisi; zaman çizelgesindeki bir blok. Sağdaki (telefonda alttaki) panelde o öğenin ayarları açılır, oynatma başlığı oraya atlar.
+- **Yazı stili:** yazı tipi, boyut, renk, kutu rengi ve saydamlığı, kontur, gölge, hizalama, animasyon. **Yazı ▾** menüsünde hazır stiller: başlık, alt yazı, fiyat, alıntı, sosyal, harekete çağrı.
+- **Görsel / logo:** medya kutusundan bir resmi katman olarak ekleyin; Logo yapıcıda kaydettiğiniz saydam PNG'ler de burada.
+- **Seslendirme:** metni yazın, 400+ doğal sesten birini seçin; ses klibi oynatma başlığına eklenir.
+- **Müzik:** 8 stilde çevrimdışı üretilen özgün müzik (her basışta yeni varyasyon) ya da telifsiz kütüphane (Openverse / Jamendo; lisans ve kaynak \`music/CREDITS.txt\` dosyasına yazılır). Ses varken müzik otomatik kısılır.
+- **Efektler:** film greni, VHS, glitch, ışık sızıntısı, sinema bantları… sahneye ya da tüm videoya; önizlemede canlı.
+- **AI ile canlandır:** fotoğraf sahneleri render sırasında gerçek hareketli klibe dönüşür (ücretsiz Wan 2.2; foto başına ~1 dk).
+- **AI paneli:** "logoyu sağ üste koy, alt yazıyı sarı yap" yazın; seçili model düzenlemeyi anında uygular. Yeni görsel/indirme isteyen işler sohbet ajanına gider ve adımları stüdyoda canlı görünür.
+- **Render al:** ffmpeg ile MP4; proje \`<ad>.timeline.json\` olarak otomatik kaydedilir, geri al/yinele (Ctrl+Z / Ctrl+Y) çalışır.
+` },
+      { id: "ai-video", title: "AI klip: yazıdan / resimden gerçek video", summary: "generate_video, animate_image, ücretsiz video motorları.", md: `
+- **(+) > Oluştur > AI klip** ya da "şu sahneden video üret" deyin: model \`generate_video\` aracını kullanır.
+- **Yazıdan video:** önce açıklamadan ilk kare üretilir (anahtarlı görsel servisleri, yoksa ücretsiz FLUX), sonra Wan 2.2 ile gerçek hareket eklenir. **Resimden video:** \`image=\` ile verilen fotoğraf canlandırılır.
+- Klip 1,5-5 sn; daha uzun bir film için birkaç klip Video Stüdyosunda müzik, ses ve yazıyla birleştirilir.
+- **Ayarlar > Web araştırması > AI video motorları:** Wan 2.2 ve AnimateLCM-SVD'nin canlı durumu (çalışıyor / uykuda). Kurulum ve ücret yok.
+- **Kota:** anahtarsız paylaşılan ücretsiz kota kullanılır; **Görsel üretimi > Hugging Face** kartına ücretsiz bir anahtar girerseniz kendi günlük kotanız kullanılır.
+` },
+      { id: "voices", title: "Ses kütüphanesi, yazıdan ses, sesten yazı", summary: "400+ doğal ses, arama, dinleme, MP3 ve SRT.", md: `
+- **(+) > Yazıdan ses:** metni yazın, sesi adına, diline ya da ülkesine göre arayın, cinsiyet filtreleyin, ▶ ile dinleyin, hızı ayarlayın; **Seslendir** MP3 üretir; indirin ya da sohbet klasörüne kaydedin.
+- **(+) > Sesten yazı:** bir ses/video dosyası seçin ya da mikrofonla kaydedin; çevrimdışı faster-whisper döküm ve **SRT altyazı** üretir (tiny en hızlı, medium en doğru).
+- Aynı ses kütüphanesi Video Stüdyosunun seslendirmesinde ve modelin \`text_to_speech\` aracında kullanılır.
+` },
+      { id: "logo", title: "Logo yapıcı", summary: "AI yönleri, AI sembolleri, saydam PNG.", md: `
+1. (+) > Oluştur > **Logo yapıcı**. Marka adı, slogan ve sektör / anahtar kelimeler yazın.
+2. **AI ile 3 yön öner:** model üç marka yönü (yazı tipi, renkler, yerleşim) önerir; birine tıklayın.
+3. **AI ile sembol üret:** görsel servisleri sembol çizer, arka planı otomatik temizlenir. **Kendi sembolünü yükle** de arka planı temizler.
+4. Yazı tipi, kalınlık, yerleşim (sembol solda/üstte, yalnız yazı, rozet), şekil, renkler, harf aralığı, sembol boyutu.
+5. **PNG indir (saydam)** ya da **Sohbet klasörüne kaydet** (\`logos/\`). Kayıtlı logo Video Stüdyosunda logo katmanı olur.
+` },
+      { id: "image-services", title: "Görsel üretim ve stok fotoğraf servisleri", summary: "Anahtarlar, kota, otomatik geçiş, ücretsiz yedek.", md: `
+**Ayarlar > Web araştırması:**
+- **Görsel üretimi:** Google Gemini, Cloudflare (FLUX), Hugging Face, Together, OpenAI, Stability. Kartı açın, anahtarı kaydedin, **Test** edin; anahtarlı servisler sırayla denenir.
+- Bir servisin kotası / hız sınırı dolarsa sıfırlanana kadar atlanır, sıradaki kullanılır; hepsi kapalıysa ücretsiz **Pollinations (FLUX)** devreye girer (sistem servisleri yeşil görünür, test gerekmez).
+- **Stok fotoğraf:** Pexels, Pixabay, Unsplash (anahtarla), sonra Openverse ve Wikimedia Commons. Adım satırında fotoğrafın hangi sağlayıcıdan geldiği yazar; sayfalara yazar/lisans satırı eklenir.
+- Hatalar (hız sınırı, kota, eksik anahtar, engel) Türkçe ve İngilizce gösterilir.
 ` },
     ] },
     { id: "voice", title: "Ses", icon: "mic", articles: [
@@ -780,6 +843,25 @@ A tool that is not listed is not installed; the model checks first or gives the 
 
 ## Version-aware command skill
 \`/host-commands\` (also picked automatically): when the model is not sure a flag or cmdlet exists in this version, it checks the local help first (\`--help\`, \`Get-Help\`, \`man\`), then the official docs of that exact version (Microsoft Learn, git-scm.com, docs.python.org, nodejs.org…). For older releases it opens that release's documentation. It verifies the result and writes a diagnosis when a failure repeats.
+` },
+      { id: "testing", title: "Testing a project on localhost and on mobile", summary: "The localhost-project and mobile-app-test skills, mobile_env.", md: `
+**Web projects (PHP, ASP.NET, Node, Python, Ruby, Java, Go, Rust, static, Docker Compose):** say "set up this project on localhost and test it"; the **localhost-project** skill loads by itself:
+1. It finds the repository or takes yours (the ZIP comes in one step, git is not required) and detects the stack.
+2. It installs the missing runtimes and packages; SQLite first for the database. Big installs (database servers, XAMPP, Docker) are asked first.
+3. Python packages always go to the right environment: the app's own \`.venv\`, or the project's own venv when it has one (what it already holds is checked first).
+4. It starts the server (a busy port: its own earlier server is stopped, or a free port is used), tries pages, forms and logins in a real browser, runs the project's own tests and writes a report.
+
+**Mobile apps (Android, iOS, Flutter, React Native, Expo, Capacitor):** the **mobile-app-test** skill:
+- Fast path: the web build is tested in the browser at phone size.
+- Full path: the \`mobile_env\` tool sets up and starts the Android emulator (Windows, macOS, Linux), installs the APK, takes screenshots and runs **Maestro** UI flows. The iOS simulator needs macOS + Xcode.
+- Setup: \`install.bat\` / \`install.sh\` ask at the end (\`AIIQ_MOBILE=1\` installs without asking); Java 17+ is needed. The agent can also run \`mobile_env action=setup\` when needed (several GB, once).
+
+**No loops:** when the same error comes back the model sees the commands it already tried and must take a different route; known fixes for common errors (program not on PATH, wrong path, permission, busy port, missing package) are given automatically.
+` },
+      { id: "settings-buttons", title: "Setting buttons: ∞, Off, Auto", summary: "Special values that were hard to hit on a slider, in one tap.", md: `
+- Numeric settings have an **∞** (unlimited) or **Off** button next to the slider: it picks that special value in one tap and is highlighted while selected.
+- The **Auto** (↺) button returns the setting to the value the app chooses itself.
+- You can also type in the box; Enter or leaving the box saves it. On a phone the buttons show as icons.
 ` },
     ] },
     { id: "multi", title: "Multi-model and teams", icon: "users", articles: [
@@ -1047,6 +1129,8 @@ You don't have to type the skill; the model picks the one that fits. The @resear
 - **Settings > MCP**: add an MCP server by command (stdio) or HTTP address.
 - Its tools are offered in every chat; read-only tools run without asking, the others ask.
 - Tokens are kept in the secret store.
+- **Ready servers** (no key): DeepWiki (GitHub docs), Context7 (library docs), Sequential Thinking (step-by-step thinking), Fetch (reads web pages), Memory (lasting knowledge graph), Everything (test). Connected ones show dimmed with a ✓.
+- When needed the agent finds a server with \`mcp_search\` (official registry / npm / GitHub) and connects it with \`mcp_add\` itself; servers that need a sign-in (OAuth) get a Sign in button.
 ` },
       { id: "browser", title: "Browser agent: acting in a real window", summary: "Opening a site, clicking, filling forms, signing in; testing a project.", md: `
 The model can now navigate a **real, visible browser window** like a person: open a page, read what is on it, click, fill forms, press keys, wait, take a screenshot - the same way you would when testing your own site or using a web app.
@@ -1086,6 +1170,48 @@ When you say "test this", the model no longer just reads code: it starts the pro
 - *"Test the sign-in form at localhost:5173: does a wrong password show an error?"*
 - *"Add the product to the cart on example.com and check the price is right."*
 - *"Run this project and try every link on the home page in the real browser."*
+` },
+    ] },
+    { id: "create", title: "Create and media", icon: "film", articles: [
+      { id: "studio", title: "Video Studio", summary: "Timeline, draggable texts, effects, music, live AI edits.", md: `
+**Open it:** (+) > Create > **Video Studio**, or **Studio** on a video card in the chat.
+
+- **Preview:** every text, logo and picture layer is dragged on the picture and resized with the blue dot in its corner.
+- **Click anything to open it:** a text, a picture or the picture itself on the preview, or a block on the timeline. Its settings open in the panel on the right (below on a phone) and the playhead jumps into it.
+- **Text style:** font, size, colour, box colour and opacity, outline, shadow, alignment, animation. Presets in the **Text ▾** menu: heading, caption, price, quote, social, call to action.
+- **Picture / logo:** add a picture from the media bin as a layer; transparent PNGs saved in the Logo maker are there too.
+- **Voice-over:** type the text and pick one of 400+ natural voices; the clip is added at the playhead.
+- **Music:** original music generated offline in 8 styles (a new variation on every press) or a royalty-free library (Openverse / Jamendo; licence and source go to \`music/CREDITS.txt\`). Music ducks under the voice automatically.
+- **Effects:** film grain, VHS, glitch, light leak, letterbox… per scene or for the whole video, previewed live.
+- **Animate with AI:** photo scenes become real moving clips when rendering (free Wan 2.2; ~1 min per photo).
+- **AI panel:** type "put the logo top right, make the caption yellow"; the selected model applies the edit at once. Work that needs new pictures or downloads goes to the chat agent, whose steps show live in the studio.
+- **Render:** MP4 with ffmpeg; the project saves itself as \`<name>.timeline.json\`, undo/redo (Ctrl+Z / Ctrl+Y) works.
+` },
+      { id: "ai-video", title: "AI clip: text / image to real video", summary: "generate_video, animate_image, the free video engines.", md: `
+- **(+) > Create > AI clip**, or say "make a video clip of …": the model uses the \`generate_video\` tool.
+- **Text to video:** the first frame is generated from the description (keyed image services, else free FLUX), then Wan 2.2 adds real motion. **Image to video:** the photo given with \`image=\` is animated.
+- A clip is 1.5-5 s; for a longer film several clips are joined with music, voice and titles in the Video Studio.
+- **Settings > Web research > AI video engines:** the live state of Wan 2.2 and AnimateLCM-SVD (running / sleeping). Nothing to install or pay.
+- **Quota:** without a key the shared free quota is used; a free key in the **Image generation > Hugging Face** card uses your own daily quota.
+` },
+      { id: "voices", title: "Voice library, text to speech, speech to text", summary: "400+ natural voices, search, listen, MP3 and SRT.", md: `
+- **(+) > Text to speech:** type the text, search voices by name, language or country, filter by gender, listen with ▶, set the speed; **Speak** makes an MP3 to download or save to the chat folder.
+- **(+) > Speech to text:** pick an audio/video file or record with the microphone; offline faster-whisper writes the transcript and **SRT subtitles** (tiny is fastest, medium most accurate).
+- The same voice library is used by the Video Studio's voice-over and the model's \`text_to_speech\` tool.
+` },
+      { id: "logo", title: "Logo maker", summary: "AI directions, AI symbols, transparent PNG.", md: `
+1. (+) > Create > **Logo maker**. Type the brand name, a tagline and the industry / keywords.
+2. **3 AI directions:** the model suggests three brand directions (font, colours, layout); click one.
+3. **AI symbols:** the image services draw symbols and their background is removed. **Upload your own symbol** removes the background too.
+4. Font, weight, layout (symbol left/top, text only, badge), shape, colours, letter spacing, symbol size.
+5. **Download PNG (transparent)** or **Save to the chat folder** (\`logos/\`). A saved logo becomes a logo layer in the Video Studio.
+` },
+      { id: "image-services", title: "Image generation and stock photo services", summary: "Keys, quotas, automatic switching, free backup.", md: `
+**Settings > Web research:**
+- **Image generation:** Google Gemini, Cloudflare (FLUX), Hugging Face, Together, OpenAI, Stability. Open a card, save the key, press **Test**; keyed services are tried in order.
+- A service out of quota or rate limited is skipped until it resets and the next one is used; when all are off the free **Pollinations (FLUX)** steps in (system services show green without a test).
+- **Stock photos:** Pexels, Pixabay, Unsplash (with keys), then Openverse and Wikimedia Commons. The step line names the provider a photo came from; pages get an author/licence line.
+- Errors (rate limit, quota, missing key, blocked) are shown in English and Turkish.
 ` },
     ] },
     { id: "voice", title: "Voice", icon: "mic", articles: [

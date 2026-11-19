@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle, AlertTriangle, Bot, Check, CheckCircle2, ChevronDown, Cloud, Cpu, Eye, EyeOff, FileText, Gauge, Globe,
   Info, KeyRound, Languages, Loader2, Monitor, Moon, Palette, Plus, RefreshCw, Save, Search, Server, ShieldCheck, Sun,
-  Trash2, X, Zap, Network, Plug, Volume2, Pencil, HardDrive, Power,
+  Trash2, X, Zap, Network, Plug, Volume2, Pencil, HardDrive, Power, LogIn, LogOut, Film,
 } from "lucide-react";
 import { edgeVoices, speak, speechOpts, speechSupported, voicesFor } from "../lib/speech";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
 import { formatTokens } from "../lib/fileTypes";
-import { errorText } from "../lib/errors";
+import { errorText, serviceError } from "../lib/errors";
 import { Button, Modal, Toggle, inputCls } from "./ui";
 import Select from "./Select";
 import Markdown from "./Markdown";
@@ -68,6 +68,39 @@ function SliderRow({ label, desc, onCommit, ...range }) {
     <Row label={label} desc={desc}>
       <RangeField {...range} onCommit={(v) => v != null && onCommit(v)} />
     </Row>
+  );
+}
+
+// Free AI video engines (Hugging Face ZeroGPU Spaces): image-to-video and text-to-video, with their live state.
+// Nothing to install or pay; a free Hugging Face token (Image generation > Hugging Face) raises the daily quota.
+function VideoEnginesCard() {
+  const t = useT();
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => { setBusy(true); api.get("/api/video/engines").then(setD).catch(() => setD({ engines: [], error: true })).finally(() => setBusy(false)); };
+  useEffect(load, []);
+  const ok = (s) => /RUNNING/.test(s || "");
+  const sleeping = (s) => /SLEEP|PAUSED|BUILD|STOPPED/.test(s || "");
+  return (
+    <Card title={<span className="flex items-center gap-2"><Film size={15} />{t("video_engines")} <span className="text-xs font-normal text-subtle">{d?.engines?.length || ""}</span></span>}
+      desc={t("video_engines_desc")}>
+      <div className="divide-y divide-line">
+        {(d?.engines || []).map((e, i) => (
+          <div key={e.id} className="flex flex-wrap items-center gap-2 px-5 py-3 text-[13px]">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${ok(e.stage) ? "bg-ok" : sleeping(e.stage) ? "bg-warn" : "bg-danger"}`} />
+            <span className="font-medium">{e.kind === "svd" ? "AnimateLCM-SVD" : `Wan 2.2${i ? " (2)" : ""}`}</span>
+            <span className="rounded-md bg-hover px-1.5 py-0.5 text-[11px] text-muted">{t(e.kind === "svd" ? "ve_kind_svd" : "ve_kind_wan")}</span>
+            <span className="text-[11.5px] text-subtle">{ok(e.stage) ? t("ve_running") : sleeping(e.stage) ? t("ve_sleeping") : e.stage}</span>
+            <a href={e.url} target="_blank" rel="noreferrer" className="ml-auto truncate font-mono text-[11px] text-accent hover:underline">{e.id}</a>
+          </div>
+        ))}
+        {!d && <div className="px-5 py-3 text-[12.5px] text-muted"><Loader2 size={13} className="mr-1 inline animate-spin" />{t("loading")}</div>}
+        <div className="flex flex-wrap items-center gap-2 px-5 py-3 text-[12px] text-muted">
+          <span>{d?.token ? t("ve_token_on") : t("ve_token_off")}</span>
+          <Button className="ml-auto" onClick={load} disabled={busy}>{busy ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}{t("ve_refresh")}</Button>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -901,9 +934,29 @@ const SEARCH_SERVICES = [
 ];
 // Image generation: works without a key (the free tier keeps its small logo); the free token of a registered
 // Pollinations account makes pictures logo-free.
+// Image services in priority order: a keyed service that is out of quota is skipped; Pollinations is the system's own
+// free service and always the last resort.
 const MEDIA_SERVICES = [
+  { id: "gemini", name: "Google Gemini (Imagen / Flash Image)", secret: "gemini_api_key", ph: "AIza…", desc: "gemini_img_desc",
+    doc: "https://ai.google.dev/gemini-api/docs/image-generation" },
+  { id: "cloudflare", name: "Cloudflare Workers AI (FLUX)", secret: "cloudflare_api_key", ph: "cfut_…", desc: "cloudflare_img_desc",
+    fields: [{ field: "cloudflare_account", label: "cloudflare_account", desc: "cloudflare_account_desc", ph: "ab03a8b1…" }],
+    doc: "https://developers.cloudflare.com/workers-ai/models/flux-1-schnell/" },
+  { id: "huggingface", name: "Hugging Face (FLUX)", secret: "huggingface_api_key", ph: "hf_…", desc: "hf_img_desc",
+    doc: "https://huggingface.co/docs/inference-providers" },
+  { id: "together", name: "Together AI (FLUX)", secret: "together_api_key", ph: "…", desc: "together_img_desc", doc: "https://docs.together.ai" },
+  { id: "openai", name: "OpenAI (gpt-image-1)", secret: "openai_api_key", ph: "sk-…", desc: "openai_img_desc",
+    doc: "https://platform.openai.com/docs/guides/image-generation" },
+  { id: "stability", name: "Stability AI", secret: "stability_api_key", ph: "sk-…", desc: "stability_img_desc", doc: "https://platform.stability.ai" },
   { id: "pollinations", name: "Pollinations (FLUX)", secret: "pollinations_token", ph: "token…", desc: "pollinations_desc",
-    doc: "https://auth.pollinations.ai", free: true },
+    doc: "https://auth.pollinations.ai", free: true, system: true },
+];
+// Stock photo services: searched first when keyed and switched on; then the free Openverse / Wikimedia Commons.
+const STOCK_SERVICES = [
+  { id: "pexels", name: "Pexels", secret: "pexels_api_key", ph: "API key", desc: "pexels_desc", doc: "https://www.pexels.com/api/" },
+  { id: "pixabay", name: "Pixabay", secret: "pixabay_api_key", ph: "12345678-…", desc: "pixabay_desc", doc: "https://pixabay.com/api/docs/" },
+  { id: "unsplash", name: "Unsplash", secret: "unsplash_api_key", ph: "Access Key", desc: "unsplash_desc",
+    fields: [{ field: "unsplash_app_id", label: "unsplash_app_id", ph: "1126212", optional: true }], doc: "https://unsplash.com/developers" },
 ];
 const MAP_SERVICES = [
   { id: "google", name: "Google Places API", secret: "google_maps_key", ph: "AIza…", desc: "google_maps_desc", doc: "https://developers.google.com/maps/documentation/places/web-service" },
@@ -912,7 +965,7 @@ const MAP_SERVICES = [
 ];
 
 const NO_CONF = {};
-function ServiceCard({ svc, section, kind }) {
+function ServiceCard({ svc, section, kind, status, onTested }) {
   const t = useT();
   const st = useStore.getState();
   const has = useStore((x) => (svc.secret ? !!x.settings?.secrets?.[svc.secret] : true));
@@ -924,21 +977,24 @@ function ServiceCard({ svc, section, kind }) {
   const [vals, setVals] = useState({});
   const [test, setTest] = useState(null);
   const [busy, setBusy] = useState(false);
-  const fieldsSet = (svc.fields || []).every((f) => conf[f.field]);
+  const fieldsSet = (svc.fields || []).filter((f) => !f.optional).every((f) => conf[f.field]);
   const ready = svc.free || (has && fieldsSet && (svc.secret || (svc.fields || []).length));
   const dirty = Object.entries(vals).some(([k, v]) => v !== (conf[k] || ""));
   const saveFields = async () => { if (dirty) await st.updateSettings({ [section]: Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, v.trim()])) }); };
-  const saveKey = async () => { if (!key) return; await st.setSecret(svc.secret, key); setKey(""); };
+  const saveKey = async () => { if (!key) return; await st.setSecret(svc.secret, key); setKey(""); onTested?.(); };
   const toggle = (v) => st.updateSettings({ [section]: { disabled: v ? (conf.disabled || []).filter((x) => x !== svc.id) : [...(conf.disabled || []), svc.id] } });
   const runTest = async () => {
     setBusy(true); setTest(null); setOpen(true);
     try {
       await saveKey(); await saveFields();
-      setTest(await api.post(`/api/${kind === "maps" ? "maps" : kind === "media" ? "media" : "web"}/test/${svc.test || svc.id}`, { q: "" }));
+      const path = kind === "maps" ? "maps" : kind === "media" ? "media" : kind === "stock" ? "stock" : "web";
+      setTest(await api.post(`/api/${path}/test/${svc.test || svc.id}`, { q: "" }));
     } catch (e) { setTest({ ok: false, error: e.message }); }
     setBusy(false);
+    onTested?.();
   };
-  const dot = test ? (test.ok ? "bg-ok" : "bg-danger") : off || !ready ? "bg-active" : "bg-ok";
+  const blocked = !!status?.blocked;
+  const dot = test ? (test.ok ? "bg-ok" : "bg-danger") : blocked ? "bg-warn" : svc.system ? "bg-ok" : off || !ready ? "bg-active" : "bg-ok";
   return (
     <div className="px-4 py-3 sm:px-5">
       <div className="flex items-center gap-3">
@@ -951,11 +1007,25 @@ function ServiceCard({ svc, section, kind }) {
           <ChevronDown size={14} className={`ml-auto shrink-0 text-subtle transition ${open ? "rotate-180" : ""}`} />
         </button>
         <Button onClick={runTest} disabled={busy || (!ready && !key)} className="!px-2.5 !py-1">{busy ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}<span className="hidden sm:inline">{t("test")}</span></Button>
-        <Toggle checked={!!ready && !off} disabled={!ready} onChange={toggle} />
+        <Toggle checked={!!ready && !off} disabled={!ready || svc.system} onChange={toggle} />
       </div>
       {open && (
         <div className="fade-in mt-3 grid gap-3 pl-5">
           <p className="text-xs leading-snug text-muted">{t(svc.desc)}{svc.doc && <> · <a href={svc.doc} target="_blank" rel="noreferrer" className="text-accent hover:underline">{t("docs_link")}</a></>}</p>
+          {status && (
+            <div className="flex flex-wrap gap-1.5 text-[11px]">
+              {svc.system ? <span className="rounded-md bg-hover px-1.5 py-0.5 text-muted">{t("svc_system")}</span>
+                : status.active ? <span className="rounded-md bg-ok/10 px-1.5 py-0.5 text-ok">{t("svc_active")}</span>
+                  : <span className="rounded-md bg-hover px-1.5 py-0.5 text-muted">{!status.keyed ? t("svc_no_key") : status.blocked ? t("svc_out") : t("svc_off")}</span>}
+              {blocked && <span className="rounded-md bg-warn/10 px-1.5 py-0.5 text-warn">{t("svc_until", { time: status.blocked_until })}</span>}
+              {status.today > 0 && <span className="rounded-md bg-hover px-1.5 py-0.5 text-muted">{t("svc_today", { n: status.today })}</span>}
+              {status.month > 0 && <span className="rounded-md bg-hover px-1.5 py-0.5 text-muted">{t("svc_month", { n: status.month })}</span>}
+              {status.window_max && <span className="rounded-md bg-hover px-1.5 py-0.5 text-muted">{t("svc_window", { n: status.window_used, max: status.window_max })}</span>}
+              {status.remaining != null && <span className="rounded-md bg-hover px-1.5 py-0.5 text-muted">{t("svc_remaining", { n: status.remaining, max: status.limit ?? "?" })}</span>}
+              {status.last_error && !blocked && <span className="max-w-full truncate rounded-md bg-danger/10 px-1.5 py-0.5 text-danger" title={status.last_error}>{serviceError(t, status.last_error).title}</span>}
+              {blocked && status.reason && <span className="max-w-full truncate rounded-md bg-warn/10 px-1.5 py-0.5 text-warn" title={status.reason}>{serviceError(t, status.reason).title}</span>}
+            </div>
+          )}
           {svc.secret && (
             <label className="text-xs text-muted">{t("api_key")}
               <div className="mt-1 flex gap-2">
@@ -983,7 +1053,8 @@ function ServiceCard({ svc, section, kind }) {
           ))}
           {test && (
             <div className={`fade-in rounded-xl px-3 py-2 text-xs ${test.ok ? "bg-ok/10 text-ok" : "bg-danger/10 text-danger"}`}>
-              {test.ok ? <>✓ {t("service_test_ok", { n: test.count, ms: test.ms })}</> : <><div className="font-medium">✕ {t("service_test_failed")}</div><div className="mt-0.5 break-words font-mono text-[11px] opacity-80">{test.error}</div></>}
+              {test.ok ? <>✓ {t("service_test_ok", { n: test.count, ms: test.ms })}</> : <><div className="font-medium">✕ {serviceError(t, test.error).title}</div>
+                <details className="mt-0.5"><summary className="cursor-pointer text-[11px] opacity-70">{t("svc_details")}</summary><div className="mt-0.5 break-words font-mono text-[11px] opacity-80">{test.error}</div></details></>}
               {test.results?.length > 0 && (
                 <div className="mt-1.5 space-y-0.5 text-muted">
                   {test.results.map((r, i) => <div key={i} className="truncate">{r.url ? <a href={r.url} target="_blank" rel="noreferrer" className="hover:underline">{r.title || r.url}</a> : r.title}</div>)}
@@ -1002,6 +1073,10 @@ function Web() {
   const [q, setQ] = useState("Audi 2026 modelleri");
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [svcs, setSvcs] = useState([]);
+  const loadSvcs = () => api.get("/api/services").then((r) => setSvcs(r.services || [])).catch(() => {});
+  useEffect(() => { loadSvcs(); }, []);
+  const statusOf = (id) => svcs.find((s) => s.id === id);
   const test = async () => {
     setBusy(true);
     try { setRes(await api.get(`/api/web/search?q=${encodeURIComponent(q)}`)); } catch (e) { setRes({ error: e.message }); }
@@ -1016,8 +1091,12 @@ function Web() {
         {MAP_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="maps" kind="maps" />)}
       </Card>
       <Card title={<span className="flex items-center gap-2"><Globe size={15} />{t("image_services")} <span className="text-xs font-normal text-subtle">{MEDIA_SERVICES.length}</span></span>} desc={t("image_services_desc")}>
-        {MEDIA_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="media" kind="media" />)}
+        {MEDIA_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="media" kind="media" status={statusOf(svc.id)} onTested={loadSvcs} />)}
       </Card>
+      <Card title={<span className="flex items-center gap-2"><Globe size={15} />{t("stock_services")} <span className="text-xs font-normal text-subtle">{STOCK_SERVICES.length}</span></span>} desc={t("stock_services_desc")}>
+        {STOCK_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="stock" kind="stock" status={statusOf(svc.id)} onTested={loadSvcs} />)}
+      </Card>
+      <VideoEnginesCard />
       <BrowserAgentCard />
       <Card title={t("web_test")} desc={t("web_policy")}>
         <div className="flex gap-2 px-5 py-4">
@@ -1077,7 +1156,7 @@ function Security() {
         </Row>
         {!s.agent.unlimited_debug && <SliderRow label={t("max_debug")} value={s.agent.max_debug_attempts} min={0} max={50} onCommit={agent("max_debug_attempts")} />}
         <SliderRow label={t("command_timeout")} value={s.agent.command_timeout} min={10} max={3600} step={10} unit="s" onCommit={agent("command_timeout")} />
-        <SliderRow label={t("server_ttl")} desc={t("server_ttl_desc")} value={s.agent.server_ttl_minutes ?? 10} min={0} max={120} unit={t("unit_m")}
+        <SliderRow label={t("server_ttl")} desc={t("server_ttl_desc")} value={s.agent.server_ttl_minutes ?? 10} min={0} max={120} unit={t("unit_m")} zeroLabel={t("vs_off")}
           onCommit={agent("server_ttl_minutes")} />
         <Row label={t("split_write")} desc={t("split_write_desc")}>
           <RangeField value={s.agent.split_write_chars ? +s.agent.split_write_chars : null} min={10000} max={500000} step={5000}
@@ -1434,6 +1513,15 @@ const lines = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).jo
 const parseLines = (text) => Object.fromEntries(text.split("\n").map((l) => l.trim()).filter((l) => l.includes("="))
   .map((l) => [l.slice(0, l.indexOf("=")).trim(), l.slice(l.indexOf("=") + 1).trim()]));
 const splitArgs = (s) => (s.match(/"[^"]*"|\S+/g) || []).map((a) => a.replace(/^"|"$/g, ""));
+// Ready-made servers: public ones work at once; "auth" ones open the service's own sign-in after they are added.
+const MCP_PRESETS = [
+  { name: "deepwiki", label: "DeepWiki", transport: "http", url: "https://mcp.deepwiki.com/mcp", note: "mcp_p_deepwiki" },
+  { name: "context7", label: "Context7", transport: "http", url: "https://mcp.context7.com/mcp", note: "mcp_p_context7" },
+  { name: "sequential-thinking", label: "Sequential Thinking", transport: "stdio", command: "npx", args: "-y @modelcontextprotocol/server-sequential-thinking", note: "mcp_p_thinking" },
+  { name: "fetch", label: "Fetch", transport: "stdio", command: "uvx", args: "mcp-server-fetch", note: "mcp_p_fetch" },
+  { name: "everything", label: "Everything (test)", transport: "stdio", command: "npx", args: "-y @modelcontextprotocol/server-everything", note: "mcp_p_everything" },
+  { name: "memory", label: "Memory", transport: "stdio", command: "npx", args: "-y @modelcontextprotocol/server-memory", note: "mcp_p_memory" },
+];
 
 function McpForm({ init, onClose, onSaved }) {
   const t = useT();
@@ -1484,6 +1572,7 @@ function McpForm({ init, onClose, onSaved }) {
                 placeholder={isNew ? "Authorization=Bearer ..." : t("mcp_secret_keep", { keys: (init.header_keys || []).join(", ") || "—" })} /></label>
           </>
         )}
+        <p className="text-xs leading-snug text-muted">{t(f.transport === "stdio" ? "mcp_cmd_note" : "mcp_http_note")}</p>
         <p className="text-xs leading-snug text-muted">{t("mcp_secret_note")}</p>
       </div>
     </Modal>
@@ -1505,9 +1594,26 @@ function McpServers() {
   };
   const remove = async (id) => {
     if (!(await useStore.getState().confirm({ title: t("mcp_remove"), message: t("mcp_remove_confirm", { name: id }), danger: true }))) return;
-    await api.delete(`/api/mcp/${id}`);
+    try { await api.del(`/api/mcp/${id}`); } catch (e) { useStore.getState().notify(t("mcp_save_failed"), "error", e.message); }
     load();
   };
+  // Sign-in: the service's own page opens in a new tab; this list refreshes until the server runs (3 minutes at most).
+  const signIn = async (id) => {
+    setBusy(id);
+    try {
+      const { url } = await api.post(`/api/mcp/${id}/oauth`);
+      window.open(url, "_blank", "noopener");
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const all = await api.get("/api/mcp");
+        setServers(all);
+        if (all?.[id]?.running) break;
+      }
+    } catch (e) { useStore.getState().notify(t("mcp_signin_failed"), "error", e.message); }
+    finally { setBusy(""); }
+  };
+  const signOut = async (id) => { setBusy(id); try { await api.del(`/api/mcp/${id}/oauth`); } finally { setBusy(""); load(); } };
+  const preset = (p) => setForm({ ...MCP_EMPTY, name: p.name, transport: p.transport, command: p.command || "", args: p.args || "", url: p.url || "" });
   const list = Object.entries(servers || {});
   return (
     <div className="space-y-4">
@@ -1531,7 +1637,16 @@ function McpServers() {
               </div>
             </div>
             <div className="truncate font-mono text-[11px] text-subtle">{s.transport === "http" ? s.url : [s.command, ...(s.args || [])].join(" ")}</div>
-            {s.error && <div className="rounded-lg bg-danger/10 px-2.5 py-1.5 text-xs text-danger">{s.error}</div>}
+            {s.transport === "http" && (s.needs_auth || s.signed_in) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {s.needs_auth && <Button variant="primary" className="!py-1 text-xs" disabled={busy === id} onClick={() => signIn(id)}>
+                  {busy === id ? <Loader2 size={13} className="animate-spin" /> : <LogIn size={13} />} {t("mcp_signin")}</Button>}
+                {s.signed_in && <span className="rounded-md bg-ok/10 px-1.5 py-0.5 text-[11px] text-ok">{t("mcp_signed_in")}</span>}
+                {s.signed_in && <button onClick={() => signOut(id)} className="flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover"><LogOut size={12} /> {t("mcp_signout")}</button>}
+                {s.needs_auth && <span className="text-[11px] text-muted">{t("mcp_signin_hint")}</span>}
+              </div>
+            )}
+            {s.error && !s.needs_auth && <div className="rounded-lg bg-danger/10 px-2.5 py-1.5 text-xs text-danger">{s.error}</div>}
             {s.tools?.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {s.tools.map((tl) => <span key={tl.name} title={tl.description} className={`rounded-md px-1.5 py-0.5 font-mono text-[11px] ${tl.read_only ? "bg-ok/10 text-ok" : "bg-hover text-muted"}`}>{tl.name}</span>)}
@@ -1539,6 +1654,27 @@ function McpServers() {
             )}
           </div>
         ))}
+      </Card>
+      <Card title={t("mcp_presets")} desc={t("mcp_presets_desc")}>
+        <div className="grid gap-2 px-4 py-3.5 @md:grid-cols-2 @md:px-5">
+          {MCP_PRESETS.map((p) => {
+            const added = !!servers?.[p.name];
+            return (
+              <button key={p.name} disabled={added} onClick={() => preset(p)}
+                className="flex items-start gap-2.5 rounded-xl border border-line px-3 py-2.5 text-left transition hover:border-accent/60 hover:bg-hover disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent">
+                <Plug size={15} className="mt-0.5 shrink-0 text-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 text-[13px] font-medium">{p.label}
+                    <span className="rounded bg-hover px-1 font-mono text-[10px] font-normal text-muted">{p.transport}</span>
+                    {p.auth ? <span className="rounded bg-warn/10 px-1 text-[10px] font-normal text-warn">{t("mcp_p_auth")}</span>
+                      : <span className="rounded bg-ok/10 px-1 text-[10px] font-normal text-ok">{t("mcp_p_public")}</span>}</span>
+                  <span className="mt-0.5 block text-xs leading-snug text-muted">{t(p.note)}</span>
+                </span>
+                {added ? <Check size={14} className="mt-0.5 shrink-0 text-ok" /> : <Plus size={14} className="mt-0.5 shrink-0 text-subtle" />}
+              </button>
+            );
+          })}
+        </div>
       </Card>
       <div className="flex gap-2 px-1 text-xs leading-snug text-muted"><Info size={14} className="mt-0.5 shrink-0" />{t("mcp_safety")}</div>
       {form && <McpForm init={form} onClose={() => setForm(null)} onSaved={() => { setForm(null); load(); }} />}

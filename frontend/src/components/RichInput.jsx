@@ -394,7 +394,12 @@ const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDo
     range.setEnd(node, hit[0].length);
     range.deleteContents();
     if (hit[1][0] === "formatBlock") setBlock(root.current, hit[1][1]);
-    else { placeAfter(node, node.data.length); document.execCommand(...hit[1]); }
+    else {
+      placeAfter(node, node.data.length);
+      // This runs inside the input event of another execCommand (paste / insertText): a nested call is refused by the
+      // browser ("called recursively"), so it runs right after that one ends.
+      setTimeout(() => { document.execCommand(...hit[1]); emit(); }, 0);
+    }
   };
 
   useImperativeHandle(ref, () => ({

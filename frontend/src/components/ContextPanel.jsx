@@ -86,6 +86,9 @@ function ContextPanel() {
             <span className="font-medium">{t("pct_used", { n: pct.toFixed(0) })}</span>
             <span className="font-mono text-xs text-muted">{formatTokens(used)} / {formatTokens(cap)}</span>
           </div>
+          {stats._peak > used && (
+            <div className="mt-1 text-[11.5px] text-subtle">{t("ctx_peak", { n: formatTokens(stats._peak) })}</div>
+          )}
           <div className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-hover">
             {rows.length ? rows.map((r) => <div key={r.k} style={{ width: `${(r.v / cap) * 100}%`, background: r.c }} />)
               : <div style={{ width: `${pct}%`, background: color }} />}

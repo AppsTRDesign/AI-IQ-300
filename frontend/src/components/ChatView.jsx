@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { liveFiles } from "../lib/changes";
+import { stripActionEcho } from "../lib/errors";
 import { ArrowDown, Brain, Check, ListChecks, Copy, CornerDownRight, FileUp, Folder, Laptop, Loader2, MessageSquarePlus, MessageSquareText, RotateCw, ShieldAlert, Square, Trash2, Volume2 } from "lucide-react";
 import TaskBoard from "./TaskBoard";
 import ChangesCard from "./ChangesCard";
@@ -65,9 +66,9 @@ const Approval = memo(function Approval({ sid, a }) {
   );
 });
 
-// Documents the run generated (make_doc), shown as clickable cards under the answer.
-const docsOf = (steps) => [...new Set((steps || []).filter((s) => s.status === "done" && s.data?.tool === "make_doc" && s.data.path)
-  .map((s) => s.data.path))];
+// Documents the run generated (make_doc, or a script the model ran: meta.docs), shown as clickable cards under the answer.
+const docsOf = (steps, made = []) => [...new Set([...(steps || []).filter((s) => s.status === "done" && s.data?.tool === "make_doc" && s.data.path)
+  .map((s) => s.data.path), ...(made || [])])];
 
 // Read an answer aloud (browser speech synthesis); a second click stops it.
 function SpeakButton({ m }) {
@@ -156,7 +157,7 @@ const Message = memo(function Message({ m, last }) {
       <TaskBoard steps={m.meta?.steps} />
       {m.content && <div className="msg-body"><Markdown text={m.content} /></div>}
       <TodoList todos={m.meta?.todos} />
-      {docsOf(m.meta?.steps).length > 0 && <div className="mt-3 flex flex-wrap gap-2">{docsOf(m.meta.steps).map((p) => <DocCard key={p} path={p} />)}</div>}
+      {docsOf(m.meta?.steps, m.meta?.docs).length > 0 && <div className="mt-3 flex flex-wrap gap-2">{docsOf(m.meta.steps, m.meta.docs).map((p) => <DocCard key={p} path={p} />)}</div>}
       <OutputGallery paths={withoutShots(m.meta?.outputs, m.meta?.steps)} steps={m.meta?.steps} />
       {m.meta?.changes?.files?.length > 0 && <ChangesCard changes={m.meta.changes} steps={m.meta?.steps} />}
       {m.meta?.error && <ErrorNote code={m.meta.errorCode} message={m.meta.error} />}
@@ -331,8 +332,6 @@ function useFlash(root) {
   }, [flash, root]);
 }
 
-// The app's own action record ("[Tool actions in this turn ...]") that a model sometimes copies: never shown.
-const ACTION_ECHO = /\[Tool actions in this turn[^\]]*\]/g;
 
 // Everything the model writes while a task runs (notes before tool calls, the reply as it streams) is shown in ONE
 // fixed slot under the steps. When a note moves into the step list the slot keeps showing the same text, so nothing
@@ -429,12 +428,16 @@ function LiveRun({ sid }) {
   const run = shownText === live.text ? live : { ...live, text: shownText };
   const waiting = [...run.steps].reverse().find((x) => x.kind === "retry" && x.status === "running");
   const running = run.steps.some((x) => x.status === "running");
-  const lastNote = [...run.steps].reverse().find((x) => x.kind === "note" && x.detail);
+  // The latest note only while nothing newer happened: a model that wrote "Here is my plan:" once and then worked
+  // for an hour through thinking + tool steps kept showing that first note as if it were what it was saying now.
+  const lastNoteAt = run.steps.findLastIndex((x) => x.kind === "note" && x.detail);
+  const workAfter = lastNoteAt >= 0 && run.steps.slice(lastNoteAt + 1).some((x) => !["prepare", "retry", "thinking"].includes(x.kind));
+  const lastNote = lastNoteAt >= 0 && !workAfter ? run.steps[lastNoteAt] : null;
   // The slot shows the streaming text, else the latest note, else ONE line of progress: the last sentence of the
   // reasoning being written now. (The whole tail repeated here drew the same growing text twice.)
   const thinking = [...run.steps].reverse().find((x) => x.kind === "thinking" && x.status === "running" && x.detail);
   const progress = thinking ? lastSentence(thinking.detail) : "";
-  const text = (run.text || "").replace(ACTION_ECHO, "").trim();
+  const text = stripActionEcho(run.text);
   // A conversation reply (small talk, a plain question) streams straight into the chat as the answer, as long as no
   // tool ran; tool work keeps everything in the slot under the steps.
   const tooled = run.steps.some((x) => !["thinking", "prepare", "retry", "fallback", "compress", "note"].includes(x.kind));

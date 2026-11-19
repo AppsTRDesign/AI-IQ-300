@@ -93,7 +93,9 @@ input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border
 
 /* Jump-to-latest button */
 .jump-in { animation: jumpin .18s ease-out; }
-@keyframes jumpin { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+/* Only vertical: the button is centred with Tailwind's `translate` property (-translate-x-1/2); a transform with its
+   own -50% stacked on it shifted the button sideways while it rose. */
+@keyframes jumpin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
 /* Work notes (text the model writes between tool calls): small muted prose, not a chat reply. */
 .note-md { font-size: 13px; color: var(--muted); }
@@ -166,7 +168,7 @@ input[type="range"].video-range { -webkit-appearance: none; appearance: none; he
 input[type="range"].video-range::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
 input[type="range"].video-range::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; }
 .animate-ping-once { animation: pingonce .65s ease-out forwards; }
-@keyframes pingonce { 0% { opacity: 0; transform: translate(-50%, -50%) scale(.85); } 25% { opacity: 1; transform: translate(-50%, -50%) scale(1); } 100% { opacity: 0; transform: translate(-50%, -50%) scale(1.08); } }
+@keyframes pingonce { 0% { opacity: 0; transform: scale(.85); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.08); } } /* centred by the translate utilities */
 video::cue { background: rgb(0 0 0 / .72); color: #fff; font-size: 1.05em; line-height: 1.35; }
 .video-ui-on video::-webkit-media-text-track-container { transform: translateY(-3.4rem); transition: transform .2s; }
 video::-webkit-media-text-track-container { transition: transform .2s; }

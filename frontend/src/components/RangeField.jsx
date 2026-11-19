@@ -57,10 +57,17 @@ export default function RangeField({ value, onCommit, min, max, step = 1, log, a
           className={`h-8 w-[84px] rounded-lg border border-line bg-bg px-2 text-right font-mono text-[12.5px] tabular-nums outline-none transition focus:border-accent ${unit ? "pr-6" : ""} ${v == null ? "placeholder:text-muted" : ""}`} />
         {unit && v != null && text == null && <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-subtle">{unit}</span>}
       </div>
+      {zeroLabel && min <= 0 && (
+        // The special value (∞ / off) in one tap: on a slider it sat at the far end and was hard to hit, on a phone too.
+        <button type="button" title={zeroLabel} aria-pressed={v === 0} onClick={() => { setV(0); commit(0); }}
+          className={`h-8 shrink-0 rounded-lg border px-2 text-[12px] font-medium transition ${v === 0 ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:bg-hover hover:text-fg"}`}>
+          {zeroLabel}
+        </button>
+      )}
       {auto && (
-        <button type="button" title={t("prof_auto")} disabled={v == null} onClick={() => { setV(null); commit(null); }}
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-subtle transition hover:bg-hover hover:text-fg disabled:opacity-30">
-          <RotateCcw size={13} />
+        <button type="button" title={t("prof_auto")} aria-pressed={v == null} onClick={() => { setV(null); commit(null); }}
+          className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-[12px] font-medium transition ${v == null ? "border-accent bg-accent/10 text-accent" : "border-line text-muted hover:bg-hover hover:text-fg"}`}>
+          <RotateCcw size={12} /><span className="hidden max-w-[120px] truncate sm:inline">{typeof auto === "string" && auto ? auto : t("prof_auto")}</span>
         </button>
       )}
     </div>
