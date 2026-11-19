@@ -37,7 +37,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # request counts as stalled and is retried; first_token_timeout: the wait for the first token (a long prompt is
     # read first); local_stream_timeout: the same for local servers (0 = no limit, CPU models are slow);
     # provider_retries: retries of a stalled/busy request before the task stops (the work done so far is kept).
-    "agent": {"max_iterations": 60, "max_debug_attempts": 5, "command_timeout": 300, "server_ttl_minutes": 10,
+    "agent": {"max_iterations": 60, "max_debug_attempts": 3, "command_timeout": 300, "server_ttl_minutes": 10,
               "stream_timeout": 300, "first_token_timeout": 300, "local_stream_timeout": 0, "provider_retries": 5,
               # parallel_tools: independent read/lookup calls of one turn run at the same time; unlimited_*: no step /
               # debug-attempt cap (identical repeated failures still stop the loop).
@@ -60,7 +60,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Web research: IDs the search APIs need besides their keys (keys live in secrets.json), and engines switched off.
     "search": {"google_cx": "", "yandex_folder": "", "searxng_url": "", "disabled": []},
     "maps": {"disabled": []},  # place search providers switched off (google, yandex, osm)
-    "media": {"disabled": []},  # image generation services switched off (pollinations)
+    # Image services switched off (ids from tools/services.py) and the Cloudflare account id the FLUX service needs.
+    "media": {"disabled": [], "cloudflare_account": ""},
+    "stock": {"disabled": [], "unsplash_app_id": ""},  # photo services switched off (pexels, pixabay, unsplash)
     "fallback_model": "",  # cloud_fallback: the model used when the selected provider cannot be reached
     # Multi-model (cloud only): pool [{model, tags}], per-agent models, per-provider 5 h / weekly limits.
     "rules": "",  # global rules: added to every chat (project rules live in <project>/AIIQ.md)
@@ -119,6 +121,27 @@ def _clean(s: dict) -> dict:
 def load_settings() -> dict[str, Any]:
     with _lock:
         return _clean(_merge(DEFAULT_SETTINGS, _read(SETTINGS_FILE)))
+
+
+def rmtree_long(path: Path, strict: bool = False) -> None:
+    """Deletes a folder tree also past Windows' 260-character path limit (node_modules of an Expo app nests deeper:
+    rmtree failed there and, with ignore_errors, left the chat's folder half deleted) and read-only files."""
+    import shutil
+    import stat
+    import sys
+    p = str(Path(path).resolve())
+    if sys.platform == "win32" and not p.startswith("\\\\?\\"):
+        p = "\\\\?\\" + p
+
+    def retry(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            if strict:
+                raise
+    if os.path.isdir(p):
+        shutil.rmtree(p, onerror=retry)
 
 
 def atomic_write(path: Path, text: str) -> None:

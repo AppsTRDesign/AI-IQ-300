@@ -216,8 +216,16 @@ ELEMENT_JS = r"""(el) => {
           password: type === 'password', card,
           formPassword: !!(form && form.querySelector('input[type=password]')), formCard,
           submit: (el.tagName === 'BUTTON' && (!el.type || el.type === 'submit')) || ['submit','image'].includes(type),
-          editable: ['INPUT','TEXTAREA'].includes(el.tagName) || el.isContentEditable};
+          editable: ['INPUT','TEXTAREA'].includes(el.tagName) || el.isContentEditable,
+          visible: (() => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; })()};
 }"""
+
+# A ref as the snapshot prints it ("- button "Kaydet" [e22]"): its role and name find the element again when the page
+# re-rendered and the old ref is gone.
+REF_LINE = re.compile(r'^\s*-\s+([a-z]+)(?:\s+"((?:[^"\\]|\\.)*)")?[^\n]*\[(e\d+)\]', re.M)
+ARIA_ROLES = {"button", "link", "textbox", "combobox", "checkbox", "radio", "heading", "tab", "menuitem", "option",
+              "listbox", "searchbox", "switch", "slider", "spinbutton", "img", "row", "cell", "listitem", "dialog"}
 
 
 class BrowserError(Exception):
@@ -233,7 +241,7 @@ def host_of(url: str) -> str:
 
 # Finds ONE thing blocking the page and marks the button that closes it with data-aiiq-dismiss="1":
 # a cookie banner's reject button, or the close button of a modal that covers the middle of the screen.
-DISMISS_JS = r"""() => {
+DISMISS_JS = r"""(opts) => {
   const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && +s.opacity > 0.05; };
   const label = (e) => ((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('title') || '') + ' '
@@ -255,6 +263,7 @@ DISMISS_JS = r"""() => {
       }
     }
   }
+  if (opts && opts.cookieOnly) return null;
   // 2) a modal over the content
   const W = innerWidth, H = innerHeight;
   const cands = [...document.querySelectorAll('[role=dialog],[role=alertdialog],[aria-modal=true],dialog[open],'
@@ -321,7 +330,7 @@ def _keys(text: str) -> list[str]:
              "end": "End", "pageup": "PageUp", "pagedown": "PageDown"}
     out = []
     for combo in text.split():
-        parts = [names.get(p.lower(), p if len(p) > 1 else p) for p in combo.split("+")]
+        parts = [names.get(p.lower(), p) for p in combo.split("+")]
         out.append("+".join(parts))
     return out
 
@@ -340,11 +349,13 @@ class BrowserAgent:
         self.console: dict = {}  # tab id -> deque of console lines
         self.network: dict = {}  # tab id -> deque of requests
         self.responses: dict = {}  # request id -> response (bodies on demand)
+        self._status: dict = {}  # id(request) -> HTTP status from the response event
         self.dialogs: deque = deque(maxlen=20)
         self.dialog_choice = "dismiss"  # for confirm/prompt dialogs of the next action
         self.downloads: list[str] = []
         self.download_dir: Path | None = None
         self.seen_console: dict = {}  # tab id -> console count already reported
+        self.bad: dict = {}  # tab id -> failed requests not reported yet (4xx / 5xx, failed loads)
         self.last = 0.0
         self.reaper: asyncio.Task | None = None
         self.headless = False
@@ -522,9 +533,12 @@ class BrowserAgent:
             {"type": m.type, "text": m.text[:1000], "url": (m.location or {}).get("url", ""), "ts": time.time()}))
         page.on("pageerror", lambda e, t=tid: self.console[t].append(
             {"type": "error", "text": f"Uncaught {str(e)[:1000]}", "url": "", "ts": time.time()}))
+        # The status straight from the response event: request.response() came back empty for 404 / 500 answers, so
+        # failed requests were listed without a status and never reported as failed.
+        page.on("response", lambda r, t=tid: self._on_response(t, r))
         page.on("requestfinished", lambda r, t=tid: asyncio.ensure_future(self._finished(t, r)))
         page.on("requestfailed", lambda r, t=tid: None if self.fast and r.resource_type in ("image", "media", "font")
-                else self._record(t, r, None, r.failure or "failed"))  # fast mode skips those on purpose
+                else self._failed_req(t, r))  # fast mode skips those on purpose
         page.on("dialog", lambda d: asyncio.ensure_future(self._dialog(d)))
         page.on("download", lambda d: asyncio.ensure_future(self._download(d)))
         page.on("close", lambda p: self._page_closed(p))
@@ -534,6 +548,18 @@ class BrowserAgent:
             self.pages.remove(page)
         if self.active is page:
             self.active = self.pages[-1] if self.pages else None
+
+    def _on_response(self, tid, resp):
+        """Sync with the page: a 4xx / 5xx is noted at once for the next page check (the request log fills later)."""
+        self._status[id(resp.request)] = resp.status
+        if resp.status >= 400 and "favicon" not in resp.url:
+            self.bad.setdefault(tid, deque(maxlen=50)).append(f"{resp.status} {resp.request.resource_type} {resp.url[-120:]}")
+
+    def _failed_req(self, tid, req):
+        failure = req.failure or "failed"
+        if not failure.endswith("ERR_ABORTED"):
+            self.bad.setdefault(tid, deque(maxlen=50)).append(f"{failure} {req.resource_type} {req.url[-120:]}")
+        self._record(tid, req, None, failure)
 
     async def _finished(self, tid, req):
         try:
@@ -546,7 +572,9 @@ class BrowserAgent:
         rid = f"r{next(self.req_counter)}"
         self.network.setdefault(tid, deque(maxlen=400)).append(
             {"id": rid, "method": req.method, "url": req.url, "type": req.resource_type,
-             "status": resp.status if resp else None, "failure": failure, "ts": time.time()})
+             "status": resp.status if resp else self._status.pop(id(req), None), "failure": failure, "ts": time.time()})
+        if len(self._status) > 2000:
+            self._status.clear()
         if resp is not None and req.resource_type in ("xhr", "fetch", "document"):
             self.responses[rid] = resp
             if len(self.responses) > 200:
@@ -591,6 +619,16 @@ class BrowserAgent:
         return self.ids.get(page or self.active, "?")
 
     async def goto(self, page, url: str):
+        self.acted = False  # a fresh page: pop-ups now are the site's, not the model's
+        if is_local(url) and not getattr(page, "_aiiq_nocache", False):
+            # A dev server's page after a fix: the cached bundle / error page made the model see the old errors again
+            # and again. Local pages always load fresh.
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+                page._aiiq_nocache = True
+            except Exception:  # noqa: BLE001 - not Chromium: a normal load
+                pass
         try:
             resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except Exception as e:
@@ -616,17 +654,30 @@ class BrowserAgent:
         except Exception:
             pass
 
-    def locator(self, ref: str = "", selector: str = "", text: str = ""):
+    def all_matches(self, ref: str = "", selector: str = "", text: str = ""):
+        """(locator of every match, label). A CSS selector or a label sent as ref is used as what it is."""
         page = self.page
         if ref:
-            ref = ref.strip().strip("[]").replace("ref=", "").replace("ref_", "e")
-            return page.locator(f'[data-aiiq-ref="{ref}"]').first, ref
+            r = ref.strip().replace("ref=", "").replace("ref_", "e")
+            if re.fullmatch(r"\[?e?\d+\]?", r):
+                r = r.strip("[]")
+                r = r if r.startswith("e") else f"e{r}"
+                return page.locator(f'[data-aiiq-ref="{r}"]'), r
+            if re.search(r"[#.\[\]=>:]", r) or re.fullmatch(r"(button|input|select|textarea|form|a|h[1-6])", r):
+                selector = r  # input[id='title'], #save
+            else:
+                text = r  # "Kaydet"
         if selector:
-            return page.locator(selector).first, selector
+            return page.locator(selector), selector
         if text:
             exact = page.get_by_role("button", name=text, exact=True).or_(page.get_by_role("link", name=text, exact=True))
-            return exact.or_(page.get_by_text(text, exact=False)).first, f'"{text}"'
+            return (exact.or_(page.get_by_label(text)).or_(page.get_by_placeholder(text))
+                    .or_(page.get_by_text(text, exact=False))), f'"{text}"'
         raise BrowserError("Say which element: ref (from browser_snapshot), or selector, or text.")
+
+    def locator(self, ref: str = "", selector: str = "", text: str = ""):
+        base, what = self.all_matches(ref, selector, text)
+        return base.first, what
 
     async def element(self, loc, what: str) -> dict:
         try:
@@ -638,17 +689,76 @@ class BrowserAgent:
         except Exception as e:
             raise BrowserError(f"{what}: {str(e).splitlines()[0][:200]}") from e
 
-    async def dismiss_popups(self, page) -> list[str]:
+    async def target(self, ref: str = "", selector: str = "", text: str = "") -> tuple:
+        """The element to act on, found robustly: a ref that went stale (the page re-rendered) is found again by the
+        role and name it had in the last snapshot; of several matches the visible one is taken; a hidden element is
+        reported at once (instead of an 8-second click timeout) with what to do."""
+        base, what = self.all_matches(ref, selector, text)
+        page, note = self.page, ""
+        try:
+            n = await base.count()
+        except Exception as e:  # an invalid CSS selector
+            raise BrowserError(f"{what}: {str(e).splitlines()[0][:160]}. Use a ref from browser_snapshot or text=...") from e
+        if what.startswith('"') and n:
+            # by text: the most specific kind first - a button / link with that name, a field with that label or
+            # placeholder, an element with exactly that text - then any element containing it
+            t = what[1:-1]
+            for c in (page.get_by_role("button", name=t, exact=True), page.get_by_role("link", name=t, exact=True),
+                      page.get_by_label(t, exact=True), page.get_by_placeholder(t, exact=True),
+                      page.get_by_text(t, exact=True), page.get_by_label(t), page.get_by_placeholder(t)):
+                try:
+                    if k := await c.count():
+                        base, n = c, k
+                        break
+                except Exception:
+                    continue
+        if n == 0 and (known := getattr(self, "ref_names", {}).get(what)):
+            role, name = known
+            cands = []
+            if role in ARIA_ROLES and name:
+                cands.append(page.get_by_role(role, name=name, exact=True))
+            if name:
+                cands += [page.get_by_placeholder(name, exact=True), page.get_by_label(name, exact=True),
+                          page.locator(f'[name="{name}"]'), page.get_by_text(name, exact=True)]
+            for c in cands:
+                try:
+                    if n := await c.count():
+                        base, note = c, f' (ref {what} had gone stale; found {role} "{name}" again)'
+                        break
+                except Exception:
+                    continue
+        loc = base.first
+        if n > 1:  # several matches: the first visible one (a hidden template copy often comes first)
+            try:
+                for i in range(min(n, 15)):
+                    if await base.nth(i).is_visible():
+                        loc = base.nth(i)
+                        break
+            except Exception:
+                pass
+        info = await self.element(loc, what)
+        if not info.get("visible", True) and info.get("tag") != "option":  # an <option> is chosen through its select
+            raise BrowserError(f"{what} is on the page but hidden (display:none / zero size): it is in a part that is "
+                               "not shown now (another tab or section, a closed menu or modal). Open that part first "
+                               "(click its tab / link / button), then use the refs of the new snapshot.")
+        info["note"] = note
+        return loc, what, info
+
+    async def dismiss_popups(self, page, cookie_only: bool | None = None) -> list[str]:
         """Close what blocks the page: a cookie banner (always with its most private choice, "Reject all") and a
         modal/popup in front of the content (newsletter, "pick a gender", app ads...) via its close button, or
         Escape when it has none. Dialogs holding a password or card field are left alone (the task may need them).
         Settings > Browser agent > close pop-ups (on by default)."""
         if (load_settings().get("browser") or {}).get("dismiss_popups") is False:
             return []
+        if cookie_only is None:
+            # A modal that shows up after the model clicked or typed is the model's own (a "New task" form), and on
+            # a local site the modals are the app under test: only cookie banners are closed there.
+            cookie_only = is_local(page.url) or getattr(self, "acted", False)
         done: list[str] = []
         for _ in range(3):
             try:
-                found = await page.evaluate(DISMISS_JS)
+                found = await page.evaluate(DISMISS_JS, {"cookieOnly": bool(cookie_only)})
             except Exception:  # navigating: nothing to close yet
                 break
             if not found:
@@ -704,12 +814,22 @@ class BrowserAgent:
         if closed := self.popup_note():
             head.append(closed)
         body = "\n".join(data.get("lines") or []) or "(no readable elements)"
+        self.remember_refs(body)
         if data.get("truncated"):
             body += "\n... (more elements: use browser_find, or browser_snapshot ref=... for one part)"
         text = "\n".join(head) + "\n" + body
         if len(text) > max_chars:
             text = text[:max_chars] + "\n... (cut: use browser_find or a ref for one part of the page)"
         return text
+
+    def remember_refs(self, text: str) -> None:
+        """role + name of every ref a snapshot showed (a stale ref is found again by them)."""
+        names = getattr(self, "ref_names", {})
+        for role, name, ref in REF_LINE.findall(text or ""):
+            names[ref] = (role, name.replace('\\"', '"'))
+        if len(names) > 4000:
+            names = dict(list(names.items())[-2000:])
+        self.ref_names = names
 
     def news(self) -> str:
         """Console errors, dialogs and downloads since the last report."""
@@ -719,8 +839,17 @@ class BrowserAgent:
         seen = self.seen_console.get(tid, 0)
         errors = [m for m in logs[seen:] if m["type"] in ("error", "warning")]
         self.seen_console[tid] = len(logs)
+        # Failed requests since the last report too (a 404 script / css, a 500 API call): every page load and action
+        # says at once what broke, so it is fixed before the test goes on.
+        failed = list(dict.fromkeys(self.bad.get(tid, [])))
+        self.bad.pop(tid, None)
         if errors:
-            out.append(f"[{len(errors)} new console error/warning: " + " | ".join(m["text"][:140] for m in errors[:3]) + "]")
+            out.append(f"[{len(errors)} new console error/warning: " + " | ".join(m["text"][:200] for m in errors[:4]) + "]")
+        if failed:
+            out.append(f"[{len(failed)} failed request(s): " + " | ".join(failed[:4]) + "]")
+        if errors and any(m["type"] == "error" for m in errors) or failed:
+            out.append("[Page check: fix these errors in the code now, reload and check again before testing further "
+                       "(details: browser_inspect what=console only_errors=true / what=network failed_only=true).]")
         while self.dialogs:
             d = self.dialogs.popleft()
             out.append(f"[Dialog ({d['type']}) \"{d['message']}\" was {d['answer']}"
@@ -734,6 +863,7 @@ class BrowserAgent:
         data = await page.evaluate(SNAPSHOT_JS, {"max": 4000, "interactive": False})
         q = query.casefold().replace("i̇", "i")
         words = [w for w in re.split(r"\s+", q) if w]
+        self.remember_refs("\n".join(data.get("lines") or []))
         hits = [line.strip() for line in data.get("lines") or []
                 if all(w in line.casefold().replace("i̇", "i") for w in words) and "[e" in line]
         if not hits:  # text lines without refs: show them too (the model can click by text)

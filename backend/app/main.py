@@ -6,13 +6,14 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -25,8 +26,30 @@ from .llm import router
 from .process_manager import manager
 
 
+def _quiet_disconnects(loop: asyncio.AbstractEventLoop) -> None:
+    """Windows (Proactor loop): when the browser drops a connection it no longer needs (the video player seeks or is
+    closed mid-download of a 206 range, a tab closes), asyncio prints a ConnectionResetError [WinError 10054]
+    traceback from _call_connection_lost. Nothing failed; only that one message is dropped, every other error still
+    reaches the default handler."""
+    default = loop.get_exception_handler()
+
+    def handler(lp, context):
+        exc = context.get("exception")
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)) and \
+                "_call_connection_lost" in str(context.get("handle") or context.get("message") or ""):
+            return
+        if default:
+            default(lp, context)
+        else:
+            lp.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if sys.platform == "win32":
+        _quiet_disconnects(asyncio.get_running_loop())
     # Processes from a previous backend instance (dev servers the agent started, then the app was closed hard) are
     # no longer supervised: stop the ones still alive, then mark them orphaned. A dev server left on localhost:8000
     # kept running and locked its chat folder.
@@ -48,9 +71,11 @@ async def lifespan(app: FastAPI):
         _bg(mcp_client.ensure())
     warm = asyncio.create_task(router.warm_info())  # model windows ready before the first task asks
     guard = asyncio.create_task(_ram_guard())  # unloads local models before low RAM freezes the computer
+    health = asyncio.create_task(_health_watch())  # local servers / settings changes pushed to the UI
     yield
     warm.cancel()
     guard.cancel()
+    health.cancel()
     await orchestrator.shutdown()  # tasks store their checkpoint and message before the loop closes
     await manager.shutdown()
     from . import mcp_client
@@ -468,6 +493,18 @@ def fork_session(sid: str):
         if r["id"] <= upto:
             mapped = mid
     db.execute("UPDATE sessions SET summary_upto=? WHERE id=?", (mapped, new))
+    if not src["project_id"]:
+        # A chat without a project works in its own folder: the copy gets its files too (the copied messages name
+        # them), plus the working state, but not rebuildable dependency folders.
+        try:
+            old_root, new_root = sessions.CHAT_DIR / sid, sessions.CHAT_DIR / new
+            if old_root.is_dir():
+                shutil.copytree(old_root, new_root, dirs_exist_ok=True,
+                                ignore=shutil.ignore_patterns("node_modules", ".venv", "venv", "__pycache__", ".git",
+                                                              "messages.jsonl", "session.json"))
+        except OSError as e:
+            import logging
+            logging.getLogger("aiiq").warning("fork: copying the chat folder failed: %s", e)
     return _session(new)
 
 
@@ -535,10 +572,14 @@ class IdsIn(BaseModel):
 @app.post("/api/sessions/delete")
 async def delete_sessions(body: IdsIn):
     """Several chats at once (the selection in the chat list): each with everything it has, like delete_session."""
+    sids = [str(x) for x in body.ids][:500]
+    # All of them stop at once (not one after another, each waiting up to 8 s for its task), and the folders go in
+    # the background: the chats disappear right away instead of after minutes of node_modules being deleted.
+    await asyncio.gather(*(orchestrator.cancel_session(s, wait=3.0) for s in sids), return_exceptions=True)
     done = 0
-    for sid in [str(x) for x in body.ids][:500]:
+    for sid in sids:
         try:
-            await delete_session(sid)
+            await delete_session(sid, cancelled=True)
             done += 1
         except Exception:  # a chat already gone
             continue
@@ -552,7 +593,9 @@ async def delete_messages(sid: str, body: IdsIn):
     emptied, its whole history record (state, summaries, checkpoints). The files of its working folder stay."""
     _session(sid)
     if orchestrator.active_run(sid):
-        raise fail(409, "run_busy", "This chat is still working; stop it first")
+        # The user confirmed the deletion while the chat works: the task stops (it would write about messages that
+        # no longer exist), then the messages go. Refusing with "stop it first" looked like nothing happened.
+        await orchestrator.cancel_session(sid, wait=3.0)
     ids = [int(x) for x in body.ids if str(x).isdigit()]
     if body.all:
         n = db.execute("DELETE FROM messages WHERE session_id=?", (sid,)).rowcount
@@ -584,8 +627,13 @@ async def delete_messages(sid: str, body: IdsIn):
                 tr = rec / "messages.jsonl"
                 if tr.exists() and ids:  # the record keeps only the messages that still exist
                     gone = set(ids)
-                    lines = [ln for ln in tr.read_text(encoding="utf-8").splitlines()
-                             if ln.strip() and json.loads(ln).get("id") not in gone]
+
+                    def keep(ln: str) -> bool:  # a half-written line (crash mid-append) must not stop the cleanup
+                        try:
+                            return json.loads(ln).get("id") not in gone
+                        except ValueError:
+                            return True
+                    lines = [ln for ln in tr.read_text(encoding="utf-8").splitlines() if ln.strip() and keep(ln)]
                     tr.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     except (ValueError, OSError):
         pass
@@ -593,18 +641,31 @@ async def delete_messages(sid: str, body: IdsIn):
 
 
 @app.delete("/api/sessions/{sid}")
-async def delete_session(sid: str):
-    """Deletes the chat, its messages and its whole chat/<id>/ folder (files and record)."""
-    await orchestrator.cancel_session(sid)
+async def delete_session(sid: str, cancelled: bool = False):
+    """Deletes the chat, its messages and its whole chat/<id>/ folder (files and record). The chat is gone at once
+    (database rows, event to every window); its folder is moved aside and removed in a worker thread, so a chat with
+    an Expo / node_modules tree (tens of thousands of files) no longer freezes the whole app while it is deleted."""
+    if not cancelled:
+        await orchestrator.cancel_session(sid, wait=3.0)
+    # Dev servers this chat started hold its files open (Windows cannot delete them): stopped first.
+    owned = [p["id"] for p in manager.list()
+             if str(p.get("owner", "")).startswith(f"{sid}:") and p.get("state") in ("queued", "running")]
+    if owned:
+        await asyncio.gather(*(manager.stop(i) for i in owned), return_exceptions=True)
     rows = db.query("SELECT project_id FROM sessions WHERE id=?", (sid,))
     db.execute("DELETE FROM messages WHERE session_id=?", (sid,))
     db.execute("DELETE FROM sessions WHERE id=?", (sid,))
-    if rows and not rows[0]["project_id"]:
-        workspace.remove_chat_root(sid)
-    try:
-        sessions.remove(sid)
-    except ValueError:
-        pass
+    bus.publish("session", "deleted", {"session_id": sid})
+    own_root = bool(rows and not rows[0]["project_id"])
+
+    def remove_files() -> None:
+        if own_root:
+            workspace.remove_chat_root(sid)
+        try:
+            sessions.remove(sid)
+        except ValueError:
+            pass
+    _bg(asyncio.to_thread(remove_files))
     return {"ok": True}
 
 
@@ -823,7 +884,6 @@ class FsOp(BaseModel):
 @app.post("/api/sessions/{sid}/fs/op")
 def fs_op(sid: str, body: FsOp, project_id: str | None = None):
     import re
-    import shutil
     root = _root(sid, project_id).resolve()
     target = _resolve(sid, body.path or ".", project_id)
     name = (body.name or "").strip()
@@ -845,7 +905,8 @@ def fs_op(sid: str, body: FsOp, project_id: str | None = None):
             target.rename(new)
             return _entry(new, root)
         if body.op == "delete":
-            shutil.rmtree(target) if target.is_dir() else target.unlink()
+            from .config import rmtree_long
+            rmtree_long(target, strict=True) if target.is_dir() else target.unlink()
             return {"ok": True}
     except OSError as e:
         raise to_http(e, 400)
@@ -873,6 +934,459 @@ def fs_raw(sid: str, path: str, project_id: str | None = None, download: bool = 
                         content_disposition_type="attachment" if download else "inline")
 
 
+# ---------- video studio (Settings-free, per chat folder) ----------
+# The studio and the edit_video tool share one project format: <name>.timeline.json next to <name>.mp4.
+_PROBE_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+async def _probe_cached(p: Path) -> dict:
+    from .tools import video_edit
+    key, mt = str(p), p.stat().st_mtime
+    hit = _PROBE_CACHE.get(key)
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        info = await asyncio.to_thread(video_edit._probe_sync, p)
+    except Exception:  # noqa: BLE001  not a readable media file
+        info = {"duration": 0, "video": False, "audio": False}
+    _PROBE_CACHE[key] = (mt, info)
+    return info
+
+
+@app.get("/api/sessions/{sid}/video/media")
+async def video_media(sid: str, project_id: str | None = None):
+    """Pictures, videos and sounds in the working folder, with their length (for the studio's media bin)."""
+    from .tools import video_edit
+    root = _root(sid, project_id).resolve()
+    out = []
+    if root.is_dir():
+        files = [p for p in root.rglob("*") if p.is_file() and not any(part.startswith(".") for part in p.relative_to(root).parts)
+                 and p.suffix.lower() in video_edit.IMAGE_EXT | video_edit.VIDEO_EXT | video_edit.AUDIO_EXT
+                 and not p.stem.endswith("_preview")]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[:400]:
+            kind = video_edit._kind_of(p.name)
+            info = await _probe_cached(p) if kind != "image" else {"duration": 0}
+            out.append({"path": p.relative_to(root).as_posix(), "kind": kind, "duration": round(info.get("duration") or 0, 2),
+                        "audio": bool(info.get("audio")), "size": p.stat().st_size})
+    return {"media": out}
+
+
+@app.get("/api/sessions/{sid}/video/project")
+async def video_project(sid: str, path: str = "", project_id: str | None = None):
+    """Opens a studio project: a .timeline.json, the project of a rendered video, or a new one around a video."""
+    import json as _json
+
+    from .tools import video_edit
+    root = _root(sid, project_id).resolve()
+    data: dict = {"aspect": "16:9", "look": "none", "scenes": [], "clips": [], "output": "videos/studio.mp4"}
+    proj = None
+    if path:
+        p = _resolve(sid, path, project_id)
+        cand = p if p.name.endswith(".timeline.json") else video_edit.project_path(p)
+        if not cand.is_file() and not p.name.endswith(".timeline.json"):
+            # a video opened before in the studio: its edit project (<name>_edit.timeline.json) opens again
+            edit = p.with_name(f"{p.stem}_edit.timeline.json")
+            cand = edit if edit.is_file() else cand
+        if cand.is_file():
+            try:
+                data = {**data, **_json.loads(cand.read_text(encoding="utf-8"))}
+                proj = cand.relative_to(root).as_posix()
+            except (ValueError, OSError):
+                pass
+        elif p.is_file():
+            kind = video_edit._kind_of(p.name)
+            rel = p.relative_to(root).as_posix()
+            if kind == "audio":
+                data["music"] = {"src": rel}
+            else:
+                data["scenes"] = [{"src": rel, **({"dur": 5} if kind == "image" else {})}]
+                if kind == "video":
+                    info = await _probe_cached(p)
+                    data["scenes"][0]["dur"] = round(info.get("duration") or 5, 2)
+            data["output"] = (Path(rel).parent / f"{Path(rel).stem}_edit.mp4").as_posix()
+    data.setdefault("scenes", [])
+    data.setdefault("clips", [])
+    return {"timeline": data, "project": proj}
+
+
+class StudioIn(BaseModel):
+    timeline: dict
+    project_id: str | None = None
+
+
+def _studio_target(sid: str, tl: dict, project_id: str | None) -> Path:
+    out = str(tl.get("output") or "videos/studio.mp4").strip() or "videos/studio.mp4"
+    if Path(out).suffix.lower() not in (".mp4", ".mov", ".mkv"):
+        out += ".mp4"
+    tl["output"] = out
+    return _resolve(sid, out, project_id)
+
+
+@app.put("/api/sessions/{sid}/video/project")
+async def video_project_save(sid: str, body: StudioIn):
+    from .tools import video_edit
+    root = _root(sid, body.project_id).resolve()
+    target = _studio_target(sid, body.timeline, body.project_id)
+    p = video_edit.save_project(body.timeline, root, target)
+    return {"project": p.relative_to(root).as_posix() if p else None}
+
+
+@app.post("/api/sessions/{sid}/video/render")
+async def video_render(sid: str, body: StudioIn):
+    """Renders the studio's timeline with the same engine the edit_video tool uses."""
+    from .tools import video_edit
+    root = _root(sid, body.project_id).resolve()
+    target = _studio_target(sid, body.timeline, body.project_id)
+    sources = {str(x.get("src")) for x in (body.timeline.get("scenes") or []) + (body.timeline.get("clips") or [])
+               if isinstance(x, dict)}
+    if target.relative_to(root).as_posix() in sources:
+        raise fail(400, "video_output_is_source", "The output file is also a source of this video: pick another output name")
+    t0 = time.monotonic()
+    try:
+        res = await video_edit.render(body.timeline, root, target, load_settings().get("language") or "tr")
+    except video_edit.TimelineError as e:
+        raise fail(400, "timeline", str(e)) from None
+    except RuntimeError as e:
+        raise fail(500, "render_failed", str(e)[-600:]) from None
+    rel = lambda p: p.relative_to(root).as_posix() if p else None  # noqa: E731
+    return {"path": rel(target), "preview": rel(res.get("preview")), "project": rel(res.get("project")),
+            "duration": res["duration"], "width": res["width"], "height": res["height"], "size": res["size"],
+            "audio": res["audio"], "gaps": res["gaps"], "scenes": res["scenes"], "animated": res.get("animated"),
+            "ms": int((time.monotonic() - t0) * 1000)}
+
+
+STUDIO_AI = """You are the live editor inside a video studio. You get the video's project (JSON), the media files the
+user has and a request. Reply with ONE JSON object and nothing else:
+{"message": "<one short sentence in LANG saying what you changed>", "patch": {...}}
+The patch changes ONLY what was asked; everything else stays. Patch format:
+- "scenes": {"2": {"caption": "new text"}}  (use each scene's "#" number from the project; null removes a field or
+  a scene)
+- scene text fields: title, subtitle, caption, lower_third, text. A plain string uses the house style; an object
+  places and styles it: {"text", "x": "6%", "y": "74%" (top-left in % of the frame, or "center"), "size_pct": 2-30
+  (% of the short side), "color": "#ffffff", "box": "#C0392B@0.9" or null, "outline": "black", "bold": true,
+  "font": "sans|serif|display|mono|script|condensed", "align": "center", "animation": "fade|slide_up|slide_left|pop|none"}
+  To restyle only, send just the style fields: {"caption": {"color": "#ffd34d"}} keeps the text.
+- other scene fields: dur, motion (zoom_in|zoom_out|pan_left|pan_right|pan_up|pan_down|none|auto), transition (fade,
+  dissolve, slideleft, slideright, slideup, circleopen, wipeleft, smoothleft, zoomin, radial, fadeblack, cut, auto),
+  fit (cover|blur|contain), say (a voice-over line), effects [..], animate (true: the photo really moves, AI, slow)
+- "clips": {"1": {...}} change a layer by its "#" number (text styles only on a "type": "text" clip); "add_clips": [{"type": "text", "text", "start", "dur", ...style fields},
+  {"type": "image", "src": "<a media path>", "start", "dur", "x", "y", "scale": 0.05-1, "opacity"}]; "remove_clips": [n]
+- "logo": {"src": "<image path>", "position": "top_right|top_left|bottom_right|bottom_left", "size": 0.15}
+- "add_scenes": [{"src": "<media path>", "dur": 4}], "remove_scenes": [n]
+- whole video: "aspect" (16:9|9:16|1:1|4:5), "look" (none|warm|cinematic|vivid|bw|vintage|cool), "music"
+  (generated original music: "corporate"|"upbeat"|"lofi"|"cinematic"|"acoustic"|"electronic"|"ambient"|"calm", or an
+  <audio path>, or null; or {"src", "volume", "in", "start", "seed"}), "effects" (grain, old_film, vhs,
+  glitch, shake, letterbox, glow, light_leak, sepia, bw, dreamy, vignette, sharpen, flash_in), "transition",
+  "voice" ({"voice": "tr-TR-EmelNeural" | "tr-TR-AhmetNeural" | "en-US-JennyNeural" | "en-US-GuyNeural", "rate": 1}),
+  "animate" (true: every photo really moves)
+Use only media paths from the list. If the request needs pictures or clips that are not in the list (find, download,
+generate), or information from the web, reply {"need_agent": true, "message": "<short sentence in LANG>"} instead."""
+
+
+def _first_json(text: str) -> dict:
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", (text or "").strip())
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON in the answer")
+    depth, in_str, esc = 0, False, False
+    for i, ch in enumerate(text[start:], start):
+        if in_str:
+            esc = (ch == "\\") and not esc
+            if ch == '"' and not esc:
+                in_str = False
+            elif ch != "\\":
+                esc = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+    raise ValueError("unfinished JSON in the answer")
+
+
+class StudioAIIn(BaseModel):
+    timeline: dict
+    request: str
+    model: str
+    project_id: str | None = None
+    lang: str | None = None
+
+
+@app.post("/api/sessions/{sid}/video/ai")
+async def video_ai(sid: str, body: StudioAIIn):
+    """Live AI edit in the studio: the model answers with a patch, applied at once (no render). Requests that need
+    new media or the web come back as need_agent, and the studio hands them to the chat agent."""
+    from .tools import video_edit
+    if not body.request.strip():
+        raise fail(400, "empty", "Say what to change")
+    media = (await video_media(sid, body.project_id)).get("media", [])[:80]
+    lang = (body.lang or load_settings().get("language") or "tr").lower()
+    lang_name = {"tr": "Turkish", "en": "English"}.get(lang, lang)
+    tl = video_edit.numbered_view({k: v for k, v in body.timeline.items() if k != "output"})
+    user = json.dumps({"project": tl, "media": [{"path": m["path"], "kind": m["kind"], "seconds": m["duration"]}
+                                                for m in media], "request": body.request.strip()}, ensure_ascii=False)
+    messages = [{"role": "system", "content": STUDIO_AI.replace("LANG", lang_name)}, {"role": "user", "content": user}]
+    t0 = time.monotonic()
+    for attempt in range(2):  # one retry: a bad answer goes back to the model with the error
+        try:
+            reply = await asyncio.wait_for(router.complete(body.model, messages, {"temperature": 0.2}), 150)
+        except Exception as e:  # noqa: BLE001  the model is busy / out of quota / offline
+            raise fail(502, "studio_ai", f"{type(e).__name__}: {str(e)[:300]}") from None
+        try:
+            data = _first_json(reply)
+            if data.get("need_agent"):
+                return {"need_agent": True, "message": str(data.get("message") or ""),
+                        "ms": int((time.monotonic() - t0) * 1000)}
+            patch = data.get("patch") if isinstance(data.get("patch"), dict) else \
+                {k: v for k, v in data.items() if k != "message"}
+            new = video_edit.merge_patch(body.timeline, patch)
+            if new.get("logo") or new.get("watermark"):
+                new = video_edit.normalize(new, _root(sid, body.project_id).resolve())
+            break
+        except (ValueError, video_edit.TimelineError) as e:
+            if attempt:
+                code = "timeline" if isinstance(e, video_edit.TimelineError) else "studio_ai_format"
+                raise fail(400 if code == "timeline" else 502, code, f"{e}: {reply[:300]}") from None
+            messages += [{"role": "assistant", "content": reply[:4000]},
+                         {"role": "user", "content": f"That patch failed: {e}. Use the \"#\" numbers shown in the "
+                                                     "project. Reply with the corrected JSON object only."}]
+    return {"timeline": new, "patch": patch, "message": str(data.get("message") or ""),
+            "ignored": video_edit.ignored_keys(new), "ms": int((time.monotonic() - t0) * 1000)}
+
+
+@app.get("/api/video/music")
+async def video_music(kind: str = "ambient", seconds: int = 30, seed: int = 0):
+    """Original background music of a style for the studio's live preview (the render makes the same track)."""
+    from .config import DATA_DIR
+    from .tools import video_edit
+    if kind not in video_edit.GENERATED:
+        raise fail(400, "bad_music", "unknown music style")
+    seconds = max(5, min(int(seconds), 600))
+    d = DATA_DIR / "music_cache"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{kind}-{seconds}-{int(seed)}.wav"
+    if not p.is_file():
+        p = await video_edit.make_music(kind, seconds, p, int(seed))
+    return FileResponse(p, media_type="audio/wav")
+
+
+@app.get("/api/video/engines")
+async def video_engines():
+    """The free AI video engines (Hugging Face ZeroGPU Spaces) and their live state, for Settings > Web research:
+    image-to-video (animate_image, the studio's "Animate with AI") and text-to-video (generate_video = a FLUX first
+    frame + Wan 2.2). A Space that sleeps wakes on the first call; one that errors is skipped."""
+    import httpx
+    from .config import get_secret
+    from .tools import animate
+
+    async def state(c, space, kind):
+        try:
+            r = await c.get(f"https://huggingface.co/api/spaces/{space}", params={"expand[]": "runtime"})
+            rt = (r.json().get("runtime") or {}) if r.status_code == 200 else {}
+            stage = rt.get("stage") or ("MISSING" if r.status_code == 404 else f"HTTP {r.status_code}")
+        except Exception as e:  # noqa: BLE001
+            stage = f"offline: {type(e).__name__}"
+        return {"id": space, "kind": kind, "stage": stage, "hardware": ((rt or {}).get("hardware") or {}).get("current"),
+                "url": f"https://huggingface.co/spaces/{space}"} if isinstance(stage, str) else {}
+
+    async with httpx.AsyncClient(timeout=10) as c:
+        rows = await asyncio.gather(*(state(c, s, k) for s, k in animate.SPACES))
+    return {"engines": [r for r in rows if r], "token": bool(get_secret("huggingface_api_key"))}
+
+
+# ---------- royalty-free music library (Openverse: Jamendo, Freesound, Wikimedia; commercial-use licences) ----------
+@app.get("/api/music/library")
+async def music_library(q: str = "", page: int = 1):
+    import httpx
+    params = {"q": (q or "background music").strip()[:80], "license_type": "commercial", "category": "music",
+              "page_size": 20, "page": max(1, min(int(page), 20)), "mature": "false"}
+    # Openverse answers some query combinations with a passing 500: retry, then ask from Jamendo (all music) directly.
+    tries = [params, params, {**params, "source": "jamendo"}, {k: v for k, v in params.items() if k != "category"}]
+    rows, err = None, None
+    async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "AI-IQ-300 (music library)"}) as c:
+        for p in tries:
+            try:
+                r = await c.get("https://api.openverse.org/v1/audio/", params=p)
+                r.raise_for_status()
+                rows = r.json().get("results") or []
+                break
+            except Exception as e:  # noqa: BLE001
+                err = e
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+                    break
+    if rows is None:
+        raise fail(502, "music_library", f"{type(err).__name__}: {str(err)[:200]}")
+    out = []
+    for x in rows:
+        url = x.get("url") or ""
+        if not url:
+            continue
+        lic = (("" if (x.get("license") or "").lower() in ("cc0", "pdm") else "CC ") + f"{(x.get('license') or '').upper()} {x.get('license_version') or ''}").strip()
+        out.append({"title": x.get("title") or "?", "creator": x.get("creator") or "?", "license": lic,
+                    "duration": round((x.get("duration") or 0) / 1000, 1), "url": url, "source": x.get("foreign_landing_url") or url,
+                    "provider": x.get("source") or x.get("provider") or "", "genres": x.get("genres") or []})
+    return {"tracks": out}
+
+
+class TrackIn(BaseModel):
+    url: str
+    title: str = "track"
+    creator: str = ""
+    license: str = ""
+    source: str = ""
+    project_id: str | None = None
+
+
+@app.post("/api/sessions/{sid}/music/download")
+async def music_download(sid: str, body: TrackIn):
+    """A library track into the chat's music/ folder, its credit written to music/CREDITS.txt."""
+    import httpx
+    if not re.match(r"https://", body.url):
+        raise fail(400, "bad_url", "https only")
+    slug = re.sub(r"[^a-z0-9]+", "-", body.title.lower()).strip("-")[:40] or "track"
+    target = _resolve(sid, f"music/{slug}.mp3", body.project_id)
+    if not target.is_file():
+        try:
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+                r = await c.get(body.url)
+            r.raise_for_status()
+            if not r.headers.get("content-type", "").startswith(("audio/", "application/octet-stream")):
+                raise ValueError(f"not an audio file ({r.headers.get('content-type')})")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(r.content)
+        except Exception as e:  # noqa: BLE001
+            raise fail(502, "music_download", f"{type(e).__name__}: {str(e)[:200]}") from None
+        with open(target.parent / "CREDITS.txt", "a", encoding="utf-8") as f:
+            f.write(f"{target.name}: \"{body.title}\" by {body.creator} - {body.license} - {body.source}\n")
+    root = _root(sid, body.project_id).resolve()
+    info = await _probe_cached(target)
+    return {"path": target.relative_to(root).as_posix(), "duration": round(info.get("duration") or 0, 2)}
+
+
+class VoiceClipIn(BaseModel):
+    text: str
+    voice: str = ""
+    rate: float = 1.0
+    project_id: str | None = None
+
+
+@app.post("/api/sessions/{sid}/video/voice")
+async def video_voice(sid: str, body: VoiceClipIn):
+    """A voice-over clip for the studio: the text read by the chosen free neural voice, saved under media/voice/."""
+    import hashlib
+    from .tools import speech
+    if not body.text.strip():
+        raise fail(400, "empty", "Nothing to read")
+    lang = (body.voice[:2] if body.voice else (load_settings().get("language") or "tr")).lower()
+    h = hashlib.sha1(f"{body.voice}|{body.rate}|{body.text}".encode()).hexdigest()[:10]
+    target = _resolve(sid, f"media/voice/voice-{h}.mp3", body.project_id)
+    if not target.is_file():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await speech.text_to_speech(body.text.strip(), target, lang, body.voice, "", float(body.rate or 1.0))
+        except Exception as e:  # noqa: BLE001
+            raise fail(502, "tts_failed", str(e)[:300]) from None
+    root = _root(sid, body.project_id).resolve()
+    info = await _probe_cached(target)
+    return {"path": target.relative_to(root).as_posix(), "duration": round(info.get("duration") or 0, 2)}
+
+
+@app.post("/api/stt")
+async def stt(file: UploadFile, language: str = "", model: str = "base"):
+    """Speech to text for any recording or video (offline faster-whisper): text with times, and SRT subtitles."""
+    import tempfile
+    from .tools import speech
+    if model not in ("tiny", "base", "small", "medium"):
+        model = "base"
+    d = Path(tempfile.mkdtemp(prefix="aiiq-stt-"))
+    try:
+        src = d / (Path(file.filename or "audio").name or "audio")
+        src.write_bytes(await file.read())
+        try:
+            res = await speech.speech_to_text(src, d, language or None, model)
+        except Exception as e:  # noqa: BLE001
+            raise fail(500, "stt_failed", f"{type(e).__name__}: {str(e)[:300]}") from None
+        plain = res["txt"].read_text(encoding="utf-8") if res.get("txt") else ""
+        srt = res["srt"].read_text(encoding="utf-8") if res.get("srt") else ""
+        return {"language": res.get("language"), "text": plain.strip(), "srt": srt, "segments": res.get("segments"),
+                "seconds": res.get("duration")}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------- logo maker ----------
+class LogoIconIn(BaseModel):
+    prompt: str
+    style: str = "minimal"
+    colors: str = ""
+    n: int = 3
+
+
+@app.post("/api/logo/icons")
+async def logo_icons(body: LogoIconIn):
+    """Logo symbols drawn by the image services (keyed ones first, free FLUX last), background removed (PNG)."""
+    import base64
+    import random
+    from .tools import imagegen, logo
+    prompt = (f"{body.prompt.strip()[:300]}, {body.style} logo symbol, flat vector icon, simple bold shapes, centered, "
+              f"isolated on a pure white background, no text, no letters, no words, no watermark"
+              + (f", colors {body.colors[:80]}" if body.colors else ""))
+    async def one(seed: int):
+        try:
+            data, sid, _ = await imagegen.generate(prompt, 768, 768, seed)
+            png = await asyncio.to_thread(logo.cutout, data)
+            return {"png": "data:image/png;base64," + base64.b64encode(png).decode(), "service": sid}
+        except Exception as e:  # noqa: BLE001
+            return {"error": str(e)[:200]}
+    res = await asyncio.gather(*(one(random.randint(1, 10**6)) for _ in range(max(1, min(body.n, 4)))))
+    icons = [r for r in res if r.get("png")]
+    if not icons:
+        raise fail(502, "logo_icons", "; ".join(r.get("error", "") for r in res)[:400])
+    return {"icons": icons, "errors": [r["error"] for r in res if r.get("error")]}
+
+
+@app.post("/api/logo/cutout")
+async def logo_cutout(file: UploadFile):
+    """Transparent background for an uploaded logo / picture (the plain background around it is removed)."""
+    import base64
+    from .tools import logo
+    data = await file.read()
+    try:
+        png = await asyncio.to_thread(logo.cutout, data)
+    except Exception as e:  # noqa: BLE001
+        raise fail(400, "cutout", str(e)[:200]) from None
+    return {"png": "data:image/png;base64," + base64.b64encode(png).decode()}
+
+
+class LogoSuggestIn(BaseModel):
+    brand: str
+    slogan: str = ""
+    industry: str = ""
+    model: str
+    lang: str | None = None
+
+
+@app.post("/api/logo/suggest")
+async def logo_suggest(body: LogoSuggestIn):
+    """Three brand directions from the selected model: fonts, colours, layout, symbol prompt (the maker draws them)."""
+    from .tools import logo
+    lang = {"tr": "Turkish", "en": "English"}.get((body.lang or "tr").lower(), "English")
+    messages = [{"role": "system", "content": logo.SUGGEST.replace("LANG", lang)},
+                {"role": "user", "content": json.dumps({"brand": body.brand, "slogan": body.slogan, "industry": body.industry},
+                                                       ensure_ascii=False)}]
+    try:
+        reply = await asyncio.wait_for(router.complete(body.model, messages, {"temperature": 0.8}), 120)
+        data = _first_json(reply)
+    except Exception as e:  # noqa: BLE001
+        raise fail(502, "logo_suggest", f"{type(e).__name__}: {str(e)[:300]}") from None
+    return {"variants": logo.clean_variants(data.get("variants") or [])}
+
+
 @app.get("/api/sessions/{sid}/fs/preview")
 def fs_preview(sid: str, path: str, project_id: str | None = None):
     """A web page from the working folder, served on the separate preview origin (assets load relatively)."""
@@ -890,19 +1404,11 @@ def fs_slides(sid: str, path: str, project_id: str | None = None):
     p = _find_file(sid, path, project_id)
     if not p.is_file() or p.suffix.lower() != ".pptx":
         raise fail(404, "file_not_found", "File not found")
-    from pptx import Presentation
+    from .tools import slides_view
     try:
-        prs = Presentation(str(p))
+        return slides_view.slides(p)  # positioned shapes: text, pictures, tables, charts, backgrounds
     except Exception as e:
         raise fail(400, "bad_document", f"Unreadable presentation: {e}")
-    slides = []
-    for s in prs.slides:
-        title = s.shapes.title.text_frame.text.strip() if s.shapes.title is not None and s.shapes.title.has_text_frame else ""
-        lines = [para.text.strip() for sh in s.shapes if sh.has_text_frame and sh != s.shapes.title
-                 for para in sh.text_frame.paragraphs if para.text.strip()]
-        notes = s.notes_slide.notes_text_frame.text.strip() if s.has_notes_slide and s.notes_slide.notes_text_frame else ""
-        slides.append({"title": title, "lines": lines[:40], "notes": notes[:2000]})
-    return {"slides": slides}
 
 
 @app.get("/api/sessions/{sid}/history")
@@ -998,16 +1504,43 @@ async def maps_test(provider: str, body: EngineTestIn):
 
 @app.post("/api/media/test/{service}")
 async def media_test(service: str, body: EngineTestIn):
-    """Image generation service test (Settings > Web research): a small picture, whether it came without the logo."""
-    from .tools import imagegen
+    """One image service alone (Settings > Web > Image services): a small picture, or its own error."""
+    from .tools import imagegen, services
     t0 = time.monotonic()
+    if service != "pollinations" and service in services.CATALOG and not services.has_key(service):
+        return {"ok": False, "error": "no key saved for this service: enter and save the key first"}
     try:
-        data, clean = await imagegen.generate(body.q.strip() or "a cup of coffee on a wooden table, photo", 256, 256)
+        data = await imagegen.generate_with(service, body.q.strip() or "a cup of coffee on a wooden table, photo", 256, 256)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:300]}
+    clean = service != "pollinations" or bool(imagegen.token())
     return {"ok": True, "ms": int((time.monotonic() - t0) * 1000), "count": 1, "provider": service,
-            "results": [{"title": f"{len(data) // 1024} KB" + (" · logo-free (token)" if clean else " · with the free tier's logo"),
+            "results": [{"title": f"{len(data) // 1024} KB" + (" · logo-free" if clean else " · with the free tier's logo"),
                          "url": ""}]}
+
+
+@app.post("/api/stock/test/{service}")
+async def stock_test(service: str, body: EngineTestIn):
+    """One photo service alone (Settings > Web > Photo services): a sample search with its own error."""
+    from .tools import stock, services
+    t0 = time.monotonic()
+    if service in services.CATALOG and not services.has_key(service):
+        return {"ok": False, "error": "no key saved for this service: enter and save the key first"}
+    try:
+        items = await stock.test_service(service, body.q.strip() or "coffee cup")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": bool(items), "ms": int((time.monotonic() - t0) * 1000), "count": len(items), "provider": service,
+            "results": [{"title": f"{x['title'][:60]} · {x['author']} · {x['license']}", "url": x.get("source", "")}
+                        for x in items[:5]],
+            **({} if items else {"error": "no photo found for this query"})}
+
+
+@app.get("/api/services")
+def services_status():
+    """Quota and status of the keyed image and photo services (usage counters, blocks, remaining quota headers)."""
+    from .tools import services
+    return {"services": services.status()}
 
 
 @app.get("/api/models/providers")
@@ -1220,8 +1753,29 @@ async def test_provider(pid: str):
 
 @app.get("/api/models/health")
 async def models_health():
-    """Polled by the UI every few seconds: is each enabled local server up, and the settings revision. A local
-    server that starts or stops, or settings changed in another window, are picked up without a page reload."""
+    """Asked by the UI at start and on focus (the server pushes changes itself, see _health_watch)."""
+    return await _health_now()
+
+
+async def _health_watch() -> None:
+    """Watches local servers and the settings file in the background and pushes a 'health' event to every window
+    only when something changed (a local server started / stopped, a model was pulled, settings saved elsewhere).
+    The page used to ask every 3 s, which filled the server log with health requests during long tasks."""
+    last = None
+    while True:
+        try:
+            now = await _health_now()
+            if now != last:
+                if last is not None:
+                    bus.publish("health", "changed", now)
+                last = now
+        except Exception:  # noqa: BLE001 - a failing check never stops the watcher
+            pass
+        await asyncio.sleep(4)
+
+
+async def _health_now() -> dict:
+    """Is each enabled local server up (and its model list fingerprint), and the settings revision."""
     import httpx
     from .config import SETTINGS_FILE
     settings = load_settings()
@@ -1420,8 +1974,56 @@ async def mcp_delete(sid: str):
     from . import mcp_client
     save_settings({"mcp_servers": {sid: None}})
     set_secret(f"mcp_{sid}", None)
+    set_secret(f"mcp_oauth_{sid}", None)
     await mcp_client.ensure()
     return {"ok": True}
+
+
+@app.post("/api/mcp/{sid}/oauth")
+async def mcp_oauth_start(sid: str, request: Request):
+    """Browser sign-in for an HTTP MCP server (OAuth with PKCE): returns the URL the UI opens in a new tab."""
+    from . import mcp_client
+    redirect = str(request.base_url).rstrip("/") + "/api/mcp/oauth/callback"
+    try:
+        return {"url": await mcp_client.oauth_start(sid, redirect)}
+    except mcp_client.MCPError as e:
+        raise fail(400, "mcp_oauth", str(e)) from None
+    except Exception as e:  # noqa: BLE001  network, bad metadata
+        raise fail(502, "mcp_oauth", f"{type(e).__name__}: {str(e)[:200]}") from None
+
+
+@app.get("/api/mcp/oauth/callback")
+async def mcp_oauth_callback(state: str = "", code: str = "", error: str = "", error_description: str = ""):
+    from html import escape
+
+    from . import mcp_client
+    lang = load_settings().get("language") or "tr"
+    ok_txt = ("Bağlandı. Bu sekmeyi kapatabilirsiniz; MCP sunucusu kullanıma hazır." if lang == "tr"
+              else "Connected. You can close this tab; the MCP server is ready.")
+    msg, ok = ok_txt, True
+    if error or not code:
+        msg, ok = f"{error or 'no code'}: {error_description}", False
+    else:
+        try:
+            sid = await mcp_client.oauth_finish(state, code)
+            await mcp_client.restart(sid)
+        except Exception as e:  # noqa: BLE001
+            msg, ok = str(e)[:300], False
+    color = "#16a34a" if ok else "#dc2626"
+    page = (f"<!doctype html><meta charset=utf-8><title>AI IQ 300 · MCP</title><body style=\"font-family:system-ui;"
+            f"display:grid;place-items:center;height:100vh;margin:0;background:#f7f7f8\"><div style=\"max-width:460px;"
+            f"padding:28px;border-radius:16px;background:#fff;box-shadow:0 8px 30px #0001;text-align:center\">"
+            f"<div style=\"font-size:40px;color:{color}\">{'✓' if ok else '✕'}</div><p>{escape(msg)}</p></div>"
+            f"<script>setTimeout(()=>window.close(),{2500 if ok else 60000})</script>")
+    return HTMLResponse(page, status_code=200 if ok else 400)
+
+
+@app.delete("/api/mcp/{sid}/oauth")
+async def mcp_oauth_signout(sid: str):
+    from . import mcp_client
+    mcp_client.oauth_signout(sid)
+    await mcp_client.restart(sid)
+    return _mcp_view().get(sid)
 
 
 @app.post("/api/mcp/{sid}/restart")

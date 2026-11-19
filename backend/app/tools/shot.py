@@ -96,7 +96,7 @@ async def capture(url: str, out: Path, *, device: str = "desktop", width: int | 
             page.on("console", lambda m: m.type == "error" and "ERR_FILE_NOT_FOUND" not in m.text
                     and problems.append(f"console error: {m.text[:200]}"))
             page.on("requestfailed", failed)
-            page.on("response", lambda r: r.status >= 400 and problems.append(f"HTTP {r.status}: {r.url[:160]}"))
+            page.on("response", lambda r: r.status >= 400 and "favicon" not in r.url and problems.append(f"HTTP {r.status}: {r.url[:160]}"))
             resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=8000)
@@ -113,6 +113,12 @@ async def capture(url: str, out: Path, *, device: str = "desktop", width: int | 
             broken = await page.evaluate("() => [...document.images].filter(i => i.complete && !i.naturalWidth)"
                                          ".map(i => i.getAttribute('src') || '').slice(0, 8)")
             problems += [f"broken image (not shown): {s[:160]}" for s in broken]
+            try:  # raw unstyled text instead of a designed page (styles not compiled / not loaded)
+                from .visual import DOM_REPORT, design_problem
+                if bad := design_problem(await page.evaluate(DOM_REPORT)):
+                    problems.insert(0, bad)
+            except Exception:  # noqa: BLE001 - the check never fails a screenshot
+                pass
             seen["problems"] = list(dict.fromkeys(problems))[:12]
             if fmt == "pdf":
                 # A4 pages (the page's own @page/@media print rules apply), not one endless sheet.

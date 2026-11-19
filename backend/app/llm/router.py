@@ -189,7 +189,7 @@ def silence_limits(local: bool) -> tuple[float | None, float | None]:
 
 
 async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | None = None,
-                     first_silence: float | None = None) -> AsyncIterator[dict]:
+                     first_silence: float | None = None, adaptive: bool = False) -> AsyncIterator[dict]:
     """Pass provider events through, adding {'type': 'idle', 'seconds'} while the provider is silent.
     Local servers stream nothing while a model writes a native tool call (a whole file can take minutes), so the
     UI shows live progress and cancellation still works. Network failures become ProviderErrors.
@@ -198,6 +198,8 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
     pending: asyncio.Future | None = None
     last_data = time.monotonic()  # the last real content (text, thinking, tool-call parts, usage)
     started = False
+    chunks, max_gap = 0, 0.0
+    last_kind = None  # type of the latest event (text, thinking, tool_call_progress...)
     try:
         while True:
             if pending is None:
@@ -210,14 +212,30 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
             if not done:
                 idle = time.monotonic() - last_data
                 limit = max_silence if started else (first_silence or max_silence)
+                paced = False
+                # Only while a tool call's arguments were streaming (a big file arriving chunk after chunk): after
+                # reasoning or visible text the model may be composing a call the provider sends whole (EVREN), and
+                # that normal silence was cut as a stall at 46-56 s.
+                if adaptive and started and limit and chunks >= 30 and last_kind == "tool_call_progress":
+                    # A steady cloud stream (a big file arriving chunk after chunk) that suddenly stops has stalled:
+                    # waiting the full setting (300 s) after 10K characters made a fast model look frozen. The limit
+                    # follows this stream's own pace: 10 x its longest gap so far, at least 45 s.
+                    # Not after reasoning: a provider that sends a tool call only when it is complete (EVREN) is
+                    # silent between the last thought and the call, and that silence was cut as a stall at 46 s.
+                    paced = max(45.0, max_gap * 10) < limit
+                    limit = min(limit, max(45.0, max_gap * 10))
                 if limit and idle >= limit:
                     raise ProviderError("timeout", f"{name}: no data for {int(idle)} s "
-                                        f"({'stalled mid-answer' if started else 'no first token'}; limit {int(limit)} s "
-                                        "in Settings > Agent)")
+                                        f"({'stalled mid-answer' if started else 'no first token'}; limit {int(limit)} s"
+                                        + (", from this stream's own pace)" if paced else " in Settings > Agent)"))
                 yield {"type": "idle", "seconds": int(idle)}
                 continue
             fut, pending = pending, None
-            last_data = time.monotonic()
+            now = time.monotonic()
+            if started:
+                chunks += 1
+                max_gap = max(max_gap, now - last_data)
+            last_data = now
             started = True
             try:
                 evt = fut.result()
@@ -227,6 +245,8 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
                 raise ProviderError("timeout", f"{name}: no response in time ({type(e).__name__})")
             except httpx.HTTPError as e:
                 raise ProviderError("unavailable", f"{name}: connection lost ({type(e).__name__}: {e})")
+            if isinstance(evt, dict):
+                last_kind = evt.get("type")
             yield evt
     finally:
         if pending is not None:
@@ -339,7 +359,8 @@ async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = N
         if lane != "side":
             _MAIN_ACTIVE[pname] = _MAIN_ACTIVE.get(pname, 0) + 1
         try:
-            async for evt in _heartbeat(prov.stream(model, messages, opts), pname, mid, first):
+            async for evt in _heartbeat(prov.stream(model, messages, opts), pname, mid, first,
+                                         adaptive=not prov.cfg.get("local")):
                 if cancel and cancel.is_set():
                     raise asyncio.CancelledError
                 if evt["type"] == "thinking" and hide_thinking:
@@ -548,6 +569,8 @@ def disable_native_tools(model_id: str, persist: bool = False) -> None:
     """persist: remembered across restarts (data/stream_tools.json) - for providers that send a native tool call
     only when it is complete, so every later task starts with the streamed text protocol instead of first losing
     a minute (or a whole file) to a silent call."""
+    if persist and streams_tool_args(model_id):
+        persist = False  # its provider streams tool calls: a silence was a pause, not a call sent only at the end
     _NO_NATIVE_TOOLS.add(model_id)
     if persist:
         try:
@@ -563,6 +586,36 @@ try:
     _NO_NATIVE_TOOLS.update(json.loads(_STREAM_TOOLS.read_text(encoding="utf-8")) if _STREAM_TOOLS.exists() else [])
 except (OSError, ValueError):
     pass
+
+# Providers seen streaming native tool-call arguments piece by piece (data/streams_args.json). Their silences are
+# pauses on the provider's side (a queue, a preempted request), not a call that is sent only when complete: such a
+# silence is never cut as "the provider sends tool calls at the end", and the protocol is never switched for it.
+_STREAMS_ARGS_FILE = DATA_DIR / "streams_args.json"
+try:
+    _STREAMS_ARGS: set[str] = set(json.loads(_STREAMS_ARGS_FILE.read_text(encoding="utf-8"))) \
+        if _STREAMS_ARGS_FILE.exists() else set()
+except (OSError, ValueError):
+    _STREAMS_ARGS = set()
+
+
+def streams_tool_args(model_id: str) -> bool:
+    """This provider (any of its models: it is the server's tool parser) streams tool-call arguments."""
+    return model_id.partition(":")[0] in _STREAMS_ARGS
+
+
+def mark_streams_tool_args(model_id: str) -> None:
+    pname = model_id.partition(":")[0]
+    if pname in _STREAMS_ARGS:
+        return
+    _STREAMS_ARGS.add(pname)
+    try:
+        _STREAMS_ARGS_FILE.write_text(json.dumps(sorted(_STREAMS_ARGS)), encoding="utf-8")
+        # Models of this provider that an earlier pause wrongly moved to the text protocol get native calls back.
+        if _STREAM_TOOLS.exists():
+            saved = [m for m in json.loads(_STREAM_TOOLS.read_text(encoding="utf-8")) if m.partition(":")[0] != pname]
+            _STREAM_TOOLS.write_text(json.dumps(saved), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
 
 
 def _lms() -> str | None:

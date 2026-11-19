@@ -148,9 +148,155 @@ def _clean(x):
     return x
 
 
-def report() -> str:
-    data = _clean(collect())
-    return json.dumps(data, ensure_ascii=False, indent=1, default=str)[:12000]
+def _python_packages() -> list[str]:
+    """Packages of the app's own Python (the one shell=python and pip use)."""
+    from importlib import metadata
+    seen: dict[str, str] = {}
+    for d in metadata.distributions():
+        name = (d.metadata.get("Name") or "").strip()
+        if name and name.lower() not in seen:
+            seen[name.lower()] = f"{name} {d.version}"
+    return sorted(seen.values(), key=str.lower)
+
+
+def _npm_globals() -> list[str]:
+    npm = shutil.which("npm")
+    if not npm:
+        return []
+    raw = _out([npm, "ls", "-g", "--depth=0", "--json"], 25)
+    try:
+        deps = (json.loads(raw) if raw.strip() else {}).get("dependencies") or {}
+    except ValueError:
+        return []
+    return [f"{k} {v.get('version', '')}".strip() for k, v in sorted(deps.items())]
+
+
+SKIP_DIRS = {"node_modules", ".git", ".venv", "venv", "dist", "build", ".next", ".expo", "__pycache__", ".session"}
+
+
+def _project_manifests(root) -> list[dict]:
+    """Dependency files in the working folder (2 levels deep): what this project already uses."""
+    from pathlib import Path
+    root = Path(root)
+    out: list[dict] = []
+    if not root.is_dir():
+        return out
+
+    def walk(d: Path, depth: int) -> None:
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            return
+        for p in entries:
+            if p.is_dir():
+                if depth < 2 and p.name not in SKIP_DIRS and not p.name.startswith("."):
+                    walk(p, depth + 1)
+                continue
+            rel = p.relative_to(root).as_posix()
+            try:
+                if p.name == "package.json":
+                    j = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+                    out.append({"file": rel, "name": j.get("name"), "scripts": list((j.get("scripts") or {}))[:15],
+                                "dependencies": list((j.get("dependencies") or {}))[:60],
+                                "devDependencies": list((j.get("devDependencies") or {}))[:40],
+                                "installed": (p.parent / "node_modules").is_dir()})
+                elif p.name in ("requirements.txt", "pyproject.toml", "composer.json", "go.mod", "Cargo.toml", "pubspec.yaml"):
+                    lines = [ln.strip() for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()
+                             if ln.strip() and not ln.strip().startswith("#")]
+                    out.append({"file": rel, "lines": lines[:40]})
+            except (OSError, ValueError):
+                continue
+
+    walk(root, 0)
+    return out[:12]
+
+
+def environment(work_root=None) -> dict:
+    """The software side of this computer and of the app, so a model never has to guess: where it works, which
+    runtimes / CLIs / packages exist, which MCP servers, web search engines, media services, skills, agents and
+    commands the app has, and how to get a project from GitHub."""
+    from ..config import DATA_DIR, ROOT, load_settings
+    from .. import hostinfo
+    env: dict = {}
+    host = hostinfo.info()
+    env["app"] = {"app_folder": str(ROOT), "data_folder": str(DATA_DIR), "app_python": sys.executable,
+                  "python_version": platform.python_version(),
+                  "pip_rule": "pip install always goes into this app Python (.venv); a project's own venv uses its own pip"}
+    if work_root:
+        env["working_folder"] = {"path": str(work_root), "note": "relative paths of write_file / read_file / run are "
+                                 "resolved here; this is the folder of this chat / project"}
+        if manifests := _project_manifests(work_root):
+            env["working_folder"]["manifests"] = manifests
+    env["shells"] = host.get("shells") or {}
+    env["cli_tools_on_path"] = host.get("tools") or {}
+    try:
+        env["python_packages"] = ", ".join(_python_packages())
+    except Exception:  # noqa: BLE001 - optional
+        pass
+    if g := _npm_globals():
+        env["npm_global_packages"] = g
+    try:  # MCP servers connected in Settings > MCP and the tools each one offers
+        from .. import mcp_client
+        env["mcp_servers"] = {k: {"enabled": v["enabled"], "running": v["running"], "error": v["error"],
+                                  "tools": [t["name"] for t in v["tools"]][:40]}
+                              for k, v in mcp_client.status().items()} or "none connected (mcp_search finds one, mcp_add connects it)"
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # web research: the configured search APIs first, then the free engines, then the real browser
+        from . import web
+        cfg = load_settings().get("search", {})
+        off = set(cfg.get("disabled") or [])
+        apis = [n for n, _ in web.api_engines("x")]
+        env["web_search"] = {
+            "api_engines_with_keys": apis or "none (add keys in Settings > Web research)",
+            "free_engines": [e for e in ["duckduckgo", "bing", "wikipedia", "wikidata",
+                                         *(f"ddgs-{b}" for b in web.DDGS_BACKENDS)] if e not in off],
+            "browser_fallback": "browser-duckduckgo / browser-bing / browser-brave when plain requests are blocked",
+            "disabled": sorted(off),
+            "tools": "web_search (fast results), research (search + read several pages), fetch_url (one page / file / "
+                     "API), web_screenshot, browser_* (act in a real page)"}
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # image / stock photo services that are usable right now (a key, quota left)
+        from . import services
+        env["media_services"] = {"stock_photos": services.usable("stock"), "image_generation": services.usable("image")}
+    except Exception:  # noqa: BLE001
+        pass
+    env["github"] = {
+        "gh_cli": host.get("tools", {}).get("gh") or "not installed (winget install GitHub.cli / brew install gh)",
+        "git": host.get("tools", {}).get("git") or "not installed",
+        "find": "web_search 'site:github.com <topic>' or fetch_url https://api.github.com/search/repositories?q=<words>"
+                "&sort=stars (JSON: full_name, description, stargazers_count, html_url)",
+        "download": "git clone https://github.com/<owner>/<repo> (run), or without git: fetch_url "
+                    "https://github.com/<owner>/<repo>/archive/refs/heads/<branch>.zip save=<file>.zip, then unzip; "
+                    "never read a repository file by file",
+        "read_one_file": "fetch_url https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>"}
+    try:  # what the user can invoke: /skills, @agents
+        from ..agents import catalog
+        env["skills"] = {k: v.get("title", "") for k, v in catalog.skills().items()}
+        env["agents"] = {k: v.get("title", "") for k, v in catalog.agents().items()}
+        env["commands"] = "/<skill> runs a skill, @<agent> adds an agent; the use_skill tool loads a skill's instructions"
+    except Exception:  # noqa: BLE001
+        pass
+    try:  # model providers that are switched on, and the chosen model
+        s = load_settings()
+        env["models"] = {"active": s.get("active_model"),
+                         "providers_on": [p for p, c in s.get("providers", {}).items() if c.get("enabled")]}
+    except Exception:  # noqa: BLE001
+        pass
+    return env
+
+
+def report(part: str = "all", work_root=None) -> str:
+    part = (part or "all").lower()
+    data: dict = {}
+    if part in ("all", "hardware", "hw", "donanım"):
+        data["hardware"] = _clean(collect())
+    if part in ("all", "software", "sw", "environment", "env", "yazılım"):
+        data["software"] = environment(work_root)
+    if not data:
+        data = {"hardware": _clean(collect()), "software": environment(work_root)}
+    return json.dumps(data, ensure_ascii=False, indent=1, default=str)[:30000]
 
 
 if __name__ == "__main__":  # manual check

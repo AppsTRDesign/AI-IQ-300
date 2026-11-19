@@ -322,17 +322,29 @@ _DDG_LAST = [0.0]
 DDG_GAP = 2.0  # DuckDuckGo answers bursts with a challenge: searches are spaced out
 
 
+_DDG_BLOCKED = [0.0]  # until when DuckDuckGo refuses plain requests from this address (then the browser is used)
+DDG_COOLDOWN = 900
+
+
 async def _ddg_any(c: httpx.AsyncClient, q: str) -> list[dict]:
-    """DuckDuckGo HTML, then its lite page if the first is refused; one search at a time, spaced out."""
+    """DuckDuckGo HTML, then its lite page, then a real browser page. DuckDuckGo answers plain requests from many
+    addresses with an "anomaly" check (HTTP 202) for a while; then the plain pages are skipped for 15 minutes and the
+    real browser (which passes the check) is asked directly. One search at a time, spaced out."""
     async with _DDG_LOCK:
         wait = _DDG_LAST[0] + DDG_GAP - time.monotonic()
         if wait > 0:
             await asyncio.sleep(wait)
         try:
-            return await _ddg(c, q)
-        except EngineBlocked:
-            await asyncio.sleep(1)
-            return await _ddg_lite(c, q)
+            if time.monotonic() > _DDG_BLOCKED[0]:
+                try:
+                    return await _ddg(c, q)
+                except EngineBlocked:
+                    await asyncio.sleep(1)
+                    try:
+                        return await _ddg_lite(c, q)
+                    except EngineBlocked:
+                        _DDG_BLOCKED[0] = time.monotonic() + DDG_COOLDOWN
+            return await dict(BROWSER_ENGINES(q))["browser-duckduckgo"](c)
         finally:
             _DDG_LAST[0] = time.monotonic()
 
@@ -642,9 +654,14 @@ async def fetch(url: str, max_chars: int = 8000, query: str = "") -> dict:
                         "status": status, "blocked": False}
             if "html" not in ctype and "xml" not in ctype and ctype:
                 text = r.text if ctype.startswith("text") or "json" in ctype else ""
-                return {"ok": r.status_code < 400 and bool(text), "url": str(r.url), "title": "", "text": text[:max_chars],
-                        "via": "http", "status": status, "blocked": False,
-                        **({} if text else {"error": f"Binary content ({ctype}); not readable as text"})}
+                err_text = (f"HTTP {status}: {text[:300]}" if status >= 400 else
+                            "" if text else f"Binary content ({ctype}); not readable as text")
+                if status in (403, 429) and "api.github.com" in url:
+                    err_text += (" (GitHub API limit without a token: 60 requests per hour. Get the whole repository "
+                                 "in one step instead: git clone, or fetch_url the ZIP https://github.com/<owner>/<repo>"
+                                 "/archive/HEAD.zip)")
+                return {"ok": status < 400 and bool(text), "url": str(r.url), "title": "", "text": text[:max_chars],
+                        "via": "http", "status": status, "blocked": False, **({"error": err_text} if err_text else {})}
     except httpx.HTTPError as e:
         html, status = "", 0
         err = str(e)

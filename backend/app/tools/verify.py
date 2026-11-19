@@ -24,7 +24,8 @@ SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".aiiq", ".
 # How each binary format is really produced (told to a model that tried to write one as text).
 MAKERS = {
     "media": "run ffmpeg / yt-dlp (or a Python library) to produce it",
-    "image": "draw it with run (shell=python, Pillow/matplotlib) or an image tool",
+    "image": "a photo for a page: stock_photo (real photos, saved into the folder you name, several in one call); "
+             "a new picture: generate_image; a chart or drawing: run (shell=python, Pillow/matplotlib)",
     "office": "make_doc (pdf, docx, pptx, xlsx) or a Python library via run",
     "other": "the program or library that writes this format, via run",
 }

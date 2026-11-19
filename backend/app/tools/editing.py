@@ -13,16 +13,131 @@ from pathlib import Path
 
 from ..workspace import IGNORED
 
-# Aider-style blocks, which most models already know:  <<<<<<< SEARCH / ======= / >>>>>>> REPLACE
-BLOCK = re.compile(r"<{5,9} ?SEARCH[^\n]*\n(.*?)\n?={5,9}[^\n]*\n(.*?)\n?>{5,9} ?REPLACE", re.S)
+# Aider-style blocks, which most models already know:  <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Variants weak
+# models write are accepted too: ORIGINAL / OLD / FIND / BEFORE ... UPDATED / NEW / AFTER, 3-9 marker characters,
+# a block inside a ``` fence.
+BLOCK = re.compile(r"<{3,9} ?(?:SEARCH|ORIGINAL|OLD|FIND|BEFORE)[^\n]*\n(.*?)\n?={3,9}[^\n]*\n(.*?)\n?>{3,9} ?"
+                   r"(?:REPLACE|UPDATED|NEW|AFTER)", re.S | re.I)
 
 
 class EditError(Exception):
     pass
 
 
-def parse_blocks(body: str) -> list[tuple[str, str]]:
-    return [(m.group(1), m.group(2)) for m in BLOCK.finditer(body or "")]
+def collapse_repeats(text: str) -> tuple[str, int]:
+    """A generation loop inside a file (the same <script> block written thousands of times): every run of one block
+    of 1-25 lines repeated back to back is kept once. Returns (text, blocks removed). Short or blank lines that may
+    legitimately repeat (</div>, }, empty lines) do not count: a block must hold at least 40 characters, and a single
+    line repeats at least 10 times, a larger block 6 times, and the copies hold 1,200+ characters."""
+    lines = text.split("\n")
+    out: list[str] = []
+    removed = 0
+    i, n = 0, len(lines)
+    while i < n:
+        best = None
+        for k in range(1, 26):
+            if i + 2 * k > n:
+                break
+            block = lines[i:i + k]
+            if len("".join(x.strip() for x in block)) < 40:
+                continue
+            reps = 1
+            while i + (reps + 1) * k <= n and lines[i + reps * k:i + (reps + 1) * k] == block:
+                reps += 1
+            # Only real loops: many back-to-back copies holding a lot of text (a generated table or seed list with a
+            # few equal rows stays as written).
+            size = len("\n".join(block)) * reps
+            if reps >= (10 if k == 1 else 6) and size >= 1200 and (best is None or reps * k > best[0] * best[1]):
+                best = (reps, k)
+        if best:
+            reps, k = best
+            out.extend(lines[i:i + k])
+            removed += reps - 1
+            i += reps * k
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out), removed
+
+
+def norm_key(k: str) -> str:
+    """oldText / old_text / OldString / old-str -> oldtext / oldstring ...: models spell the same argument many ways."""
+    return re.sub(r"[^a-z]", "", str(k).lower())
+
+
+def pick(d: dict, keys) -> str | None:
+    """The first string value of d under any spelling of keys."""
+    want = [norm_key(k) for k in keys]
+    by = {norm_key(k): v for k, v in d.items()}
+    for w in want:
+        if isinstance(by.get(w), str):
+            return by[w]
+    return None
+
+
+def parse_blocks(body) -> list[tuple[str, str]]:
+    """Edits from the body: SEARCH/REPLACE blocks (and their variants), a JSON list of {old, new} (any key spelling,
+    also nested under edits / changes / replacements), or a unified diff."""
+    if isinstance(body, (list, dict)):
+        import json
+        body = json.dumps(body, ensure_ascii=False)
+    body = body or ""
+    pairs = [(m.group(1), m.group(2)) for m in BLOCK.finditer(body)]
+    if pairs:
+        return pairs
+    s = body.strip()
+    if s[:1] in "[{":
+        import json
+        try:
+            data = json.loads(s)
+        except ValueError:
+            data = None
+        items = data if isinstance(data, list) else [data]
+        if isinstance(data, dict):
+            nested = next((v for k, v in data.items() if norm_key(k) in LIST_KEYS and isinstance(v, list)), None)
+            items = nested if nested is not None else [data]
+        for it in items or []:
+            if isinstance(it, dict):
+                old = pick(it, [k for k in OLD_KEYS])
+                new = pick(it, NEW_KEYS) or ""
+                if old:
+                    pairs.append((old, new))
+        if pairs:
+            return pairs
+    if re.search(r"^@@ ", body, re.M):
+        return unified_pairs(body)
+    return []
+
+
+OLD_KEYS = ("old", "old_string", "old_text", "old_str", "search", "find", "original", "before", "from", "target",
+            "old_code", "existing")
+NEW_KEYS = ("new", "new_string", "new_text", "new_str", "replace", "replacement", "updated", "after", "to", "content",
+            "new_code")
+LIST_KEYS = {"edits", "changes", "replacements", "patches", "diffs", "modifications", "blocks"}
+
+
+def unified_pairs(patch: str) -> list[tuple[str, str]]:
+    """Each @@ hunk of a unified diff as (old lines, new lines): context and '-' lines, context and '+' lines."""
+    out, old, new, inside = [], [], [], False
+    for line in patch.replace("\r\n", "\n").split("\n"):
+        if line.startswith("@@"):
+            if inside and (old or new):
+                out.append(("\n".join(old), "\n".join(new)))
+            old, new, inside = [], [], True
+            continue
+        if not inside or line.startswith(("--- ", "+++ ", "\\ No newline")):
+            continue
+        if line.startswith("-"):
+            old.append(line[1:])
+        elif line.startswith("+"):
+            new.append(line[1:])
+        else:
+            ctx = line[1:] if line.startswith(" ") else line
+            old.append(ctx)
+            new.append(ctx)
+    if inside and (old or new):
+        out.append(("\n".join(old), "\n".join(new)))
+    return [(o, n) for o, n in out if o.strip()]
 
 
 def _line_spans(text: str) -> list[tuple[int, int]]:
@@ -106,7 +221,50 @@ def apply_edit(text: str, old: str, new: str, replace_all: bool = False) -> tupl
                 repl = _reindent(new.strip("\n"), old.strip("\n"), found) if norm is str.strip else new.strip("\n")
                 text = text[:start] + repl + text[end:]
             return text, len(hits) if replace_all else 1
+    # Any whitespace differences, also inside a line or in a fragment ("a  =  b" vs "a = b", tabs vs spaces).
+    words = old.split()
+    if words:
+        rx = re.compile(r"\s+".join(re.escape(w) for w in words))
+        found = list(rx.finditer(text))
+        if len(found) == 1 or (found and replace_all):
+            for m in reversed(found if replace_all else found[:1]):
+                text = text[:m.start()] + new.strip("\n") + text[m.end():]
+            return text, len(found) if replace_all else 1
+    # A model that retyped the snippet from memory (a quote changed, a word missing): one region that is almost the
+    # same and clearly better than any other is the place. It looped on "not found" before.
+    if (spot := _near_unique(text, old)) is not None:
+        start, end = spot
+        repl = _reindent(new.strip("\n"), old.strip("\n"), text[start:end])
+        return text[:start] + repl + text[end:], 1
     raise EditError("The snippet was not found in the file." + _closest(text, old))
+
+
+def _near_unique(text: str, old: str, need: float = 0.9) -> tuple[int, int] | None:
+    """(start, end) of the only line window at least `need` similar to old (and 0.05 better than the next one)."""
+    lines = text.split("\n")
+    want = old.strip("\n").split("\n")
+    n = len(want)
+    if n < 2 and len(old.strip()) < 25:  # too short to place by similarity
+        return None
+    target = "\n".join(x.strip() for x in want)
+    spans = _line_spans(text)
+    scored = []
+    for size in {n, max(1, n - 1), n + 1}:
+        for i in range(0, max(0, len(lines) - size) + 1):
+            window = "\n".join(x.strip() for x in lines[i:i + size])
+            sm = difflib.SequenceMatcher(None, target, window)
+            if sm.quick_ratio() < need:
+                continue
+            scored.append((sm.ratio(), i, size))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    best, i, size = scored[0]
+    # windows overlapping the best one are the same place, not a rival
+    rivals = [r for r, j, s in scored[1:] if j + s <= i or j >= i + size]
+    if best < need or (rivals and rivals[0] > best - 0.05):
+        return None
+    return spans[i][0], spans[i + size - 1][1]
 
 
 def _closest(text: str, old: str) -> str:

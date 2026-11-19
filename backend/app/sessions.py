@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import time
 from pathlib import Path
 
@@ -57,11 +56,11 @@ def append_message(session_id: str, msg_id: int, role: str, content: str, meta: 
 
 def append_summary(session_id: str, summary: str, stats: dict) -> None:
     p = path(session_id) / "summary.md"
-    head = "" if p.exists() else "# Bağlam sıkıştırma geçmişi\n\n"
+    head = "" if p.exists() else "# Context compression history\n\n"
     n = (p.read_text(encoding="utf-8").count("\n## ") if p.exists() else 0) + 1
     with open(p, "a", encoding="utf-8") as f:
-        f.write(f"{head}## Sıkıştırma #{n} — {time.strftime('%Y-%m-%d %H:%M')}\n"
-                f"- Özetlenen mesaj: {stats.get('compressed')}\n"
+        f.write(f"{head}## Compression #{n} — {time.strftime('%Y-%m-%d %H:%M')}\n"
+                f"- Messages summarized: {stats.get('compressed')}\n"
                 f"- Token: ~{stats.get('before', 0):,} → ~{stats.get('after', 0):,}\n\n{summary}\n\n")
 
 
@@ -73,4 +72,5 @@ def remove(session_id: str) -> None:
     """Deleting a chat deletes its whole folder: its files and its record."""
     p = path(session_id, create=False).parent
     if p.exists() and p.resolve().parent == CHAT_DIR.resolve():
-        shutil.rmtree(p, ignore_errors=True)
+        from .config import rmtree_long
+        rmtree_long(p)

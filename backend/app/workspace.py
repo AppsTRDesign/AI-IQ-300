@@ -131,7 +131,8 @@ def remove_chat_root(sid: str) -> None:
     """Deleting a chat without a project also deletes its working folder."""
     root = CHATS_DIR / re.sub(r"[^\w-]", "", str(sid))
     if sid and root.parent == CHATS_DIR and root.is_dir() and root != PROJECTS_DIR:
-        shutil.rmtree(root, ignore_errors=True)
+        from .config import rmtree_long
+        rmtree_long(root)
 
 
 def tree(root: Path, max_entries: int = 2000) -> list[dict]:
@@ -189,18 +190,20 @@ def write_state(state: Path, root: Path, name: str, last: str, files: list[str],
     history = ""
     if state.exists():
         old = state.read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"## Geçmiş\n(.*)", old, re.S)
+        # Section names are language-neutral English (the file goes into the system prompt, which is English);
+        # the Turkish names of older files are still read.
+        m = re.search(r"## (?:History|Geçmiş)\n(.*)", old, re.S)
         history = m.group(1) if m else ""
         # Files from earlier turns stay listed, so "continue" knows everything the task already produced.
-        prev = re.search(r"## Değişen Dosyalar\n(.*?)\n\n", old, re.S)
+        prev = re.search(r"## (?:Changed files|Değişen Dosyalar)\n(.*?)\n\n", old, re.S)
         earlier = re.findall(r"^- `([^`]+)`", prev.group(1), re.M) if prev else []
         files = list(dict.fromkeys(earlier + list(files)))
     stamp = time.strftime("%Y-%m-%d %H:%M")
     entry = f"- {stamp} [{status}] {last[:200]}\n"
-    body = (f"# {name} - PROJECT_STATE.md\n\n## Mevcut Durum\n- **Tarih:** {stamp}\n- **Son İşlem:** {last}\n"
-            f"- **Durum:** {status}\n\n## Değişen Dosyalar\n" + "".join(f"- `{f}`\n" for f in files[-50:])
-            + "\n## Çalıştırılan Komutlar\n" + "".join(f"- `{c[:160]}`\n" for c in commands[-30:])
-            + "\n## Dosya Yapısı\n```\n" + summarize_tree(root, 80) + "\n```\n\n## Geçmiş\n"
+    body = (f"# {name} - PROJECT_STATE.md\n\n## Current state\n- **Date:** {stamp}\n- **Last task:** {last}\n"
+            f"- **Status:** {status}\n\n## Changed files\n" + "".join(f"- `{f}`\n" for f in files[-50:])
+            + "\n## Commands run\n" + "".join(f"- `{c[:160]}`\n" for c in commands[-30:])
+            + "\n## File tree\n```\n" + summarize_tree(root, 80) + "\n```\n\n## History\n"
             + entry + "".join(history.splitlines(keepends=True)[:200]))
     state.write_text(body, encoding="utf-8")
 

@@ -122,7 +122,9 @@ def query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 
 def add_message(session_id: str, role: str, content: str, meta: dict | None = None) -> int:
     now = time.time()
-    execute("UPDATE sessions SET updated=? WHERE id=?", (now, session_id))
+    if not execute("UPDATE sessions SET updated=? WHERE id=?", (now, session_id)).rowcount:
+        # The chat was deleted while its task was still finishing: no orphan message (and no folder) comes back.
+        return 0
     mid = execute(
         "INSERT INTO messages(session_id, role, content, meta, created) VALUES(?,?,?,?,?)",
         (session_id, role, content, json.dumps(meta or {}, ensure_ascii=False), now),

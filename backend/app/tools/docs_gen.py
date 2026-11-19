@@ -479,7 +479,11 @@ def _image_bytes(src: str, base_dir: Path | None) -> bytes | None:
             import httpx
             r = httpx.get(src, timeout=15, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
             return r.content if r.status_code < 400 else None
-        p = Path(src.replace("file:///", "").replace("file://", ""))
+        if src.lower().startswith("file:"):  # file:///C:/My%20Folder/x.png -> C:\My Folder\x.png
+            from urllib.parse import urlsplit
+            from urllib.request import url2pathname
+            src = url2pathname(urlsplit(src).path)
+        p = Path(src)
         if not p.is_absolute() and base_dir:
             p = base_dir / p
         return p.read_bytes() if p.is_file() else None
@@ -1432,7 +1436,7 @@ def _pdf_reportlab(src: Source, target: Path, theme: str) -> dict:
     a, d, t = THEMES.get(theme, THEMES[DEFAULT_THEME])
     ss = getSampleStyleSheet()
     body = ParagraphStyle("b", parent=ss["BodyText"], fontName=base, fontSize=10, leading=14)
-    hs = {i: ParagraphStyle(f"h{i}", parent=body, fontName=base + ("-Bold" if base == "DejaVu" else "-Bold"),
+    hs = {i: ParagraphStyle(f"h{i}", parent=body, fontName=base + "-Bold",
                             fontSize={1: 20, 2: 15, 3: 12}.get(i, 11), leading={1: 25, 2: 19, 3: 15}.get(i, 14),
                             textColor=colors.HexColor(d if i != 3 else a), spaceBefore=8, spaceAfter=4) for i in range(1, 7)}
 

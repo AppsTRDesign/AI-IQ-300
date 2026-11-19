@@ -117,6 +117,10 @@ async def _navigate(ctx, args):
         await {"back": page.go_back, "forward": page.go_forward, "reload": page.reload}[url](wait_until="domcontentloaded")
         await AGENT.settle(page)
         return f"{url}: {page.url}", {"url": page.url}
+    from .registry import local_page_instead
+    url, local_note = local_page_instead(ctx, url if re.match(r"https?://", url, re.I) else (
+        "http://" + url if re.match(r"(localhost|127\.|\[::1\])", url) else url))
+    args["_local_note"] = local_note
     if url.lower().startswith("file:") or not re.match(r"[a-z][a-z0-9+.-]*:", url, re.I):
         if re.match(r"(localhost|127\.|\[::1\])", url):
             url = "http://" + url
@@ -147,10 +151,31 @@ async def _navigate(ctx, args):
         AGENT._on_page(page)
     resp = await AGENT.goto(page, url)
     status = f" (HTTP {resp.status})" if resp is not None and resp.status >= 400 else ""
+    if is_local(url) and not status:
+        await _rendered(page)
     await AGENT.dismiss_popups(page)  # cookie banner (rejected) and pop-ups covering the page
     note = AGENT.popup_note()
-    return f"opened {page.url}{status}" + (f"\n{note}" if note else ""), \
+    return args.pop("_local_note", "") + f"opened {page.url}{status}" + (f"\n{note}" if note else ""), \
         {"url": page.url, "status": resp.status if resp is not None else None}
+
+
+async def _rendered(page, limit: float = 20.0) -> None:
+    """A local single-page app (Expo web, Vite, React) is an empty page until its bundle ran: the model got
+    '(no readable elements)' and then waited minutes with browser_wait. Up to `limit` s for text to appear, ending at
+    once when the page reports an error (the page check after the step lists it)."""
+    tid = AGENT.tab_id(page)
+    errs0, bad0 = len(AGENT.console.get(tid, [])), len(AGENT.bad.get(tid, []))
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < limit:
+        try:
+            if await page.evaluate("(document.body && document.body.innerText || '').trim().length"):
+                return
+        except Exception:  # noqa: BLE001 - navigating
+            pass
+        if any(m["type"] == "error" for m in list(AGENT.console.get(tid, []))[errs0:]) or \
+                len(AGENT.bad.get(tid, [])) > bad0:
+            return
+        await asyncio.sleep(0.5)
 
 
 async def _snapshot(ctx, args):
@@ -176,23 +201,47 @@ async def _click(ctx, args):
         await page.mouse.click(float(args["x"]), float(args["y"]))
         what = f"({args['x']},{args['y']})"
     else:
-        loc, what = AGENT.locator(str(args.get("ref") or ""), str(args.get("selector") or ""), str(args.get("text") or ""))
-        info = await AGENT.element(loc, what)
+        loc, what, info = await AGENT.target(str(args.get("ref") or ""), str(args.get("selector") or ""),
+                                             str(args.get("text") or ""))
+        AGENT.acted = True
+        if info.get("tag") == "option":
+            # "click 2 Kişi": an option of a select box cannot be clicked like a button (it is not on screen until the
+            # list opens) - it is selected in its select, as a person choosing it would.
+            label = await loc.evaluate("(o) => o.textContent.trim()")
+            sel = loc.locator("xpath=ancestor::select[1]")
+            await sel.select_option(label=label, timeout=5000)
+            await AGENT.settle(AGENT.page)
+            return f"selected {label!r} in its list -> {AGENT.page.url}", {"url": AGENT.page.url}
         hover = _flag(args.get("hover"))
         if not hover:
             await _guard_click(ctx, info, dialog)
-        AGENT.dialog_choice = "accept" if dialog == "accept" else "dismiss"
+        # confirm() dialogs: on the user's own local site (the app under test: "Delete? OK") they are accepted unless
+        # dialog=dismiss; elsewhere only with dialog=accept. Dismissed by default, a delete button never deleted and
+        # the model waited 15 s for a row that stayed.
+        local_site = is_local(AGENT.page.url)
+        AGENT.dialog_choice = "accept" if dialog == "accept" or (local_site and dialog != "dismiss") else "dismiss"
         mods = [k for k in _keys(str(args.get("modifiers") or "").replace("+", " ")) if k]
         try:
             if hover:
-                await loc.hover(timeout=8000)
+                await loc.hover(timeout=5000)
             else:
-                await loc.click(timeout=8000, button=str(args.get("button") or "left"),
+                await loc.click(timeout=5000, button=str(args.get("button") or "left"),
                                 click_count=2 if _flag(args.get("double")) else 1, modifiers=mods or None)
         except Exception as e:
-            raise BrowserError(f"click on {what} failed: {str(e).splitlines()[0][:220]}. Take browser_snapshot: the "
-                               "element may be covered (close the popup/cookie banner) or disabled.") from e
-        what = f"{what} \"{(info.get('name') or '')[:60]}\""
+            err = str(e).splitlines()[0][:220]
+            if hover or "disabled" in str(e) or not await loc.count():
+                raise BrowserError(f"click on {what} failed: {err}. Take browser_snapshot: the element may be "
+                                   "disabled or gone.") from e
+            # Covered by another layer (a sticky header, an animation still running): a script click still
+            # reaches the element; the trace says so, so a real overlap bug is not hidden.
+            try:
+                await loc.evaluate("(e) => { e.scrollIntoView({block: 'center'}); e.click(); }")
+                info["note"] = (info.get("note") or "") + " (a normal click was blocked - something covers it or it " \
+                                                          "is still moving - so it was clicked by script)"
+            except Exception:
+                raise BrowserError(f"click on {what} failed: {err}. Take browser_snapshot: the element may be "
+                                   "covered or disabled.") from e
+        what = f"{what} \"{(info.get('name') or '')[:60]}\"{info.get('note') or ''}"
     await asyncio.sleep(0.2)
     await AGENT.settle(AGENT.page)
     AGENT.dialog_choice = "dismiss"
@@ -200,10 +249,33 @@ async def _click(ctx, args):
     return f"{'hovered' if _flag(args.get('hover')) else 'clicked'} {what}{note} -> {AGENT.page.url}", {"url": AGENT.page.url}
 
 
+FIELD_NEAR_JS = r"""(e) => {
+  document.querySelectorAll('[data-aiiq-pick]').forEach((x) => x.removeAttribute('data-aiiq-pick'));
+  const F = 'input:not([type=hidden]),textarea,select,[contenteditable=true]';
+  let f = e.control || e.querySelector(F);
+  for (let s = e.nextElementSibling, i = 0; !f && s && i < 3; s = s.nextElementSibling, i++)
+    f = s.matches(F) ? s : s.querySelector(F);
+  for (let p = e.parentElement, i = 0; !f && p && i < 2; p = p.parentElement, i++) {
+    const all = [...p.querySelectorAll(F)];
+    if (all.length === 1) f = all[0];
+  }
+  if (!f) return false;
+  f.setAttribute('data-aiiq-pick', '1');
+  return true;
+}"""
+
+
 async def _type(ctx, args):
-    loc, what = AGENT.locator(str(args.get("ref") or ""), str(args.get("selector") or ""), str(args.get("target") or ""))
-    text = str(args.get("text") if args.get("text") is not None else "")
-    info = await AGENT.element(loc, what)
+    loc, what, info = await AGENT.target(str(args.get("ref") or ""), str(args.get("selector") or ""),
+                                         str(args.get("target") or args.get("field") or args.get("label") or ""))
+    AGENT.acted = True
+    if not info.get("editable") and info.get("tag") not in ("input", "textarea", "select"):
+        # The text matched a label / caption, not the field (a <label> without for=): the field next to it
+        found = await loc.evaluate(FIELD_NEAR_JS)
+        if found:
+            loc = AGENT.page.locator('[data-aiiq-pick="1"]').first
+            info = await AGENT.element(loc, what)
+    text = str(args.get("text") if args.get("text") is not None else args.get("value") or "")
     _guard_type(ctx, info, args)
     try:
         if _flag(args.get("slowly")):
@@ -217,7 +289,7 @@ async def _type(ctx, args):
     except Exception as e:
         raise BrowserError(f"typing into {what} failed: {str(e).splitlines()[0][:220]}") from e
     shown = "***" if info.get("password") or info.get("card") else f'"{text[:60]}"'
-    msg = f"typed {shown} into {what}"
+    msg = f"typed {shown} into {what}{info.get('note') or ''}"
     if _flag(args.get("submit")):
         if info.get("formPassword") or info.get("formCard"):
             await _guard_click(ctx, {**info, "submit": True, "name": info.get("name") or "submit"}, "")
@@ -238,6 +310,7 @@ async def _key(ctx, args):
                                     " return !!(f && f.querySelector('input[type=password],[autocomplete^=\"cc-\"]')); }")
         if focus:
             await _guard_click(ctx, {"name": "submit (Enter)", "submit": True, "formPassword": True}, "")
+    AGENT.acted = True
     for _ in range(max(1, min(int(args.get("repeat") or 1), 50))):
         for k in keys:
             await page.keyboard.press(k)
@@ -247,27 +320,40 @@ async def _key(ctx, args):
 
 
 async def _form(ctx, args):
-    fields = args.get("fields")
+    fields = next((args.get(k) for k in ("fields", "values", "inputs", "data", "form") if args.get(k)), None)
     if isinstance(fields, str):
         try:
             fields = json.loads(fields or "[]")
         except json.JSONDecodeError as e:
             raise BrowserError("fields must be a JSON list: [{\"ref\": \"e3\", \"value\": \"...\"}]") from e
+    if isinstance(fields, dict):  # {"e9": "Ay", "E-posta": "a@b.c"}: ref or label -> value
+        fields = [{("ref" if re.fullmatch(r"\[?e?\d+\]?", str(k)) else "label"): k, "value": v} for k, v in fields.items()]
     if not isinstance(fields, list) or not fields:
         raise BrowserError("Give fields: [{\"ref\": \"e3\", \"value\": \"Ali\"}, {\"ref\": \"e5\", \"value\": true}].")
     done = []
     for f in fields[:40]:
         if not isinstance(f, dict):
             continue
-        loc, what = AGENT.locator(str(f.get("ref") or ""), str(f.get("selector") or ""), str(f.get("text") or ""))
-        info = await AGENT.element(loc, what)
+        loc, what, info = await AGENT.target(str(f.get("ref") or ""), str(f.get("selector") or ""),
+                                             str(f.get("text") or f.get("label") or ""))
+        AGENT.acted = True
+        if not info.get("editable") and info.get("tag") not in ("input", "textarea", "select"):
+            if await loc.evaluate(FIELD_NEAR_JS):  # a label matched: the field next to it
+                loc = AGENT.page.locator('[data-aiiq-pick="1"]').first
+                info = await AGENT.element(loc, what)
         value = f.get("value")
         try:
             if info["tag"] == "select":
-                try:
-                    await loc.select_option(label=str(value), timeout=5000)
-                except Exception:
-                    await loc.select_option(str(value), timeout=5000)
+                # the option by its text or value, exact first, then ignoring case / a partial match; a value that
+                # matches nothing is answered at once with the real options (it used to wait 2 x 5 s)
+                opts = await loc.evaluate("(s) => [...s.options].map((o) => [o.value, o.text.trim()])")
+                want = str(value).strip().casefold()
+                pick = (next((v for v, t in opts if want in (v.casefold(), t.casefold())), None)
+                        or next((v for v, t in opts if want and (want in t.casefold() or t.casefold() in want) and t), None))
+                if pick is None:
+                    raise BrowserError(f"{what}: no option {value!r}. Options: "
+                                       + ", ".join(f"{t!r}" for _, t in opts[:30]))
+                await loc.select_option(value=pick, timeout=5000)
                 done.append(f"{what}={value}")
             elif info["type"] in ("checkbox", "radio"):
                 await loc.set_checked(_flag(value, True), timeout=5000)
@@ -307,22 +393,58 @@ async def _scroll(ctx, args):
     return f"scrolled {d}: now at {pos[0]}px of {max(pos[1], 0)}px", {}
 
 
+WAIT_MAX = 60  # seconds: a page that shows nothing after a minute is broken, not slow
+
+
 async def _wait(ctx, args):
+    """Waits in one-second slices and watches the page meanwhile: a page that stays blank while its console or its
+    requests fail (an Expo / SPA bundle answering 500) ends the wait at once with those errors. Waiting the full
+    120-150 s on a blank page was most of a live test's browser time."""
     page = AGENT.page
-    timeout = max(1, min(float(args.get("timeout") or 15), 180)) * 1000
-    try:
-        if args.get("text"):
-            await page.get_by_text(str(args["text"])).first.wait_for(state="visible", timeout=timeout)
-            return f"'{args['text']}' is on the page", {}
-        if args.get("gone"):
-            await page.get_by_text(str(args["gone"])).first.wait_for(state="hidden", timeout=timeout)
-            return f"'{args['gone']}' is gone", {}
-        if args.get("url"):
-            part = str(args["url"])
-            await page.wait_for_url(re.compile(re.escape(part)), timeout=timeout)
-            return f"address now {page.url}", {}
-    except Exception as e:
-        raise BrowserError(f"waited {timeout / 1000:.0f}s: {str(e).splitlines()[0][:160]}") from e
+    timeout = max(1.0, min(float(args.get("timeout") or 15), WAIT_MAX))
+    tid = AGENT.tab_id()
+    errs0, bad0 = len(AGENT.console.get(tid, [])), len(AGENT.bad.get(tid, []))
+    t0 = time.monotonic()
+    blank_since = None
+
+    async def met() -> str:
+        try:
+            if args.get("text"):
+                await page.get_by_text(str(args["text"])).first.wait_for(state="visible", timeout=1000)
+                return f"'{args['text']}' is on the page"
+            if args.get("gone"):
+                await page.get_by_text(str(args["gone"])).first.wait_for(state="hidden", timeout=1000)
+                return f"'{args['gone']}' is gone"
+            if args.get("url"):
+                await page.wait_for_url(re.compile(re.escape(str(args["url"]))), timeout=1000)
+                return f"address now {page.url}"
+        except Exception:  # noqa: BLE001 - not yet
+            return ""
+        return ""
+
+    if args.get("text") or args.get("gone") or args.get("url"):
+        while True:
+            if done := await met():
+                return done, {}
+            now = time.monotonic()
+            new_err = [m for m in list(AGENT.console.get(tid, []))[errs0:] if m["type"] == "error"]
+            new_bad = list(AGENT.bad.get(tid, []))[bad0:]
+            try:
+                blank = not (await page.evaluate("(document.body && document.body.innerText || '').trim().length"))
+            except Exception:  # noqa: BLE001 - navigating
+                blank = False
+            blank_since = (blank_since or now) if blank else None
+            if (new_err or new_bad) and blank_since and now - blank_since >= 5:
+                raise BrowserError(
+                    f"stopped waiting after {now - t0:.0f}s: the page {page.url} is still blank and it has errors - fix "
+                    "them first (waiting longer will not help):\n"
+                    + "\n".join(f"[console] {m['text'][:300]}" + (f" <- {m['url'][:160]}" if m.get('url') else "")
+                                for m in new_err[-6:])
+                    + ("\nFailed requests: " + "; ".join(new_bad[-6:]) if new_bad else ""))
+            if now - t0 >= timeout:
+                state = "blank" if blank else "showing other content"
+                raise BrowserError(f"waited {timeout:.0f}s: not found (the page is {state}; browser_snapshot shows "
+                                   "what is there, browser_inspect console / network shows errors)")
     ms = max(0, min(int(float(args.get("ms") or 1000)), 15000))
     await asyncio.sleep(ms / 1000)
     return f"waited {ms} ms", {}
@@ -392,8 +514,14 @@ async def _inspect(ctx, args):
         items = [m for m in AGENT.console.get(tid, []) if (not _flag(args.get("only_errors")) or m["type"] in ("error", "warning"))
                  and (not pattern or pattern in m["text"].lower())][-limit:]
         AGENT.seen_console[tid] = len(AGENT.console.get(tid, []))
-        return (f"{len(items)} console message(s):\n" + "\n".join(f"[{m['type']}] {m['text'][:400]}" for m in items)
-                if items else "no console messages"), {}
+        # "Failed to load resource: 500" says nothing about WHICH request: its URL goes with it (the model guessed for
+        # minutes in a live test), and the failed requests themselves are listed under it.
+        lines = [f"[{m['type']}] {m['text'][:400]}" + (f"  <- {m['url'][:200]}" if m.get("url") and m["url"] not in m["text"] else "")
+                 for m in items]
+        failed = [b for b in AGENT.bad.get(tid, [])][-10:]
+        if failed and any("Failed to load resource" in m["text"] for m in items):
+            lines.append("Failed requests (status type url): " + "; ".join(failed))
+        return (f"{len(items)} console message(s):\n" + "\n".join(lines) if items else "no console messages"), {}
     if what == "network":
         if rid := str(args.get("request_id") or ""):
             resp = AGENT.responses.get(rid)
@@ -485,7 +613,7 @@ async def act(ctx, action: str, args: dict) -> ToolResult:
         try:
             await AGENT.ensure()
             AGENT.download_dir = ctx.root / "downloads"
-            text, data = await OPS[action](ctx, args)
+            text, data = await OPS[action](ctx, _target_keys(args, action))
             if action not in NO_PAGE_AFTER and _flag(args.get("snapshot"), True) and AGENT.pages:
                 text += "\n\n" + await AGENT.snapshot(max_chars=AFTER_MAX)
             elif action in ("scroll", "wait") and AGENT.pages and (news := AGENT.news()):
@@ -579,7 +707,9 @@ async def browser_click(ctx, args, body):
       "key by key (for fields that react to each key); submit=true presses Enter afterwards. Passwords: on local "
       "development sites, and in Full access mode on the site the user's request names; card numbers only on local "
       "development sites (test values); otherwise use browser_handoff.",
-      {"ref": TARGET["ref"], "selector": TARGET["selector"], "text": S("The text to type"),
+      {"ref": TARGET["ref"], "selector": TARGET["selector"],
+       "label": S("Optional: the field's label or placeholder instead of a ref (a field that just appeared)"),
+       "text": S("The text to type"),
        "clear": S("false: append instead of replacing", enum=["true", "false"]),
        "slowly": S("true: key by key", enum=["true", "false"]), "submit": S("true: press Enter after", enum=["true", "false"]),
        **SNAP}, main="text", required=("text",))
@@ -620,7 +750,7 @@ async def browser_scroll(ctx, args, body):
 
 @tool("browser_wait", '<tool name="browser_wait" text="Saved"></tool>',
       "Wait until a text appears (text), disappears (gone) or the address contains url; else wait ms milliseconds. "
-      "timeout in seconds (default 15, max 180).",
+      "timeout in seconds (default 15, max 60); a page that stays blank with errors ends the wait at once.",
       {"text": S("Text to wait for"), "gone": S("Text to wait to disappear"), "url": S("Part of the address to wait for"),
        "ms": {"type": "integer", "description": "Plain wait in ms (max 15000)"},
        "timeout": {"type": "integer", "description": "Seconds"}})
@@ -670,11 +800,66 @@ async def browser_handoff(ctx, args, body):
     return await act(ctx, "handoff", args)
 
 
+BATCH_ALIASES = {"js": "inspect", "eval": "inspect", "evaluate": "inspect", "script": "inspect",
+                 "fill": "type", "input": "type", "press": "key", "keypress": "key", "goto": "navigate",
+                 "open": "navigate", "visit": "navigate", "hover": "click", "dblclick": "click", "tap": "click",
+                 "select": "form", "check": "form", "uncheck": "form", "expect": "wait", "assert": "wait",
+                 "wait_for": "wait", "sleep": "wait", "shot": "screenshot", "console": "inspect"}
+
+
+def _batch_step(step) -> dict:
+    """One batch step in the shape the action takes: other names models use (js, fill, press, select, hover...)."""
+    step = dict(step) if isinstance(step, dict) else {"action": str(step or "")}
+    action = str(step.get("action") or step.get("type_") or step.get("op") or "").strip().lower()
+    real = BATCH_ALIASES.get(action, action)
+    if real == "inspect" and action != "inspect":
+        step.setdefault("what", "console" if action == "console" else "js")
+        step.setdefault("code", step.get("script") or step.get("expression") or step.get("js") or step.get("text") or "")
+    elif action in ("hover", "dblclick"):
+        step["hover" if action == "hover" else "double"] = "true"
+    elif real == "form" and action != "form" and not step.get("fields"):
+        value = step.get("value", step.get("option", step.get("text")))
+        if action in ("check", "uncheck"):
+            value = action == "check"
+        step["fields"] = [{k: step[k] for k in ("ref", "selector", "label") if step.get(k)} | {"value": value}]
+    elif real == "wait" and action in ("sleep",) and step.get("ms") is None:
+        step["ms"] = step.get("seconds", 1) * 1000 if isinstance(step.get("seconds"), (int, float)) else 1000
+    elif real == "type" and step.get("text") is None and step.get("value") is not None:
+        step["text"] = step["value"]
+    step["action"] = real
+    return _target_keys(step, real)
+
+
+TARGET_KEYS = ("element", "target", "locator", "element_ref", "elementRef", "ref_id", "uid", "id", "on", "field")
+
+
+def _target_keys(args: dict, action: str) -> dict:
+    """The element under another key name (element="e3", target="#save", field="E-posta"): as ref / selector /
+    text or label, so a step is not stopped with "say which element"."""
+    if action not in ("click", "type", "scroll", "screenshot") or any(args.get(k) for k in ("ref", "selector", "label")):
+        return args
+    if action == "click" and (args.get("text") or (args.get("x") not in (None, "") and args.get("y") not in (None, ""))):
+        return args
+    value = next((str(args[k]) for k in TARGET_KEYS if args.get(k) not in (None, "")), "")
+    if not value:
+        return args
+    if re.fullmatch(r"\[?(ref[=_])?e?\d+\]?", value.strip()):
+        args["ref"] = value
+    elif re.search(r"[#.\[\]=>:]", value):
+        args["selector"] = value
+    else:
+        args["label" if action == "type" else "text"] = value
+    return args
+
+
 @tool("browser_batch", '<tool name="browser_batch">[{"action": "type", "ref": "e3", "text": "demo@test.local"}, '
       '{"action": "click", "ref": "e9"}, {"action": "wait", "text": "Dashboard"}]</tool>',
-      "Several browser steps in one call, in order (navigate, click, type, key, form, scroll, wait, find, screenshot, "
-      "snapshot); stops at the first failure. Use it when the next steps are predictable. Returns each step's result "
-      "and the page at the end.",
+      "Several browser steps in one call, in order (navigate, click, type, key, form, select, scroll, wait, find, "
+      "screenshot, snapshot, js); stops at the first failure and returns each step's result and the page. Plan "
+      "first: read the page once (browser_snapshot interactive=true), then run a whole flow in one batch. Elements "
+      "that only appear later (a form a click opens) have no ref yet: target them by their visible text, label or "
+      "placeholder ({\"action\": \"type\", \"text\": \"Demo\", \"label\": \"Başlık\"}, {\"action\": \"click\", "
+      "\"text\": \"Kaydet\"}), never by a guessed ref or CSS. Refs from before a page change are found again by name.",
       {"actions": {"type": "array", "items": {"type": "object"}, "description": "[{action, ...that tool's arguments}]"}},
       main="actions", required=("actions",))
 async def browser_batch(ctx, args, body):
@@ -691,9 +876,11 @@ async def browser_batch(ctx, args, body):
             await AGENT.ensure()
             AGENT.download_dir = ctx.root / "downloads"
             for i, step in enumerate(steps[:25], 1):
-                action = str((step or {}).get("action") or "")
+                step = _batch_step(step)
+                action = step.get("action") or ""
                 if action not in OPS or action in ("batch", "handoff"):
-                    raise BrowserError(f"step {i}: unknown action '{action}'")
+                    raise BrowserError(f"step {i}: unknown action '{action}'. Actions: navigate, click, type, key, "
+                                       "form, select, scroll, wait, find, snapshot, screenshot, js")
                 text, d = await OPS[action](ctx, step)
                 data.update({k: v for k, v in d.items() if k in ("screenshot", "path", "size", "title", "url")})
                 lines.append(f"{i}. {action}: {text if action in ('find', 'snapshot', 'inspect') else text.splitlines()[0]}")

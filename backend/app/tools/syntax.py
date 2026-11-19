@@ -84,6 +84,49 @@ def available() -> bool:
         return False
 
 
+def syntax_errors(path: Path, wait: float = 3.0, limit: int = 3) -> list[tuple[int, str]]:
+    """[(line, text of that line)] where the file does not parse: an unescaped quote ('6'li Paket'), a missing
+    bracket. Python is checked by Python itself (exact); other languages by their tree-sitter grammar. Empty when the
+    file parses or cannot be checked (no grammar offline, too big)."""
+    src = _read(path)
+    if src is None:
+        return []
+    lines = src.splitlines()
+
+    def line_text(n: int) -> str:
+        return lines[n - 1].decode(errors="replace").strip()[:160] if 0 < n <= len(lines) else ""
+    if path.suffix.lower() == ".py":
+        try:
+            compile(src, str(path), "exec")
+            return []
+        except SyntaxError as e:
+            return [(e.lineno or 0, f"{e.msg}: {line_text(e.lineno or 0)}")]
+        except ValueError:  # null bytes
+            return []
+    lang = LANG.get(path.suffix.lower())
+    if not lang or parser(path.suffix, wait) is None:
+        return []
+    try:  # a parser of its own: the shared ones are used by the symbol index (parsers are not thread-safe)
+        from tree_sitter_language_pack import get_parser
+        tree = get_parser(lang).parse(src)
+    except Exception:  # noqa: BLE001
+        return []
+    if not tree.root_node.has_error:
+        return []
+    out: list[tuple[int, str]] = []
+    stack = [tree.root_node]
+    while stack and len(out) < limit:
+        n = stack.pop()
+        if n.type == "ERROR" or n.is_missing:
+            ln = n.start_point[0] + 1
+            if not out or out[-1][0] != ln:
+                out.append((ln, (f"missing {n.type!r} - " if n.is_missing else "") + line_text(ln)))
+            continue
+        if n.has_error:
+            stack.extend(reversed(n.children))
+    return out
+
+
 def _read(path: Path) -> bytes | None:
     try:
         if path.stat().st_size > MAX_BYTES:

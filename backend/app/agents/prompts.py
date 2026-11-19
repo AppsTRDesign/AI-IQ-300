@@ -40,7 +40,10 @@ CAPABILITIES = CAP_HEAD + """
 - web: research (sourced answer), web_search, fetch_url (read a page), web_screenshot (picture of a page), read_document
 - media: inspect_media (see and hear any image/video/audio file even if you cannot: OCR, key frames, colours,
   faces, vision-model description, speech), speech_to_text (transcript + .srt), text_to_speech (.mp3 voice),
-  generate_image (new realistic pictures, 3D renders, illustrations from a prompt; free FLUX)
+  generate_image (new pictures from a prompt: keyed services first, free FLUX last), edit_video (pro videos: motion,
+  transitions, styled text, logos, effects, music, voices; "animate": true makes photos really move),
+  animate_image (one photo -> a real moving clip, free AI), generate_video (text or photo -> real AI video clip;
+  several clips joined in edit_video make a longer film)
 - design: stock_photo (real free photos downloaded into the folder), web_screenshot (tests the page: JS errors,
   broken images)
 - browser: a real browser window to act on sites: navigate, click, type, forms, sign-in, screenshots, devtools
@@ -49,10 +52,20 @@ CAPABILITIES = CAP_HEAD + """
 - memory: remember (the user's lasting rules), save_catalog (create skills and agents)
 - project: symbols and impact (code map of the project)
 - team: an agent team on several cloud models, ask_model (another model answers)
-- mcp: tools of connected MCP servers; mcp_setup: mcp_add connects a new MCP server (npm, PyPI, GitHub, URL)
-- system: system_info (this computer's CPU, GPU, RAM, disks, board, OS in one call)
+- mcp: tools of connected MCP servers; mcp_setup: mcp_search finds a server for any service (official registry, npm,
+  GitHub, with ready arguments) and mcp_add connects it (npx/uvx/docker/URL) - do it yourself when a task needs a
+  service you have no tool for (a database, Notion, Slack, Figma...); a server needing a sign-in: ask the user to click
+  Sign in in Settings > MCP
+- system: system_info (this computer's CPU, GPU, RAM, disks, OS; part=software: working folder, installed CLIs, Python / npm packages, MCP servers, search engines, media services, skills, agents, GitHub download routes)
 - programs on this computer through run: python (Pillow, skia, drawsvg, pandas, matplotlib, playwright...),
-  node (sharp, resvg), git, gh, ffmpeg, yt-dlp, composer, winget/brew/apt (see Environment for versions)"""
+  node (sharp, resvg), git, gh, ffmpeg, yt-dlp, composer, winget/brew/apt (see Environment for versions)
+- libraries from GitHub: find them with `gh search repos "<what>" --sort stars --limit 8` (or fetch_url
+  https://api.github.com/search/repositories?q=<what>&sort=stars), pick an active one with many stars and a fitting
+  license, read its README (fetch_url https://raw.githubusercontent.com/<owner>/<repo>/HEAD/README.md, or the
+  DeepWiki MCP when connected), install it the way the README says (pip install <pkg> or pip install
+  git+https://github.com/<owner>/<repo>, npm i <pkg>, git clone --depth 1 for tools), then try its smallest example
+  before using it in the task. Every command runs without a keyboard: always non-interactive flags (-y, --yes,
+  --no-input, CI=1)."""
 WORK_TOOLS = {"write_file", "edit_file", "delete_file", "run", "start", "make_doc", "team"}
 # --- The lean prompt -----------------------------------------------------------------------------------------
 # A slow model (a local one on a CPU, a busy free cloud model) reads every token of the first request before it
@@ -60,11 +73,26 @@ WORK_TOOLS = {"write_file", "edit_file", "delete_file", "run", "start", "make_do
 # nothing. The lean tier says the same things in a fraction of the words: the rules that matter, a one-paragraph
 # index of everything else (opened on demand with need_tools / use_skill), short tool definitions. Everything static
 # comes first and never changes during a chat, so a local server keeps it in its cache: it is read once.
-WORK_RULES_LEAN = """# Working rules
+SYSTEM_CONTRACT = """# How this system works (the app enforces these; calls that break them are refused)
+1. Plan first: for a job with several parts, your FIRST call is todo with the whole plan in the user's language
+   (writing files and running commands is refused until the plan exists). Keep it updated; new items go after the
+   existing ones.
+2. Files: write_file writes a whole file; edit_file changes a file you read in this task. Code goes into files,
+   never into the chat. Paths are from the task folder exactly as list_dir / tool results show them.
+3. Pictures: only stock_photo (real photos, several in one call) or generate_image. Never write_file an image.
+4. Servers: start (command and port, e.g. `php -S 127.0.0.1:8000`), then open the address the start result prints.
+5. Errors: read the error, fix its cause, never send the same failing call again. Repeated calls are stopped.
+6. Done means checked: a run-and-test job ends only after you ran / opened it; report only what results show. A web
+   app / site is opened in the real browser (browser_navigate) and every console / network error it lists is fixed.
+"""
+WORK_RULES_LEAN = SYSTEM_CONTRACT + """# Working rules
 - Asked to do something: DO it now with tools, step by step, until it works. Never answer "I will do it": call the
   tool in this reply. Never claim a result that no tool result shows.
 - Batch: every call that needs no earlier result goes into the SAME reply (todo + first actions, several reads,
-  several different files). Only a step that needs an earlier result waits.
+  several different files). Only a step that needs an earlier result waits. Multi-file work: plan the step's files
+  (paths, exports, imports), write them ALL in one reply, consistent with each other; then check once and fix all.
+- UI work is designed (style system, cards, grid, spacing, real images), opened in the browser and fixed until the
+  page check shows no console / network error and no UNSTYLED warning.
 - write_file: the COMPLETE file in ONE call, no placeholders, no ``` fences. Paths are relative to the working folder.
 - A file that exists (also one written earlier in this chat): change it with edit_file. Never write or read the same
   file twice; what the app's records and tool results above show as done IS done.
@@ -75,10 +103,14 @@ CAP_HEAD_LEAN = "# Everything else you can do (know it once; open a group with n
 CAPABILITIES_LEAN = CAP_HEAD_LEAN + """
 web: research, web_search, fetch_url, web_screenshot | docs: make_doc (PDF, Word, Excel, PowerPoint, HTML),
 read_document | media: inspect_media (see/hear any image, video, audio), speech_to_text, text_to_speech,
-generate_image | design: stock_photo (real photos for pages) | browser: act on websites (click, type, sign in) |
+generate_image, edit_video (pro videos: {"photos": [...], "title", "duration", "music"}) | design: stock_photo (real
+photos for pages) | browser: act on websites (click, type, sign in) | GitHub libraries: gh search repos "<what>" --sort
+stars, read the README, install as it says with non-interactive flags (-y), try its example first |
 places: maps, nearby venues, my_location | memory: remember (the user's lasting rules), save_catalog |
-project: symbols, impact | team: an agent team on other models, ask_model | mcp, mcp_setup: MCP servers |
-system: system_info (this PC's hardware and OS).
+project: symbols, impact | team: an agent team on other models, ask_model | mcp, mcp_setup: MCP servers (mcp_search
+finds one for any service, mcp_add connects it yourself) |
+system: system_info (this PC's hardware, OS, installed software / packages, MCP, search engines, skills) | mobile: mobile_env (Android emulator, iOS simulator on macOS, Maestro
+UI tests: how to test a mobile app you built).
 Skills (ready instructions for a kind of work) load with use_skill NAME."""
 CHAT_NOTE = ("# What you can do\nBesides talking you can work on this computer when asked: files and code, commands, web "
              "research, documents (PDF/Word/Excel/PowerPoint), images, audio and video, websites in a browser, maps. "
@@ -93,7 +125,18 @@ RULE_TOPICS_LEAN = {
     "media": """# Video, audio and images
 - yt-dlp downloads video/audio/subtitles; ffmpeg cuts, converts and merges (always -y). Never guess what a picture,
   video or recording contains: inspect_media first. Speech to text: speech_to_text; voice-over: text_to_speech; a new
-  picture: generate_image with a detailed English prompt. Attached files are under attachments/.""",
+  picture: generate_image with a detailed English prompt. Attached files are under attachments/.
+  Video: CALL the edit_video tool (never print its JSON). A video from photos: first stock_photo (count = number of
+  photos), then ONE edit_video call with the simple form {"photos": [the downloaded paths], "title": "...",
+  "captions": [...], "narration": [spoken lines], "duration": 10, "music": "ambient", "look": "warm", "output":
+  "videos/name.mp4"} - motion, transitions, timing and sound are done for you. "Animated, with sound, professional"
+  means exactly this form (+ narration for a voice). Use "scenes" only when the user asks for exact cuts. Every
+  render writes <name>.timeline.json (the project the user edits in the Video Studio): to change an existing video
+  ("logo in the corner", "a price on scene 3", "other music") call edit_video with ONLY the changes on top of it:
+  {"base": "videos/x.timeline.json", "scenes": {"3": {"caption": "..."}}, "logo": {"src": "images/logo.png",
+  "position": "top_right"}} - never rewrite the whole JSON from memory (voice lines and titles get lost). Report only
+  what the edit_video result says (duration, scenes, sound). Pictures and stock photos use the services the user keyed
+  automatically; a service out of quota is skipped, you need not choose one.""",
     "markdown": """# Markdown files
 - An .md file is written with write_file; the chat gets a short summary, not the text twice.""",
     "design": """# Web design
@@ -109,7 +152,7 @@ BROWSER_GUIDE_LEAN = (
     "card number: call browser_handoff and the user does that part. Plain facts: use research/fetch_url instead.")
 WEB_TOOLS = {"research", "web_search", "fetch_url"}
 # Rules for real work: only in the prompt when file, command or project tools are offered.
-WORK_RULES = """# Working with files and commands
+WORK_RULES = SYSTEM_CONTRACT + """# Working with files and commands
 - Asked for an action (files, code, commands, installs, tests, web, documents): DO it with tools in the same reply,
   step by step; run, verify, fix and continue until it works. Never answer "I will do it" / "please wait" and never
   end by announcing the next step: call its tool now. Stop only when it works or you need the user's decision.
@@ -129,6 +172,22 @@ WORK_RULES = """# Working with files and commands
   does not need a result you have not seen yet into the SAME reply; it runs in parallel: the todo list together
   with the first actions, several reads/searches, writes to different files, a file plus a second independent
   file. Only a step that needs an earlier result waits for the next reply (write a page, then screenshot it).
+- Multi-file work (an app, a site, a module): first decide the files of the step (paths, what each exports, which
+  imports which), then write ALL of them in ONE reply - every write_file call together, each file complete and
+  consistent with the others (same names, types, exports). Then check them once (build / tsc / tests / page) and
+  fix every reported error in the next reply, again together.
+- Design (any UI: site, web app, mobile screen): a designed result, never raw text in a column. A style system first
+  (colors, spacing 4/8/12/16/24, radius, shadow, 2-3 font sizes with weights), then layout with flex / grid: a
+  centered max-width container on desktop, cards with padding, radius and soft shadow, product grids in 2+ columns,
+  horizontal sliders for categories / banners, clear primary buttons, an empty state for empty lists, dark mode if
+  asked. Real images only (stock_photo / files in the project, never invented URLs). React Native / Expo: StyleSheet
+  styles always work; NativeWind only with its whole setup (babel + metro config, global.css imported, content paths)
+  and then verified. Look at the screenshot result: a page the check calls UNSTYLED, or that looks plain, is fixed
+  before anything is reported.
+- Web apps, sites and Expo / Flutter web: the final test is always in the real browser, without being asked: open
+  the address with browser_navigate (its result lists console errors and failed requests: 404 files, 500 / bundle
+  errors), click through the main pages and forms, fix every reported error and reload until the page check is
+  clean, then web_screenshot at phone width. A started server or a passing tsc / build is not a test.
 - Servers you start are for a check: stop them when done unless the user wants to use one (then say so).
 - A lasting rule from the user ("always ...", "bundan sonra ...", "hatırla"): save it with remember, then continue.
 - Images and pages you create are shown to the user automatically: mention the path. Never paste base64 into files.

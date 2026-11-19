@@ -36,6 +36,11 @@ def _parse_text(text: str, stem: str = "") -> dict:
             k, _, v = line.partition(":")
             if re.fullmatch(r"(title|description)(_[a-z]{2,3})?", k.strip()):
                 meta[k.strip()] = v.strip().strip('"')
+            elif k.strip() == "triggers":  # optional: a regex; a request that matches it is pointed at this skill
+                try:
+                    meta["triggers"] = re.compile(v.strip().strip("'\""), re.I)
+                except re.error:
+                    pass
             elif k.strip() == "tools":  # optional: only these tools are offered while this agent/skill is in use
                 meta["tools"] = [t.strip("'\"") for t in re.split(r"[,\s]+", v.strip().strip("[]")) if t]
                 in_tools = not meta["tools"]
@@ -48,6 +53,13 @@ def _load(d: Path) -> dict[str, dict]:
     return {m["name"]: m for m in map(_parse, sorted(d.glob("*.md")))}
 
 
+def matching_skills(request: str, skip=()) -> list[str]:
+    """Skills whose `triggers` regex matches the request (at most two), for a "load this skill first" hint."""
+    if not request:
+        return []
+    return [k for k, v in skills().items() if k not in skip and v.get("triggers") and v["triggers"].search(request)][:2]
+
+
 def agents() -> dict[str, dict]:
     return _load(AGENTS_DIR)
 
@@ -57,7 +69,7 @@ def skills() -> dict[str, dict]:
 
 
 def public(items: dict[str, dict], kind: str = "") -> list[dict]:
-    return [{**{k: v for k, v in i.items() if k != "prompt"},
+    return [{**{k: v for k, v in i.items() if k not in ("prompt", "triggers")},
              "core": kind == "agents" and i["name"] in CORE_AGENTS} for i in items.values()]
 
 
@@ -92,7 +104,7 @@ def validate(kind: str, content: str) -> dict:
     from ..tools.registry import TOOLS
     if unknown := [t for t in tmp.get("tools") or [] if t not in TOOLS]:
         raise AppError("invalid_item", f"Unknown tools: {', '.join(unknown)}. Valid: {', '.join(sorted(TOOLS))}")
-    return tmp
+    return {k: v for k, v in tmp.items() if k != "triggers"}  # the compiled regex is not JSON
 
 
 def template(kind: str, name: str) -> str:

@@ -115,6 +115,9 @@ class ProcessManager:
             *lines, buf = buf.split(b"\n")
             for line in lines:
                 self._line(info, name, _decode(line).rstrip("\r"))
+            if len(buf) > 65536:  # progress bars redraw with \r and never end a line: keep only the latest frame
+                self._line(info, name, _decode(buf.rsplit(b"\r", 1)[-1][-4000:]))
+                buf = b""
         if buf:
             self._line(info, name, _decode(buf))
 
@@ -132,7 +135,10 @@ class ProcessManager:
         except asyncio.TimeoutError:
             info.state = "timed_out"
             await self._kill_tree(info)
-            await p.wait()
+            try:
+                await asyncio.wait_for(p.wait(), 20)
+            except asyncio.TimeoutError:
+                info.tail.append("[could not be stopped: the process did not exit]")
         try:
             await asyncio.wait_for(pumps, 10)  # descendants may hold pipes open briefly
         except asyncio.TimeoutError:

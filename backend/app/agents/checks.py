@@ -4,6 +4,7 @@ missing deliverables). Moved out of orchestrator.py; it re-exports every name.""
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -163,15 +164,24 @@ GROUP_TOOLS = {
     "project": {"impact", "symbols"},
     "team": {"team", "ask_model"},
     "mcp": {"mcp"},
-    "mcp_setup": {"mcp_add"},
-    "media": {"inspect_media", "speech_to_text", "text_to_speech", "generate_image"},
+    "mcp_setup": {"mcp_add", "mcp_search"},
+    # "foto" opens this group, so the photo search must be offered with it (it was missing: the model then claimed
+    # downloads that never happened)
+    "media": {"inspect_media", "speech_to_text", "text_to_speech", "generate_image", "edit_video", "stock_photo",
+              "animate_image", "generate_video"},
     "system": {"system_info"},
+    "mobile": {"mobile_env"},
 }
 GROUPED = set().union(*GROUP_TOOLS.values())
 GROUP_WORDS = {
+    "mobile": re.compile(r"\b(android|ios|iphone|apk|ipa|flutter|react\s*native|expo|capacitor|emülatör|emulator|"
+                         r"simülatör|simulator|adb|maestro)\b|mobil\s*uygulama|mobile\s*app", re.I),
     "system": re.compile(r"donan[ıi]m|sistem\s*(bilgi|[öo]zellik)|bilgisayar[ıi]m|pc'?\s*(m|nin|imin)|[öo]zellikler|"
                          r"i[şs]lemci|ekran\s*kart|anakart|\bram\b|bellek|\bgpu\b|\bcpu\b|\bvram\b|disk|hardware|specs?\b|"
-                         r"system\s*info|my\s*(pc|computer|machine)|processor|graphics\s*card|motherboard", re.I),
+                         r"system\s*info|my\s*(pc|computer|machine)|processor|graphics\s*card|motherboard|"
+                         r"kurulu\s*(paket|program|mod[üu]l|yaz[ıi]l[ıi]m)|y[üu]kl[üu]\s*(paket|program)|"
+                         r"installed\s*(packages?|programs?|software|modules?)|what\s*is\s*installed|"
+                         r"pip\s*list|npm\s*(ls|list)\s*-g", re.I),
     "places": re.compile(
         r"yak[ıi]n|nerede|harita|konum|mekan|restoran|kafe|cafe|otel|eczane|ma[ğg]aza|adres|semt|il[çc]e|mahalle|"
         r"\bnear|\bmap|location|venue|restaurant|hotel|pharmacy|store|address|place|rakip|competitor", re.I),
@@ -184,7 +194,8 @@ GROUP_WORDS = {
     "project": re.compile(r".", re.S),  # a project chat: always (availability decides)
     "mcp": re.compile(r".", re.S),
     "design": RULE_TOPICS["design"][0],
-    "mcp_setup": re.compile(r"\bmcp\b|model\s*context\s*protocol|ara[çc]\s*sunucu|tool\s*server", re.I),
+    "mcp_setup": re.compile(r"\bmcp\b|model\s*context\s*protocol|ara[çc]\s*sunucu|tool\s*server|entegrasyon|"
+                            r"integration|connector|ba[ğg]lay[ıi]c[ıi]", re.I),
     "media": re.compile(r"resim|g[öo]rsel|foto|video|\bses\b|ses\s*kayd|klip|film|g[öo]r[üu]nt[üu]|transkript|"
                         r"deşifre|ne\s*(var|g[öo]r[üu]n)|image|photo|picture|audio|recording|transcri|seslendir|"
                         r"ses(e|ine|li|le)?\s*(ile\s*)?([çc]evir|d[öo]n[üu][şs]t[üu]r|oku)|(kad[ıi]n|erkek)\s*ses|"
@@ -267,6 +278,83 @@ FILE_NAME = re.compile(r"(?<![\w/\\.-])([\w./\\-]+\.(?:txt|md|csv|json|ya?ml|xml
                        r"c|cpp|h|cs|rb|sh|ps1|bat|ini|cfg|toml|log|sql))\b", re.I)
 
 
+# Common failures and the other routes that fix them (any OS). A weak model retried the same command with small
+# changes; these lines name the real alternatives so the next try is a different one.
+ERROR_PLAYBOOK = [
+    # create-expo-app --template typescript takes the npm package "typescript" as the template: the folder holds the
+    # TypeScript compiler's own package.json ("author": "Microsoft Corp.", bin tsgo), not an app.
+    (re.compile(r"declare exactly one bin entry named tsgo|Microsoft Corp\.", re.I),
+     "This folder is not an app: it was scaffolded from the npm package 'typescript' (create-expo-app --template "
+     "typescript). Delete the folder and scaffold again with `npx create-expo-app@latest <name> --template "
+     "blank-typescript --yes` (expo-router tabs: --template tabs), then run commands with cwd=<name>."),
+    # Windows Installer is busy (another MSI install / update runs): winget exits 1618 and every retry fails the same.
+    (re.compile(r"exit code:? 1618|another installation is (already )?in progress|0x80070652|ERROR_INSTALL_ALREADY_RUNNING",
+                re.I),
+     "Windows Installer is locked by another installation (MSI 1618), so any MSI-based install fails until it ends. Do "
+     "not retry the same winget line. Use an install that needs no MSI: Java -> mobile_env action=java (portable JDK); "
+     "other tools -> their portable ZIP (winget's portable/zip package, the vendor's .zip, `npm i` / `pip install` "
+     "inside the project, scoop) unpacked into the project or the user's folder and called by full path. Only if "
+     "the MSI is required: wait in one command until it is free (PowerShell: while (Get-Process msiexec -EA 0 | "
+     "Where-Object {$_.SessionId -ne 0}) {Start-Sleep 10}) then run winget once more."),
+    # Get-ChildItem -Recurse / dir /s through node_modules hits Windows' 260-character path limit and fails.
+    (re.compile(r"DirIOError|PathTooLongException|path is too long|exceeds the maximum path length", re.I),
+     "A recursive listing went into node_modules and hit the Windows path-length limit. Use list_dir (it skips "
+     "node_modules / .git) or search_code to find files; in a shell exclude node_modules, e.g. "
+     "`git ls-files` or `Get-ChildItem -Recurse -File -Exclude node_modules` on the source folders only."),
+    (re.compile(r"npm (error|ERR!) (code )?E404.*@types/", re.I | re.S),
+     "That @types package does not exist: the library ships its own types (zustand, axios, expo-* ...). Install it "
+     "without the @types/ package."),
+    (re.compile(r"sqlite3?\b.*(ParserError|Unexpected token|missing (the )?terminator|unrecognized token|"
+                r"is not recognized|syntax error)|ParserError.*sqlite", re.I | re.S),
+     "SQL inside a shell command breaks on quotes, and the sqlite3 program is often not installed. Write the schema "
+     "into a script and run it with its interpreter instead: write_file create_db.py (import sqlite3; con = "
+     "sqlite3.connect('db.sqlite'); con.executescript('''CREATE TABLE ...'''); con.commit()) then run `python "
+     "create_db.py`, or the same with PHP (new PDO('sqlite:db.sqlite'); $db->exec(...)) and `php create_db.php`."),
+    (re.compile(r"is not recognized as (the name of )?a cmdlet|not recognized as an internal or external command|"
+                r"command not found|: not found$|CommandNotFoundException|tanınmıyor", re.I | re.M),
+     "The program is not installed or not on this shell's PATH. Check it (`Get-Command x` / `where x` / `which x`), "
+     "then: install it (winget / brew / apt / pip / npm), call it by its full path, or use a built-in alternative: "
+     "unzip -> `tar -xf file.zip` or Expand-Archive; wget / curl -> fetch_url url=... save=...; git clone -> fetch_url "
+     "the repository ZIP (https://github.com/<owner>/<repo>/archive/HEAD.zip) with save=...; make -> run its steps."),
+    (re.compile(r"cannot find path|No such file or directory|can'?t open file|does not exist|ENOENT|FileNotFoundError|"
+                r"ItemNotFoundException|PathNotFound|bulunamıyor|bulunamadı", re.I),
+     "A path is wrong or the file was never created. list_dir the folder and copy the exact path it shows (paths are "
+     "from the working folder; a ZIP unpacks into <repo>-<branch>/). If the file is missing, create or download it "
+     "first (fetch_url ... save=... really writes the file; reading a URL does not)."),
+    (re.compile(r"Access is denied|Permission denied|EACCES|EPERM|UnauthorizedAccess|requires elevation|"
+                r"run as administrator|erişim engellendi", re.I),
+     "A permission problem: stay inside the project folder, use a user-level install (pip --user, winget --scope user, "
+     "npm without -g), for a blocked PowerShell script run `powershell -ExecutionPolicy Bypass -File x.ps1`; admin "
+     "rights only after asking the user."),
+    (re.compile(r"gh auth login|GH_TOKEN|GITHUB_TOKEN environment variable", re.I),
+     "GitHub CLI is not signed in. Do not wait for a login: search with fetch_url "
+     "https://api.github.com/search/repositories?q=<words>+language:<lang>&sort=stars&per_page=10 (no key needed), "
+     "and download a repository with fetch_url url=https://github.com/<owner>/<repo>/archive/HEAD.zip save=<repo>.zip."),
+    (re.compile(r"unknown (flag|option|command)|unrecognized (argument|option)|invalid (option|argument)|Usage:", re.I),
+     "Wrong flags for this program: read the usage text in the output (it lists the real flags) or run "
+     "`<program> --help` once, then use exactly those flags; do not guess another variant."),
+    (re.compile(r"EADDRINUSE|address already in use|Only one usage of each socket|port \d+ (is )?(already )?in use", re.I),
+     "The port is busy: start it on another free port (or stop only the process this task started)."),
+    (re.compile(r"ModuleNotFoundError|No module named|Cannot find module|could not find driver|Class \"?[\w\\]+\"? not "
+                r"found|Call to undefined function|extension .* (missing|not loaded)", re.I),
+     "A package or extension is missing: install it with the project's package manager (pip / npm / composer) inside "
+     "the project, or enable the PHP extension in php.ini (`php --ini` shows the file), then run it again."),
+    (re.compile(r"certificate verify failed|SSL: |CERT_|self[- ]signed certificate", re.I),
+     "A TLS / certificate error: retry with the tool's own trusted source, update the CA bundle (pip install certifi), "
+     "or download the file with fetch_url save=... instead."),
+    (re.compile(r"timed out|timeout|took too long", re.I),
+     "It ran out of time: a server or watcher must use `start`, not `run`; a long install needs a longer timeout or "
+     "a smaller step; check the network once."),
+]
+
+
+def error_playbook(failure: str) -> str:
+    """The other routes for a failed command (up to two matching kinds), or ''."""
+    tail = failure[-2500:]
+    hits = [tip for rx, tip in ERROR_PLAYBOOK if rx.search(tail)][:2]
+    return " ".join(hits)
+
+
 # A command failed because a file it names is missing (any OS, any language of the error message).
 NOT_FOUND = re.compile(r"No such file|can'?t open file|cannot find|could not find|not found|does not exist|"
                        r"bulunam|mevcut de[ğg]il|bulunmuyor|ObjectNotFound|FileNotFoundError|ENOENT", re.I)
@@ -344,7 +432,9 @@ FILE_CLAIM = re.compile(r"(dosya\w*|belge\w*|klasör\w*)\s+(\w+\s+){0,3}(oluştu
 
 
 # The note _history adds to earlier answers; a model that copies it into its reply is pretending to have acted.
-ACTION_ECHO = re.compile(r"\s*\[Tool actions in this turn[^:\]]*:[^\]]*\]\s*")
+# The whole line: its content holds JSON with its own brackets (`"photos": ["a.jpg"]`), so "up to the first ]" left
+# the rest of the line visible in the chat.
+ACTION_ECHO = re.compile(r"[ \t]*\[Tool actions in this turn[^\n]*(?:\n|$)")
 # "I updated / ran it" in a turn where no tool ran, although the user asked for a change: a hallucinated action.
 CHANGE_REQUEST = re.compile(r"düzenle|güncelle|değiştir|düzelt|ekle|kaldır|çalıştır|oluştur|yaz\b|\b(edit|update|change|fix|"
                             r"modify|add|remove|run|create|write)\b", re.I)
@@ -387,14 +477,97 @@ def tool_hint(request: str) -> str:
         return ""
     hints = []
     if GROUP_WORDS["system"].search(request):
-        hints.append("system_info returns this computer's hardware and OS in one call")
+        hints.append("system_info returns this computer's hardware, OS and installed software / packages in one call")
     if DELIVER_VERB.search(request):
         for rx, _exts, kind in DELIVERABLES:
             if rx.search(request):
                 hints.append(f"make the .{kind} with make_doc (type=\"{kind}\", path=\"name.{kind}\", content as "
-                             "Markdown/HTML) - no fpdf/reportlab/python-docx script")
+                             "HTML) - no fpdf/reportlab/python-docx script")
                 break
+    if TODO_ASK.search(request) or len(NUMBERED_STEP.findall(request)) >= 3:
+        # A weak model skipped the list even when the user asked for one: name it in the same reply as the first step.
+        hints.append("start with todo (the whole list, first item in_progress) in the same reply as the first action, "
+                     "and tick each item when it is done with todo advance=true (no retyped list)")
     return f"\n[Tool hint: {'; '.join(hints)}.]" if hints else ""
+
+
+def request_steps(request: str) -> list[str]:
+    """The steps a user wrote ("1) make x, 2) count y, 3) tell me") when they asked for a list or gave 3+ of them."""
+    parts = [p.strip(" ,;.-") for p in re.split(r"(?:^|\s)(?:\d{1,2}[.)]|[-•])\s+", request) if p.strip(" ,;.-")]
+    numbered = len(NUMBERED_STEP.findall(request))
+    if numbered < 3 and not (TODO_ASK.search(request) and numbered >= 2):
+        return []
+    steps = parts[1:] if len(parts) > numbered else parts  # the text before "1)" is the intro, not a step
+    out = []
+    for s in steps[:12]:
+        s = TODO_ASK.sub("", re.split(r"(?<=[.!?])\s", s)[0]).strip(" ,;.-")
+        if len(s) >= 3:
+            out.append(s[:90])
+    return out if len(out) >= 2 else []
+
+
+def plan_steps(text: str) -> list[str]:
+    """A numbered plan the model wrote as text ("1. **Settings API:** ...", "2) ...") instead of calling todo: its
+    items, the bold title when there is one (short enough for the list), at least 3."""
+    items = re.findall(r"^\s{0,3}(?:\d{1,2}[.)])\s+(.+)$", text or "", re.M)
+    out = []
+    for it in items[:12]:
+        m = re.match(r"\*\*(.+?)\*\*", it)
+        s = (m.group(1) if m else it).strip(" :*-")
+        s = re.sub(r"[*`_]+", "", s).strip(" :")
+        if len(s) >= 3:
+            out.append(s[:90])
+    return out if len(out) >= 3 else []
+
+
+def _top_split(text: str, seps: re.Pattern) -> list[str]:
+    """Split at the separators that are not inside parentheses."""
+    parts, depth, last = [], 0, 0
+    for i, ch in enumerate(text):
+        depth += ch == "(" or ch == "["
+        depth -= (ch == ")" or ch == "]") and depth > 0
+        if depth == 0 and (m := seps.match(text, i)) and m.end() > i:
+            parts.append(text[last:i])
+            last = m.end()
+    parts.append(text[last:])
+    return [p.strip(" ,;.-\n") for p in parts if p.strip(" ,;.-\n")]
+
+
+LIST_SEP = re.compile(r",\s*|;\s*|\s+(?:ve|and|ile birlikte|plus)\s+(?=\S)", re.I)
+
+
+def request_parts(request: str) -> list[str]:
+    """The parts of a request written as running text ("make X: a, b, c and d. Mobile friendly. Start it, test it,
+    report."), for the to-do list when the model never opens one: the listed features, then each later sentence.
+    3-10 items or nothing."""
+    text = re.sub(r"\s+", " ", request or "").strip()
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+(?=[^\s])", text) if s.strip()]
+    if not sentences:
+        return []
+    first, rest = sentences[0], sentences[1:]
+    out = []
+    if ":" in first[:220]:
+        intro, listed = first.split(":", 1)
+        items = _top_split(listed, LIST_SEP)
+        if len(items) >= 2:
+            out += [intro.strip()] + items  # the project itself (set-up), then its parts
+        else:
+            out.append(first)
+    else:
+        out.append(first)
+    out += [s.strip(" .") for s in rest]
+    tr = bool(re.search(r"[çğıöşüÇĞİÖŞÜ]", text))
+
+    def cap(s: str) -> str:
+        head = "İ" if tr and s[:1] == "i" else s[:1].upper()
+        return head + s[1:90]
+    out = [cap(o.strip()) for o in out if len(o.strip()) >= 3]
+    return out if 3 <= len(out) <= 10 else []
+
+
+TODO_ASK =re.compile(r"yap[ıi]lacak(lar)?\s*(liste|kullan)|to-?do|g[öo]rev\s*listesi|plan\s*(liste|yap|kullan)|"
+                      r"task\s*list|checklist|ad[ıi]m\s*ad[ıi]m", re.I)
+NUMBERED_STEP = re.compile(r"(?:^|\s)(?:\d{1,2}[.)]|[-•]\s)\s*\S", re.M)
 
 
 def missing_deliverables(request: str, answer: str, root: Path, since: float) -> list[str]:
@@ -408,10 +581,39 @@ def missing_deliverables(request: str, answer: str, root: Path, since: float) ->
             out.append(f"*.{kind}")
     prose = re.sub(r"https?://\S+", " ", FENCE.sub(" ", answer))
     names = {Path(n.replace("\\", "/")).name: n for n in CLAIMED_FILE.findall(prose)}
-    if names:
-        there = {Path(p).name.lower() for p in workspace.files_since(root, (), 0, set(names))}
-        out += [n for base, n in names.items() if base.lower() not in there and base not in request]
+    # A file the answer names must exist on disk, also when the request named it (asking for videos/x.mp4 and then
+    # claiming it was made, with no such file, was exactly the false claim this check exists for).
+    out += [n for n in names.values() if not _on_disk(root, n)]
+    # Source files the request itself names as part of what to build (`data/mockProducts.ts`): a weak model gave up
+    # after a failed install and ended with "I will write it" while not one of them existed. A path with a folder or
+    # in `code` marks a file to create; a bare word like "Node.js" or "next.config" in a sentence does not.
+    asked = {n.replace("\\", "/") for n in REQUESTED_SOURCE.findall(request)}
+    out += [n for n in sorted(asked) if n not in out and not _on_disk(root, n)]
     return out[:4]
+
+
+REQUESTED_SOURCE = re.compile(r"(?:`|(?<![\w./\\-]))((?:[\w.-]+[/\\])+[\w.-]+\.(?:ts|tsx|js|jsx|py|php|dart|kt|swift|"
+                              r"java|go|rs|vue|svelte|css|html?))(?=`|[\s,;:)]|$)", re.I)
+
+
+def _on_disk(root: Path, name: str) -> bool:
+    rel = name.replace("\\", "/")
+    if (root / rel).is_file():
+        return True
+    base = Path(rel).name.lower()
+    skip = {"node_modules", ".git", ".venv", "venv", "__pycache__", "vendor", ".expo", "build", "dist"}
+    seen = 0
+    try:  # by name anywhere in the task folder (a project subfolder), never through dependency trees
+        for _d, dirs, files in os.walk(root):
+            dirs[:] = [x for x in dirs if x not in skip]
+            seen += len(files)
+            if any(f.lower() == base for f in files):
+                return True
+            if seen > 50_000:
+                return True  # too big to look through: do not accuse
+        return False
+    except OSError:
+        return True  # cannot look: do not accuse
 
 
 FOREIGN_SCRIPT = re.compile(r"[\u0370-\u03ff\u0400-\u04ff\u0590-\u06ff\u0900-\u097f\u0e00-\u0e7f"
@@ -450,6 +652,11 @@ def wrong_language(text: str, lang: str, user_text: str = "") -> bool:
     if lang not in ("tr", "en"):
         return False
     tr, en = _lang_counts(text)
+    # Another Latin-script language altogether (gemma answered a Turkish chat in French): its common words win.
+    own = tr if lang == "tr" else en
+    if any(len(rx.findall(body)) >= 6 and len(rx.findall(body)) > 2 * own
+           for code, rx in LANG_WORD_RX.items() if code not in ("tr", "en")):
+        return True
     return (en >= 5 and en > 2 * tr) if lang == "tr" else (tr >= 8 and tr > 2 * en)
 
 
@@ -495,4 +702,4 @@ def language_rule(code: str, lean: bool = False) -> str:
             f"The agent, skill and instruction texts above may be written in other languages (English, Chinese, ...); "
             f"follow what they say, but they never change the reply language: always answer in {name}.")
 
-__all__ = ['NOT_FOUND', 'LANG_NAMES', 'SCRIPTS', 'TR_CHARS', 'TR_WORDS', 'EN_WORDS', '_CJK', '_load_intents', 'INTENTS', 'intent_alt', '_extend', '_lang_rx', 'LANG_WORD_RX', '_lang_counts', 'reply_language', 'SMALL_TALK', 'ACTION', 'WORK', 'QUESTION', 'CORE_TOOLS', 'WEB_WORDS', 'GROUP_TOOLS', 'GROUPED', 'GROUP_WORDS', 'tool_groups', 'STRONG_BROWSER', 'BROWSER_WORDS', 'CODE_NOT_RUN', 'HOWTO', 'SHELL_FENCES', 'FENCE', 'CMD_START', 'fenced_commands', 'is_small_talk', 'FILE_NAME', '_unread_files', 'CURRENT_INFO', 'needs_research', 'is_knowledge_question', 'ANNOUNCE', 'PROMISE', 'VISUAL_ASK', 'is_promise', 'is_announcement', 'FILE_CLAIM', 'ACTION_ECHO', 'CHANGE_REQUEST', 'CHANGE_CLAIM', 'FILE_EDIT_ASK', 'FILE_REF', 'DELIVER_VERB', 'DELIVERABLES', 'CLAIMED_FILE', '_shown_files', 'tool_hint', 'missing_deliverables', 'FOREIGN_SCRIPT', 'TRANSLATE_HINT', 'LATIN_LANGS', 'CONTINUE_WORDS', 'wrong_language', '_LANG_FILES', 'ui_text', 'think_reply_reminder', 'language_rule']
+__all__ = ['plan_steps', 'request_steps', 'request_parts', 'error_playbook', 'ERROR_PLAYBOOK', 'NOT_FOUND', 'LANG_NAMES', 'SCRIPTS', 'TR_CHARS', 'TR_WORDS', 'EN_WORDS', '_CJK', '_load_intents', 'INTENTS', 'intent_alt', '_extend', '_lang_rx', 'LANG_WORD_RX', '_lang_counts', 'reply_language', 'SMALL_TALK', 'ACTION', 'WORK', 'QUESTION', 'CORE_TOOLS', 'WEB_WORDS', 'GROUP_TOOLS', 'GROUPED', 'GROUP_WORDS', 'tool_groups', 'STRONG_BROWSER', 'BROWSER_WORDS', 'CODE_NOT_RUN', 'HOWTO', 'SHELL_FENCES', 'FENCE', 'CMD_START', 'fenced_commands', 'is_small_talk', 'FILE_NAME', '_unread_files', 'CURRENT_INFO', 'needs_research', 'is_knowledge_question', 'ANNOUNCE', 'PROMISE', 'VISUAL_ASK', 'is_promise', 'is_announcement', 'FILE_CLAIM', 'ACTION_ECHO', 'CHANGE_REQUEST', 'CHANGE_CLAIM', 'FILE_EDIT_ASK', 'FILE_REF', 'DELIVER_VERB', 'DELIVERABLES', 'CLAIMED_FILE', '_shown_files', 'tool_hint', 'missing_deliverables', 'FOREIGN_SCRIPT', 'TRANSLATE_HINT', 'LATIN_LANGS', 'CONTINUE_WORDS', 'wrong_language', '_LANG_FILES', 'ui_text', 'think_reply_reminder', 'language_rule']

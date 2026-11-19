@@ -513,6 +513,9 @@ class OpenAICompatProvider(Provider):
         body: dict = {"model": model, "messages": self._messages(messages), "stream": streaming}
         if "temperature" in opts:
             body["temperature"] = opts["temperature"]
+        if opts.get("repeat_penalty"):
+            # The OpenAI-style counterpart of a repeat penalty: after a generation loop the next try repeats less.
+            body["frequency_penalty"] = round(min(1.0, (float(opts["repeat_penalty"]) - 1) * 2.5), 2)
         if opts.get("max_tokens"):
             body["max_tokens"] = opts["max_tokens"]
         if e := opts.get("effort"):  # reasoning effort: OpenRouter's reasoning object, else OpenAI's field
@@ -527,6 +530,10 @@ class OpenAICompatProvider(Provider):
                 body["reasoning_effort"] = "medium"
         if opts.get("tools"):
             body["tools"] = [{"type": "function", "function": t} for t in opts["tools"]]
+        if (opts.get("no_think") or opts.get("think") is False or opts.get("effort") == "off") and self.is_evren:
+            # EVREN (vLLM) ignores reasoning_effort; the chat template switch really turns reasoning off (checked:
+            # 0 reasoning tokens). Used for the request after a break, which acts on the plan already reasoned out.
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         if streaming:
             body["stream_options"] = {"include_usage": True}
         url = f"{self.base_url}/chat/completions"

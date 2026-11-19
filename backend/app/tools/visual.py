@@ -25,8 +25,35 @@ DOM_REPORT = r"""() => {
     overflow: all.filter(e => vis(e) && e.getBoundingClientRect().right > vw + 2).length,
     stylesheets: document.styleSheets.length,
     page_width: document.documentElement.scrollWidth, viewport: vw,
+    design: (() => {  // does the page look designed, or is it raw text in a column (styles not applied)?
+      const shown = all.filter(vis).slice(0, 1500);
+      const texts = shown.filter(e => [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim()));
+      const styled = shown.filter(e => { const s = getComputedStyle(e);
+        return (s.backgroundColor && !/rgba\(0, 0, 0, 0\)|transparent/.test(s.backgroundColor) && e !== document.body)
+          || parseFloat(s.borderRadius) > 2 || s.boxShadow !== 'none' || parseFloat(s.paddingLeft) + parseFloat(s.paddingTop) >= 8; });
+      const left = texts.filter(e => e.getBoundingClientRect().left < 4).length;
+      const sizes = new Set(texts.map(e => getComputedStyle(e).fontSize));
+      return { texts: texts.length, styled: styled.length, flush_left: left, font_sizes: sizes.size };
+    })(),
   };
 }"""
+
+
+def design_problem(d: dict | None) -> str:
+    """'' when the page looks designed; else why it looks like raw unstyled text (NativeWind / Tailwind classes not
+    compiled, a stylesheet not loaded): an Expo shop page rendered as one column of plain text at the left edge and
+    every check said 'renders fine'."""
+    g = (d or {}).get("design") or {}
+    texts, styled = g.get("texts", 0), g.get("styled", 0)
+    if texts < 12:
+        return ""
+    if styled <= max(2, texts // 15) or (g.get("flush_left", 0) >= texts * 0.7 and g.get("font_sizes", 9) <= 2):
+        return (f"UNSTYLED PAGE: {texts} text elements but only {styled} with any background, padding, radius or "
+                f"shadow, {g.get('flush_left')} flush against the left edge, {g.get('font_sizes')} font size(s). The "
+                "styles are not applied (className / NativeWind / Tailwind not compiled, CSS file not loaded, or no "
+                "styles written). Fix it (React Native: StyleSheet styles, or complete the NativeWind setup), reload "
+                "and look again - this is not a finished design.")
+    return ""
 
 
 def _dom_text(d: dict | None) -> str:
@@ -40,6 +67,8 @@ def _dom_text(d: dict | None) -> str:
              f"Horizontal overflow: {'yes, ' + str(d.get('overflow')) + ' elements wider than the viewport' if d.get('overflow') else 'none'}"
              f" (page {d.get('page_width')}px / viewport {d.get('viewport')}px)",
              "Visible text:", d.get("text") or "(empty page)"]
+    if bad := design_problem(d):
+        lines.insert(1, bad)
     return "\n".join(lines)
 
 
@@ -57,6 +86,11 @@ async def capture_and_review(url: str, criteria: str, root: Path) -> tuple[str, 
         page = await browser.new_page(viewport={"width": 1280, "height": 800})
         page.on("console", lambda m: m.type == "error" and console.append(m.text))
         page.on("pageerror", lambda e: console.append(str(e)))
+        # failed requests count as page errors too (a 404 bundle, a 500 API call): reported with the console
+        page.on("requestfailed", lambda r: not (r.failure or "").endswith("ERR_ABORTED")
+                and console.append(f"request failed: {r.failure} {r.resource_type} {r.url[-150:]}"))
+        page.on("response", lambda r: r.status >= 400 and not r.url.split("?")[0].endswith("favicon.ico")
+                and console.append(f"HTTP {r.status} {r.request.resource_type} {r.url[-150:]}"))
         await page.goto(url, wait_until="networkidle", timeout=30000)
         await page.screenshot(path=str(out), full_page=True)
         try:

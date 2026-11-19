@@ -10,12 +10,23 @@ from pathlib import Path
 
 import httpx
 
-UA = "AI-IQ-300/0.10 (local assistant; image search)"
+from ..config import get_secret
+from . import services
+
+UA = "AI-IQ-300/0.12 (local assistant; image search)"
 MAX_W = 1600
 
 
+ASCII_MAP = str.maketrans({"ç": "c", "ğ": "g", "ı": "i", "ö": "o", "ş": "s", "ü": "u", "â": "a", "î": "i", "û": "u",
+                           "Ç": "c", "Ğ": "g", "İ": "i", "I": "i", "Ö": "o", "Ş": "s", "Ü": "u"})
+
+
 def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "image"
+    """A safe file name that keeps the words readable: "iç mekan" -> ic-mekan (Turkish letters were dropped:
+    "i-mekan", "m-teriler"); other scripts fall back to their accent-free form."""
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", text.translate(ASCII_MAP).lower()).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", plain).strip("-")[:40] or "image"
 
 
 def _photo_name(query: str, i: int) -> str:
@@ -196,11 +207,81 @@ async def _find_fresh(query: str, folder: Path, n: int, wide: bool) -> list[dict
     return got
 
 
+def _keyed_ok(items: list[dict]) -> list[dict]:
+    return [x for x in items if (x.get("width") or 1000) >= 800]
+
+
+async def _pexels(c: httpx.AsyncClient, q: str, n: int, wide: bool) -> list[dict]:
+    params = {"query": q, "per_page": max(n * 2, 10)}
+    if wide:
+        params["orientation"] = "landscape"
+    r = await c.get("https://api.pexels.com/v1/search", params=params, headers={"Authorization": get_secret("pexels_api_key") or ""})
+    services.check("pexels", r)
+    return [{"url": p["src"]["large2x"], "title": p.get("alt") or q, "author": p.get("photographer") or "unknown",
+             "license": "Pexels License", "source": p.get("url", ""), "tags": [], "width": p.get("width") or 0}
+            for p in r.json().get("photos", []) if (p.get("src") or {}).get("large2x")]
+
+
+async def _pixabay(c: httpx.AsyncClient, q: str, n: int, wide: bool) -> list[dict]:
+    params = {"key": get_secret("pixabay_api_key") or "", "q": q[:100], "image_type": "photo", "safesearch": "true",
+              "per_page": max(n * 2, 10)}
+    if wide:
+        params["orientation"] = "horizontal"
+    r = await c.get("https://pixabay.com/api/", params=params)
+    services.check("pixabay", r)
+    return [{"url": h["largeImageURL"], "title": h.get("tags") or q, "author": h.get("user") or "unknown",
+             "license": "Pixabay License", "source": h.get("pageURL", ""), "tags": (h.get("tags") or "").split(", "),
+             "width": h.get("imageWidth") or 0}
+            for h in r.json().get("hits", []) if h.get("largeImageURL")]
+
+
+async def _unsplash(c: httpx.AsyncClient, q: str, n: int, wide: bool) -> list[dict]:
+    params = {"query": q, "per_page": max(n * 2, 10)}
+    if wide:
+        params["orientation"] = "landscape"
+    r = await c.get("https://api.unsplash.com/search/photos", params=params,
+                    headers={"Authorization": f"Client-ID {get_secret('unsplash_api_key') or ''}", "Accept-Version": "v1"})
+    services.check("unsplash", r)
+    out = []
+    for x in r.json().get("results", []):
+        links = x.get("links") or {}
+        out.append({"url": (x.get("urls") or {}).get("regular", ""), "title": x.get("alt_description") or x.get("description") or q,
+                    "author": (x.get("user") or {}).get("name") or "unknown", "license": "Unsplash License",
+                    "source": links.get("html", ""), "tags": [t.get("title", "") for t in x.get("tags") or []],
+                    "width": x.get("width") or 0, "download_location": links.get("download_location", "")})
+    return [x for x in out if x["url"]]
+
+
+# Keyed photo services by id; their order is services.CATALOG's (the first usable one is asked first).
+KEYED = {"pexels": _pexels, "pixabay": _pixabay, "unsplash": _unsplash}
+
+
+async def test_service(sid: str, q: str = "coffee cup") -> list[dict]:
+    """Settings > test button: one keyed service alone; its own error is raised."""
+    if sid not in KEYED:
+        raise RuntimeError(f"unknown photo service: {sid}")
+    english = await _english(q)
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": UA}) as c:
+        return _keyed_ok(await services.call(sid, lambda: KEYED[sid](c, english, 3, True)))
+
+
 async def _search(query: str, folder: Path, n: int, wide: bool, offset: int = 0, name: str = "") -> list[dict]:
     words = _words(query)
     async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": UA}) as c:
         found: list[dict] = []
+        # 1) the keyed photo services the user switched on, in priority order; a quota or rate limit moves on
+        for sid in services.usable("stock"):
+            try:
+                got = await services.call(sid, lambda sid=sid: KEYED[sid](c, query, n, wide))
+            except (services.QuotaError, services.ServiceError):
+                continue
+            found += sorted((x for x in _keyed_ok(got) if _score(x, words) > 0), key=lambda x: -_score(x, words))
+            if len(found) >= n * 2:
+                break
+        # 2) the system's own free sources, when the keyed ones gave too little (or all are blocked)
         for source in (_openverse, _commons):
+            if len(found) >= n * 2:
+                break
             try:
                 got = await source(c, query, n, wide)
             except (httpx.HTTPError, ValueError, KeyError):
@@ -208,8 +289,6 @@ async def _search(query: str, folder: Path, n: int, wide: bool, offset: int = 0,
             # The most relevant first (stable: the engine's own order breaks ties); photos naming none of the
             # query's words are dropped.
             found += sorted((x for x in got if _score(x, words) > 0), key=lambda x: -_score(x, words))
-            if len(found) >= n * 2:
-                break
 
         async def get(item: dict, i: int) -> dict | None:
             try:
@@ -218,6 +297,11 @@ async def _search(query: str, folder: Path, n: int, wide: bool, offset: int = 0,
                     return None
                 target = folder / f".{_slug(name or query)}-{offset}-{i}.tmp.jpg"
                 w, h = await asyncio.to_thread(_save, r.content, target)
+                if item.get("download_location"):  # Unsplash asks to be told about each download it serves
+                    try:
+                        await c.get(item["download_location"], headers={"Authorization": f"Client-ID {get_secret('unsplash_api_key') or ''}"})
+                    except httpx.HTTPError:
+                        pass
                 return {**item, "path": target, "width": w, "height": h}
             except Exception:  # a broken or unsupported file: the next candidate is used
                 return None

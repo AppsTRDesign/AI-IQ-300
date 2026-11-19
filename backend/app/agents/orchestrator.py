@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import itertools
+import hashlib
 import json
 import re
 import time
@@ -24,7 +25,7 @@ from ..llm.usage import cooldown as usage_cooldown
 from ..llm.providers import ProviderError
 from ..tools.symbols import project_map
 from ..tools.registry import figures as registry_figures
-from ..tools.registry import READ_ONLY, TOOLS, ToolContext, ToolResult, clip, split_args, tool_schemas, tools_prompt
+from ..tools.registry import READ_ONLY, TOOLS, ToolContext, ToolResult, clip, split_args, todo_patch, tool_schemas, tools_prompt
 from ..tools.browser_tools import BROWSER_TOOLS, label as _browser_label
 from . import catalog
 from .stream_parser import LEAK, THINK_OPENERS, StreamSplitter, ToolCall, extract_inline_calls, parse_tool
@@ -33,7 +34,7 @@ from .stream_parser import LEAK, THINK_OPENERS, StreamSplitter, ToolCall, extrac
 from .prompts import *  # noqa: F401,F403
 from .checks import *  # noqa: F401,F403
 from .prompts import HISTORY_MESSAGES, LOCAL_HISTORY, OS_NAME, SHELLS, SUMMARY_TAG, DEFAULT_ROLE, SYSTEM_CORE, CAP_HEAD, CAPABILITIES, WORK_TOOLS, WORK_RULES_LEAN, CAP_HEAD_LEAN, CAPABILITIES_LEAN, CHAT_NOTE, ABILITY_ASK, RULE_TOPICS_LEAN, BROWSER_GUIDE_LEAN, WEB_TOOLS, WORK_RULES, RULE_TOPICS, SCREENSHOT_RULE, ENV_SECTION, rule_topics, WEB_RULES, TAG_PROTOCOL  # noqa: F401
-from .checks import NOT_FOUND, LANG_NAMES, SCRIPTS, TR_CHARS, TR_WORDS, EN_WORDS, _CJK, _load_intents, INTENTS, intent_alt, _extend, _lang_rx, LANG_WORD_RX, _lang_counts, reply_language, SMALL_TALK, ACTION, WORK, QUESTION, CORE_TOOLS, WEB_WORDS, GROUP_TOOLS, GROUPED, GROUP_WORDS, tool_groups, STRONG_BROWSER, BROWSER_WORDS, CODE_NOT_RUN, HOWTO, SHELL_FENCES, FENCE, CMD_START, fenced_commands, is_small_talk, FILE_NAME, _unread_files, CURRENT_INFO, needs_research, is_knowledge_question, ANNOUNCE, PROMISE, VISUAL_ASK, is_promise, is_announcement, FILE_CLAIM, ACTION_ECHO, CHANGE_REQUEST, CHANGE_CLAIM, FILE_EDIT_ASK, FILE_REF, DELIVER_VERB, DELIVERABLES, CLAIMED_FILE, _shown_files, tool_hint, missing_deliverables, FOREIGN_SCRIPT, TRANSLATE_HINT, LATIN_LANGS, CONTINUE_WORDS, wrong_language, _LANG_FILES, ui_text, think_reply_reminder, language_rule  # noqa: F401
+from .checks import plan_steps, request_steps, request_parts, error_playbook, NOT_FOUND, LANG_NAMES, SCRIPTS, TR_CHARS, TR_WORDS, EN_WORDS, _CJK, _load_intents, INTENTS, intent_alt, _extend, _lang_rx, LANG_WORD_RX, _lang_counts, reply_language, SMALL_TALK, ACTION, WORK, QUESTION, CORE_TOOLS, WEB_WORDS, GROUP_TOOLS, GROUPED, GROUP_WORDS, tool_groups, STRONG_BROWSER, BROWSER_WORDS, CODE_NOT_RUN, HOWTO, SHELL_FENCES, FENCE, CMD_START, fenced_commands, is_small_talk, FILE_NAME, _unread_files, CURRENT_INFO, needs_research, is_knowledge_question, ANNOUNCE, PROMISE, VISUAL_ASK, is_promise, is_announcement, FILE_CLAIM, ACTION_ECHO, CHANGE_REQUEST, CHANGE_CLAIM, FILE_EDIT_ASK, FILE_REF, DELIVER_VERB, DELIVERABLES, CLAIMED_FILE, _shown_files, tool_hint, missing_deliverables, FOREIGN_SCRIPT, TRANSLATE_HINT, LATIN_LANGS, CONTINUE_WORDS, wrong_language, _LANG_FILES, ui_text, think_reply_reminder, language_rule  # noqa: F401
 
 
 
@@ -51,6 +52,21 @@ class Run:
     todos: list[dict] = field(default_factory=list)  # live task list kept by the model (todo tool)
     seen: set = field(default_factory=set)  # read-only calls already made in this task (see REPEAT_GUARD)
     repeats: int = 0  # repeated read-only calls answered from memory; at 3 the web tools close for the task
+    fs_epoch: int = 0  # tools that can change the disk so far (a repeated list_dir / read_file before the next one is a loop)
+    fail_streak: int = 0  # model turns whose tool calls failed in a row: every 4 the model must change the approach
+    turn_idx: int = 0  # tool rounds so far (fail_streak counts one per round)
+    plan_refusals: int = 0  # work calls refused because the multi-part job had no plan yet
+    counted: dict = field(default_factory=dict)  # call pattern with numbers masked -> calls (counting loops)
+    media_calls: dict = field(default_factory=dict)  # media tool -> calls in this task (MEDIA_CAP)
+    ctx_peak: int = 0  # the largest context a turn of this task sent (the meter shows it after the task)
+    tools_off: bool = False  # stuck in a loop: no tools are offered or run any more, the model must answer
+    turn_counts: dict = field(default_factory=dict)  # calls in the current turn
+    turn_fail_sigs: dict = field(default_factory=dict)  # (turn, tool, error kind) -> failures in that turn
+    outcomes: dict = field(default_factory=dict)  # call -> (result digest, times in a row): same call, same result
+    fail_turn: int = -1
+    file_loops: int = 0  # files that turned into a generation loop in this task (see _file_loop_check)
+    todos_auto: bool = False  # the list was opened by the app (from the request / the written plan), not the model
+    auto_ticked: int = 0  # items the app ticked itself since the model's last todo call (its advance means those)
     # A rewrite was requested: the shown answer stays on screen until the new text starts (no blank flicker).
     hold: bool = False
     noted: bool = False  # this turn's narration already moved into the trace (tool call started)
@@ -80,6 +96,12 @@ class Run:
     partial_saved_at: float = 0.0  # last time the streaming call was written to disk (power-cut safety)
     silent_writer: bool = False  # the provider sends tool calls only at the end (no live progress)
     whole_calls: bool = False  # a big native tool call arrived in one piece at the end (no streamed arguments)
+    # The reasoning of the last model turn and how long it took: a turn that breaks off (provider pause, timeout,
+    # drop) hands it to the retry, which acts on it instead of thinking the whole plan through again (minutes).
+    last_thinking: str = ""
+    think_secs: float = 0.0
+    carry_thinking: str = ""  # reasoning carried into the next request after a break (see _carry_thinking)
+    no_think: bool = False  # the next request goes without reasoning (the carried plan is already there)
     # (model, our estimate, the provider's real prompt count) of the last request that reported its real size: the
     # next request's size is that real count plus the change since, so the meter follows the provider's numbers.
     anchor: tuple | None = None
@@ -268,6 +290,12 @@ def _emit(run: Run, type_: str, **payload) -> None:
 
 def _step(run: Run, kind: str, title: str, status: str = "done", detail: str = "", data: dict | None = None,
           step_id: str | None = None) -> str:
+    if kind == "note" and detail:
+        # A model that copied the app's own "[Tool actions in this turn ...]" history line into its narration:
+        # that line is bookkeeping for the model, never text for the user.
+        detail = ACTION_ECHO.sub("\n", detail).strip()
+        if not detail:
+            return ""
     if kind == "note" and not step_id and detail and any(
             x["kind"] == "note" and x["detail"] == detail[:8000] for x in run.steps):
         return next(x["id"] for x in run.steps if x["kind"] == "note" and x["detail"] == detail[:8000])
@@ -287,9 +315,137 @@ TOOL_TITLES = {"write_file": "file", "read_file": "read", "read_document": "read
                "stop": "stop", "web_search": "search", "research": "search", "fetch_url": "fetch", "browser_check": "visual",
                "make_doc": "document", "delete_file": "delete", "use_skill": "skill", "edit_file": "edit",
                "search_code": "grep", "symbols": "grep", "ask_model": "delegate", "remember": "memory",
-               "impact": "grep", "mcp": "mcp", "mcp_add": "mcp", "team": "team", "web_screenshot": "screenshot", "stock_photo": "photo", "generate_image": "photo", "inspect_media": "visual", "speech_to_text": "file", "text_to_speech": "file","save_catalog": "catalog",
+               "impact": "grep", "mcp": "mcp", "mcp_add": "mcp", "team": "team", "web_screenshot": "screenshot", "stock_photo": "photo", "generate_image": "photo", "edit_video": "visual", "animate_image": "visual", "generate_video": "visual", "mobile_env": "command", "mcp_search": "mcp", "inspect_media": "visual", "speech_to_text": "file", "text_to_speech": "file","save_catalog": "catalog",
                "places": "places", **{n: "browser" for n in BROWSER_TOOLS}}
 REPEAT_GUARD = {"fetch_url", "web_search", "research", "use_skill"}
+# The request asks to run / test the result; tools that really did that
+VERIFY_ASK = re.compile(r"test\s*et|btestb|dene(yin|yip|)b|çalıştır|başlat|doğrula|tarayıcıda|run it|start it|verify|"
+                        r"in the browser|try it", re.I)
+VERIFY_TOOLS = {"start", "web_screenshot", "browser_check", "browser_navigate", "browser_batch", "mobile_env",
+                "browser_snapshot"}
+# A run that checks something (an install or mkdir is not a test): tests, linters, requests to a page, the program itself
+TEST_CMD = re.compile(r"\b(test|tests|pytest|jest|vitest|phpunit|unittest|mocha|playwright|cypress|curl|wget|"
+                      r"Invoke-WebRequest|iwr|php\s+-l|lint|tsc|flutter\s+test|gradlew\s+\w*test|xcodebuild\s+test|"
+                      r"node\s+\S+\.m?js|python\s+\S+\.py|php\s+\S+\.php)\b", re.I)
+
+
+OLD_STEP_MARK = "[older step shortened"
+KEEP_RECENT = 6  # the latest messages of the task always go in full
+
+
+def _short(text: str, head: int, tail: int, what: str) -> str:
+    return f"{text[:head]}\n{OLD_STEP_MARK}: {len(text) - head - tail} characters of {what} left out - read_file / run it " \
+           f"again if you need them]\n{text[-tail:] if tail else ''}"
+
+
+def _gone_body(text: str) -> str:
+    """An old file body in the model's own earlier tool call. It used to keep its first 300 characters followed by the
+    shortening note, and the model copied that shape into NEW files (real code, then the note): minutes of writing
+    refused four times in one task. The whole body becomes one line that looks like no file at all, so there is no
+    'content + note' pattern left to imitate (and a copied line is refused in a second)."""
+    return f"{OLD_STEP_MARK}: file body ({len(text)} characters) is on disk, not repeated here - read_file it if needed]"
+
+
+def shrink_old_steps(messages: list[dict], first: int) -> None:
+    """Every turn sends the whole task again, so each finished step made all later turns longer: whole files the
+    model wrote (in its tool calls) and long tool outputs, read again on every call (19K -> 34K tokens in one task,
+    minutes before the first token, dropped connections). Older steps keep their beginning and end; the last
+    KEEP_RECENT messages stay complete. Done once per message (marked), so the shortened history stays the same
+    from turn to turn (prompt caches keep working)."""
+    end = len(messages) - KEEP_RECENT
+    for m in messages[first:max(first, end)]:
+        content = m.get("content")
+        if isinstance(content, str) and len(content) > 1800 and OLD_STEP_MARK not in content:
+            if m.get("role") == "tool" or content.startswith("Tool results:"):
+                m["content"] = _short(content, 700, 400, "this tool output")
+            elif m.get("role") == "assistant":
+                # tag protocol: file contents inside <tool name="write_file" ...>...</tool>
+                m["content"] = re.sub(
+                    r'(<tool name="(?:write_file|make_doc|edit_file)"[^>]*>)(.{1500,}?)(</tool>)',
+                    lambda x: x.group(1) + _gone_body(x.group(2)) + x.group(3),
+                    content, flags=re.S)
+        for c in m.get("tool_calls") or []:
+            args = c.get("arguments")
+            if c.get("name") in ("write_file", "make_doc", "edit_file", "append_file") and isinstance(args, dict):
+                for k in ("content", "body", "new", "new_string", "text"):
+                    v = args.get(k)
+                    if isinstance(v, str) and len(v) > 1500 and OLD_STEP_MARK not in v:
+                        c["arguments"] = {**args, k: _gone_body(v)}
+                        args = c["arguments"]
+
+
+PAGE_TOOLS = {"web_screenshot", "browser_navigate", "browser_snapshot", "browser_batch", "browser_check"}
+PAGE_ERR = re.compile(r"Fatal error|Parse error|Uncaught (?:Exception|Error|TypeError|ReferenceError|SyntaxError|PDOException)"
+                      r"|Warning</b>:|\(HTTP 5\d\d\)|\bHTTP 5\d\d\b|Internal Server Error|Traceback \(most recent call|Unable to open database"
+                      # web_screenshot / browser checks: a JS error, a 404 script or stylesheet, a bundle refused,
+                      # the page check the browser tools add after every page action
+                      r"|JS error: |\bHTTP 404: \S+\.(?:m?js|css|bundle)\b|Refused to execute script|\[Page check: |UNSTYLED PAGE: ", re.I)
+
+
+def page_state(name: str, res, unresolved: str) -> str:
+    """A page the model opened shows an error (a PHP Fatal error, a 500, an uncaught exception): the task is not
+    done - it is held like a failed command until a later look at the page is clean. Before, a site that showed
+    "Fatal error: Unable to open database" on its menu page was reported as finished."""
+    if name not in PAGE_TOOLS:
+        return unresolved
+    if m := PAGE_ERR.search(res.output or ""):
+        start = max(0, m.start() - 80)
+        return "[page error] " + (res.output or "")[start:start + 600]
+    return "" if unresolved.startswith("[page error]") else unresolved
+
+
+def failure_signature(failure: str) -> str:
+    """A failed command's error without what changes on every attempt (temp script names, paths, hex ids, numbers),
+    so the same error is recognised as the same."""
+    return re.sub(r"[A-Za-z]:\\[^\s:'\"]+|/[^\s:'\"]*/[^\s:'\"]+|\b[0-9a-f]{6,}\b|\d+", "#",
+                  (failure or "")[-600:]).strip()[-400:]
+
+
+async def _wait_online(cancel: asyncio.Event, limit: float) -> bool:
+    """Polls until names resolve and a well-known host answers again (this computer is back online), at most limit
+    seconds or until the task is stopped."""
+    import socket
+
+    def online() -> bool:
+        try:
+            socket.getaddrinfo("one.one.one.one", 443)
+            with socket.create_connection(("1.1.1.1", 443), timeout=3):
+                return True
+        except OSError:
+            return False
+    end = time.monotonic() + limit
+    while time.monotonic() < end and not cancel.is_set():
+        if await asyncio.to_thread(online):
+            return True
+        try:
+            await asyncio.wait_for(cancel.wait(), 10)
+        except asyncio.TimeoutError:
+            pass
+    return False
+
+
+def _verified(run) -> bool:
+    """Something was really run or looked at: a page opened, or a command that checks. A started server alone is not
+    a test: an Expo app whose bundle answered 500 was reported as running because `start` printed its address, so
+    once a server ran, only opening its page in a browser tool (console + network are reported there) counts."""
+    served = tested = False
+    for s in run.steps:
+        d = s.get("data") or {}
+        if not isinstance(d, dict):
+            continue
+        tool = d.get("tool")
+        if tool in PAGE_TOOLS or tool == "mobile_env":
+            return True
+        if tool == "start":
+            served = True
+        elif tool in VERIFY_TOOLS or (tool == "run" and TEST_CMD.search(str(d.get("command") or ""))):
+            tested = True
+    return tested and not served
+PLAN_GATED = {"write_file", "edit_file", "run", "start", "make_doc", "generate_image", "delete_file"}
+MEDIA_CAP = {"generate_image": 6, "stock_photo": 10, "generate_video": 4, "animate_image": 4, "web_screenshot": 16,
+             "browser_screenshot": 16, "browser_check": 16}
+BOOKKEEPING = {"todo", "need_tools", "use_skill", "remember"}  # never part of a loop signature
+STUCK_WARN = 4  # failed tool rounds in a row: every 4th one the model is told to change the approach (never stopped)
 # Step kinds that are actions worth remembering in later turns (see _history).
 ACTION_KINDS = {"photo", "file","edit", "delegate", "memory", "mcp", "team", "command", "process", "document", "delete", "skill", "search", "fetch", "visual", "screenshot", "catalog", "browser"}
 
@@ -478,13 +634,35 @@ PARTIAL = "partial_call.json"
 WRITERS = ("write_file", "make_doc")
 
 
+def _file_loop_check(run: "Run", loop_check: list) -> None:
+    """A file streaming in that turned into one block repeated again and again (a generation loop: 30K characters of
+    the same <script>): stop it early. The salvage keeps the written part with the repeats removed and the model
+    continues from there, instead of writing the loop for minutes and handing it over as the file."""
+    size = len(run.partial_tag) + sum(len(x) for s in run.partial_args.values() for x in s["args"])
+    if len(loop_check) < 2:
+        loop_check.append(0)
+    if size - loop_check[1] < 3000:
+        return
+    loop_check[1] = size
+    got = _partial_call(run)
+    if not got:
+        return
+    from ..tools.editing import collapse_repeats
+    _, removed = collapse_repeats(got[1].get("content", "")[-30000:])
+    if removed >= 9:
+        run.file_loops += 1
+        raise ProviderError("looping", f"the model repeated the same block {removed} times while writing "
+                                       f"{got[1].get('path')}; the written part is kept once and continued")
+
+
 def _partial_call(run: "Run") -> tuple[str, dict, bool] | None:
     """The file-writing call that was streaming when a turn broke off: (tool, {path, content}, append)."""
     if run.partial_tag:
         m = re.match(r'<(?:tool|tools)\b[^>]*?name="(write_file|make_doc)"([^>]*)>(.*)', run.partial_tag, re.S) or \
             re.match(r"<(write_file|make_doc)\b([^>]*)>(.*)", run.partial_tag, re.S)
         if m:
-            attrs = dict(re.findall(r'(\w+)\s*=\s*"([^"]*)"', m.group(2)))
+            from .stream_parser import attrs as _attrs
+            attrs = _attrs(m.group(2))
             return m.group(1), {"path": attrs.get("path", ""), "content": m.group(3)}, attrs.get("append") == "true"
     for slot in run.partial_args.values():
         if slot.get("name") not in WRITERS:
@@ -533,6 +711,8 @@ def save_partial(root, tool: str, args: dict, append: bool) -> tuple[str, int] |
     content = args.get("content") or ""
     if "\n" in content:
         content = content[:content.rfind("\n") + 1]  # never keep half a line
+    from ..tools.editing import collapse_repeats
+    content = collapse_repeats(content)[0]  # a call cut off inside a generation loop keeps the loop once
     if len(content) < 200 or not args.get("path"):
         return None
     try:
@@ -564,15 +744,23 @@ def _salvage(run: "Run", ctx, messages: list[dict]) -> tuple[str, int] | None:
         return None
     path, n = saved
     ctx.files_changed.append(path)
+    # write_file to this path without append=true is joined to the saved part when it does not restart the file
+    # (see registry.write_file): a model (or the next model after a switch) that "continued" with a plain write
+    # wiped the saved 10K characters before.
+    pend = getattr(ctx, "salvaged", None)
+    if pend is None:
+        pend = ctx.salvaged = {}
+    pend[path] = got[1]["content"][:n]
     tail = got[1]["content"][:n][-400:]
     how = (f"continue writing it with write_file path=\"{path}\" append=true" if got[0] == "write_file" else
            f"continue the document's source with write_file path=\"{path}\" append=true, then make_doc "
            f"source=\"{path}\" path=\"{got[1]['path']}\"")
     messages.append({"role": "user", "content": f"[App note] The connection dropped while you were writing "
                      f"{got[1]['path']}. The {n} characters you had written are SAVED in {path} - do not write them "
-                     f"again. It ends with:\n...{tail}\n\nNow {how}, with ALL the rest in this ONE call (start right "
-                     "after that end, finish the file). Do not split it into several calls and do not read the file "
-                     "first: every extra call is another full round trip."})
+                     f"again. It ends with:\n...{tail}\n\nNow {how}, starting right after that end. If the rest is longer "
+                     "than ~8,000 characters, send it in consecutive append=true calls of up to ~8,000 characters each "
+                     "(this provider drops long calls); otherwise in one call. Do not read the file first. For the rest "
+                     "of this task, write files longer than ~8,000 characters the same way."})
     _drop_partial_file(run.session["id"])
     return saved
 
@@ -586,6 +774,43 @@ def _drop_partial_file(session_id: str) -> None:
 
 RECORD_TAG = "[App record of this task so far - kept by the app, exact]"
 CONTINUE_TAG = "[App note: connection dropped]"
+THINK_CARRY = "[App note: your reasoning before the break]"
+CARRY_MAX = 14000  # characters of carried reasoning (the start of the plan + its latest part)
+
+
+def _carry_thinking(run: "Run", messages: list[dict]) -> bool:
+    """A turn broke off (provider pause, timeout, drop, model switch) after the model had reasoned, often for minutes
+    on a slow cloud model. That reasoning used to be thrown away, and every retry thought the whole task through again
+    (18 minutes in "thinking" after a few drops). It goes into the next request instead, as the model's own plan, and
+    that request is sent without reasoning where the provider allows it (run.no_think), so the model acts on it."""
+    new = (run.last_thinking or "").strip()
+    old = run.carry_thinking
+    if len(new) < 400:
+        text = old  # the broken turn barely thought (it broke early): the earlier carried plan stays
+    elif old and new[:300] not in old:
+        text = old + "\n[...continued after another break...]\n" + new
+    else:
+        text = new
+    run.last_thinking = ""
+    if len(text) < 400:
+        return False
+    if len(text) > CARRY_MAX:
+        text = text[:3500] + "\n[...]\n" + text[-(CARRY_MAX - 3500):]
+    run.carry_thinking = text
+    secs = int(run.think_secs or 0)
+    note = (f"{THINK_CARRY} The request broke off (provider pause / timeout / drop) after you had already reasoned"
+            + (f" for about {secs // 60} min {secs % 60} s" if secs >= 30 else "") + ". That reasoning is below: it is "
+            "your own plan and still valid, and every step above it is done and kept. Do NOT think the task through "
+            "again and do not start over. Act on it now: make the tool call(s) it leads to, continuing from the first "
+            "step that is not done yet (if it stopped mid-thought, finish that thought in a sentence or two, then act)."
+            f"\n<previous_reasoning>\n{text}\n</previous_reasoning>")
+    messages[:] = [m for m in messages if not str(m.get("content") or "").startswith(THINK_CARRY)]
+    at = len(messages)
+    if at >= 2 and str(messages[-1].get("content") or "").startswith(CONTINUE_TAG):
+        at -= 2  # a half-written answer being continued keeps its note last
+    messages.insert(at, {"role": "user", "content": note})
+    run.no_think = len(text) >= 1500  # a real plan: the retry acts on it instead of reasoning for minutes again
+    return True
 LOOK_TOOLS = {"web_search", "research", "fetch_url", "web_screenshot", "stock_photo", "generate_image", "inspect_media",
               "places", "use_skill", "search_code", "list_dir", "symbols", "impact", "ask_model", "mcp"}
 
@@ -976,6 +1201,10 @@ def _system_prompt(role: str, root, session_id: str, project: dict | None, skill
         sizes["tools"] = sizes.get("tools", 0) + tokens.count(tail[-1])
     # Skill discovery: the model sees every skill's purpose and loads a matching one with use_skill.
     available = {k: v for k, v in catalog.skills().items() if k not in skill_names}
+    if (hit := catalog.matching_skills(request, skip=skill_names)) and (tools is None or "use_skill" in tools):
+        # The request matches a skill's own trigger words: say so, a weak model rarely finds it from the name alone.
+        tail.append(f"# This request matches the skill {', '.join(hit)}: call use_skill {hit[0]} first and follow it.")
+        sizes["skills"] = sizes.get("skills", 0) + tokens.count(tail[-1])
     if available and lean and (tools is None or "use_skill" in tools):
         # Names only (they say what they are for); the instructions arrive with use_skill.
         parts.append("# Skills (use_skill NAME when the request matches one): " + ", ".join(available))
@@ -1068,7 +1297,7 @@ def _loop_cut(text: str) -> str | None:
     """The text up to where a repetition loop starts, or None. A loop: one sentence (25+ characters) that appears 4+
     times within the last 4000 characters (code is left alone: repeated lines are normal there)."""
     if len(text) < 400 or text.count("```") % 2:
-        return None
+        return _babble_cut(text)
     tail = text[-4000:]
     counts: dict[str, int] = {}
     for m in _UNIT.finditer(tail):
@@ -1077,10 +1306,35 @@ def _loop_cut(text: str) -> str | None:
             counts[s] = counts.get(s, 0) + 1
     rep = max(counts.items(), key=lambda kv: kv[1], default=(None, 0))
     if rep[1] < 4:
-        return None
+        return _babble_cut(text)
     first = text.find(rep[0])
     second = text.find(rep[0], first + len(rep[0]))
     return text[:second].rstrip() if second > 0 else None
+
+
+def _babble_cut(text: str) -> str | None:
+    """A model that lost the thread writes a run of tiny, all-different lines ("BOOM.", "LFG.", "tulcall.", "火.",
+    "DISPARAR.") in mixed languages instead of calling its tool: none repeats, so the loop check above never fired
+    and gemma babbled for minutes. 14+ lines in a row of at most 4 words each (outside code / lists) is that state:
+    cut where the run starts."""
+    if text.count("```") % 2:
+        return None
+    lines = text.split("\n")
+    run_start, run_len = None, 0
+    for i, ln in enumerate(lines):
+        s = ln.strip().strip("-_*#>").strip()
+        if not s:
+            continue
+        short = len(s) <= 40 and len(s.split()) <= 4 and not re.match(r"^(\d+[.)]|[|<{`$]|[\w./\\-]+\.\w{1,5}\b)", s)
+        if short:
+            if run_len == 0:
+                run_start = sum(len(x) + 1 for x in lines[:i])
+            run_len += 1
+            if run_len >= 14:
+                return text[:run_start].rstrip()
+        else:
+            run_len = 0
+    return None
 
 
 TOOL_NAMES = frozenset(TOOLS)  # also recognized when a model writes a tool as its own tag
@@ -1099,6 +1353,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
 
     got_output = False  # anything received yet (else silence = prompt processing / model loading)
     thinking_live = False
+    think_span = [0.0, 0.0]  # first / last reasoning chunk of this turn
     t_req = time.monotonic()
     if run.perf["prep_ms"] is None:
         run.perf["prep_ms"] = (t_req - run.t0) * 1000
@@ -1123,7 +1378,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
         written = out["n"] + out["tool"] * 2 // 7  # streamed tool arguments (JSON/code): ~3.5 characters per token
         used = base + int(written * CTX_RATIO.get(model, 1.0))
         if used != run.session.get("context_used"):
-            run.session["context_used"] = used
+            run.session["context_used"] = used; run.ctx_peak = max(run.ctx_peak, used)
             _emit(run, "context", used=used)
 
     def prepare(name: str | None, chars: int = 0, seconds: int = 0, force: bool = False) -> None:
@@ -1137,7 +1392,12 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
         # What the model is doing right now, for the live step: waiting for the first token (the provider reads the
         # prompt), thinking, writing a tool call whose text streams in, or writing one the provider sends at the end.
         phase = ("first" if not got_output else "tool_stream" if chars else
-                 ("tool_silent" if opts.get("tools") else "stalled") if name == "tool" else "writing")
+                 ("tool_silent" if opts.get("tools") and not router.streams_tool_args(model) else "stalled")
+                 if name == "tool" else "writing")
+        if phase == "stalled" and thinking and not "".join(visible).strip():
+            # Silence right after the reasoning is the model composing its answer / call (EVREN sends a call only when
+            # complete), not a busy provider: "it may be busy" while it was thinking confused the user.
+            phase = "after_think"
         if phase == "tool_silent" and seconds >= 45 and not _call_open(run):
             run.silent_writer = True
         # The user must always see what is going on: the file being written and its size so far, or for a provider
@@ -1148,7 +1408,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
         # An overloaded provider can pause for minutes and still finish: it is not cut early (that only made it think
         # again from the start); the step says how long nothing came and when the stream timeout would retry.
         stall_in = (max(0, int(router.silence_limits(False)[1]) - seconds)
-                    if phase == "stalled" and not router.is_local(model) else None)
+                    if phase in ("stalled", "after_think") and not router.is_local(model) else None)
         prep_id = _step(run, "prepare", name or "tool", "running",
                         data={"tool": name, "chars": chars, "seconds": int(now - t_req), "idle": seconds, "phase": phase,
                               "prompt_tokens": _shown_tokens(run.prompt_est, model), "model": model,
@@ -1173,6 +1433,8 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
         elif kind == "thinking":
             thinking.append(text)
             thinking_live = True
+            think_span[1] = time.monotonic()
+            think_span[0] = think_span[0] or think_span[1]
             # At most 4 updates a second: joining the whole reasoning and sending 6 KB on every token made long
             # thinking (deepseek: thousands of tokens) slower and slower, on the server and in the browser.
             now = time.monotonic()
@@ -1203,7 +1465,10 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                     end_thinking()
                     prepare("tool" if got_output else "model", seconds=evt["seconds"], force=True)
                 if (got_output and evt["seconds"] >= SILENT_TOOL_LIMIT and opts.get("tools") and not _call_open(run)
-                        and not router.is_local(model)):
+                        and not router.is_local(model) and not router.streams_tool_args(model)):
+                    # (A provider seen streaming tool arguments - EVREN does, chunk by chunk - is not one of these:
+                    # its silence is a pause on the provider's side (queue / preemption) and the generation goes on.
+                    # Cutting it here threw away minutes of reasoning, and the retry thought it all through again.)
                     # A cloud provider that sends a tool call only when it is complete: minutes of nothing, no way to
                     # tell progress from a hang, and everything is lost on a drop. Stop waiting and redo this turn
                     # with the text protocol, which streams the file as it is written (and can be continued).
@@ -1215,10 +1480,9 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                     # The file was streaming and the provider stopped in the middle of it (evren/deepseek waited
                     # 300 s for the general timeout). What was written is kept and the model continues from there.
                     run.stalls += 1
-                    if opts.get("tools"):
-                        # Native tool arguments that arrive in bursts with long pauses (evren/deepseek): the text
-                        # protocol streams the same file as plain tokens, steadily; this model uses it from now on.
-                        run.silent_writer = True
+                    # (The protocol is not switched here: the arguments were streaming, so this provider streams
+                    # tool calls; a pause mid-way is on its side and the text protocol pauses the same way. Switching
+                    # rebuilt the whole prompt and made the model re-read and re-plan everything.)
                     raise ProviderError("stalled", f"the provider stopped for {int(evt['seconds'])} s in the middle "
                                                    "of a file; the written part is kept and continued")
                 continue
@@ -1241,10 +1505,13 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                 calls.append(evt)
             elif t in ("tool_call_start", "tool_call_progress"):
                 if evt.get("delta"):  # the call's arguments as they stream in: kept, so a dropped connection loses nothing
+                    if t == "tool_call_progress":  # a second piece of the same call: this provider streams calls
+                        router.mark_streams_tool_args(model)
                     slot = run.partial_args.setdefault(evt.get("index", 0), {"name": evt.get("name"), "args": []})
                     slot["name"] = evt.get("name") or slot["name"]
                     slot["args"].append(evt["delta"])
                     _persist_partial(run)
+                    _file_loop_check(run, loop_check)
                 out["tool"] = max(out["tool"], evt.get("chars") or 0)
                 grow()
                 end_thinking()
@@ -1283,7 +1550,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                 if output:
                     output -= think_tok
                 used = (run.session.get("usage_input") or 0) + max(0, output)
-                run.session["context_used"] = used
+                run.session["context_used"] = used; run.ctx_peak = max(run.ctx_peak, used)
                 _emit(run, "context", used=used)
             elif t == "text":
                 raw.append(evt["text"])
@@ -1305,6 +1572,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                                 _emit(run, "reset_text")
                                 _emit(run, "delta", text=cut)
                     if looped:
+                        run.file_loops += 1  # the next request goes with a repeat penalty (see the request options)
                         _step(run, "note", "loop", "done", ui_text(
                             opts.get("lang") or load_settings().get("language") or "en", "ai_note_loop",
                             "The model began repeating the same text; the repeats were removed and its answer was "
@@ -1315,6 +1583,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                     prepare(next((g for g in m.groups() if g), None) if m else None, len(splitter.buf))
                     run.partial_tag = splitter.buf  # a tag call being written (text protocol): kept for a drop
                     _persist_partial(run)
+                    _file_loop_check(run, loop_check)
         if calls and not run.partial_args and not router.is_local(model):
             # The provider sent a big tool call (a whole file) only when it was complete: every such call is minutes
             # of silence that a dropped connection throws away. Learned at once, not after the next 75 s stall.
@@ -1355,12 +1624,16 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
             run.steps = [s for s in run.steps if s["id"] != prep_id]
             _emit(run, "step_remove", step_id=prep_id)
         end_thinking()
+        # Kept for a retry if this turn broke off (see _carry_thinking): the plan is not thought out a second time.
+        run.last_thinking = "".join(thinking)
+        run.think_secs = (think_span[1] - think_span[0]) if think_span[0] else 0.0
     return "".join(raw), tags, calls
 
 
 # A busy or briefly failing provider (HTTP 503/429/5xx, timeouts) is retried with growing waits instead of
 # ending a long task; quota/auth errors are not transient and end the run at once.
-TRANSIENT = {"overloaded", "rate_limit", "server", "bad_gateway", "timeout", "network", "unavailable", "stalled"}
+TRANSIENT = {"overloaded", "rate_limit", "server", "bad_gateway", "timeout", "network", "unavailable", "stalled",
+             "looping"}
 # Seconds a cloud provider may stay silent while it writes a native tool call before the turn is redone with the
 # streamed text protocol (Settings > Agent > stream timeout still applies to everything else).
 SILENT_TOOL_LIMIT = 75
@@ -1373,7 +1646,8 @@ PATH_IN_ARGS = re.compile(r'"(?:path|file|filename|output)"\s*:\s*"([^"]{1,200})
 def _partial_target(run: "Run") -> str:
     """The file a tool call being written is about (from its streamed arguments or tag), for the live step."""
     src = run.partial_tag or ("".join(run.partial_args[max(run.partial_args)]["args"]) if run.partial_args else "")
-    m = PATH_IN_ARGS.search(src[:2000])
+    # Usually at the start; a model may also write the content first and the path last (then it shows once it came).
+    m = PATH_IN_ARGS.search(src[:2000]) or PATH_IN_ARGS.search(src[-600:])
     return (m.group(1) or m.group(2)) if m else ""
 
 
@@ -1390,11 +1664,18 @@ def _call_open(run: "Run") -> bool:
     except ValueError:
         return True
 RETRY_WAITS = (5, 15, 30, 60, 90, 120)
+HANDOVER = ("[App note: you are taking over this task from another model mid-way. Everything above (files written, "
+            "commands run, the to-do list) is that model's work and stays: keep its files, structure, names and style, "
+            "continue with the next open step, and finish a half-written file from where it ends (append). Do not "
+            "rewrite or redesign files that are finished or nearly finished unless they are really broken - read "
+            "them first if you need to change something.]")
+
 SPLIT_HINT = ("[App note: your previous tool call was cut off or the connection dropped while you were writing it, so "
               "it did NOT run. Everything before it did run and is kept above - do not redo those steps. Write the "
-              "remaining content in at most two parts now: write_file with the first half (up to ~25,000 characters), "
-              "then write_file with append=true for each following part. For documents, make_doc from a file you "
-              "wrote this way (source=...).]")
+              "remaining content in parts now: write_file with the first part (up to ~8,000 characters), then "
+              "write_file with append=true for each following part. Do the same for every file longer than ~8,000 "
+              "characters for the rest of this task: this provider drops long calls. For documents, make_doc from a "
+              "file you wrote this way (source=...).]")
 
 BUDGET_NOTE = {"tr": "Adım sınırına ulaşıldı ({n} adım) ve görev henüz bitmedi. Kaldığı yerden sürdürmek için "
                      "\"devam et\" yazın; sınırı Ayarlar > Ajan bölümünden artırabilirsiniz.",
@@ -1406,6 +1687,8 @@ NOTES = {
                   "en": "Native tool calling not supported; switched to the text protocol: {e}"},
     "leak": {"tr": "Çalıştırılmamış araç sözdizimi gizlendi; modelden çağrıyı doğru biçimde yinelemesi istendi.",
              "en": "Unparsed tool syntax was hidden; the model was asked to retry the call."},
+    "open_todos": {"tr": "Model yanıtı yazdı ama planlanan {n} madde hâlâ açık; kalanları tamamlaması isteniyor.",
+                   "en": "The model wrote its answer while {n} planned items are still open; it is asked to finish them."},
     "unresolved": {"tr": "Son komut başarısız oldu ama model bitti diyordu; önce düzeltmesi isteniyor.",
                    "en": "The last command failed but the model was finishing; it is asked to fix it first."},
     "unresolved_final": {"tr": "⚠️ Son komut hâlâ başarısız: bu cevaptaki ilgili adım tamamlanmamış olabilir.",
@@ -1450,9 +1733,24 @@ async def _summarize_progress(run: Run, model: str, messages: list[dict], first:
         summary = ""
     if not summary:  # fall back to a mechanical log of the steps
         summary = "\n".join(l[:300] for l in lines)
+    # Never larger than what it replaces: a fallback log (or a rambling summary) once made the context grow
+    # (19.7K -> 24.9K) and the next turn summarized again, in a loop. At most a quarter of the old size, keeping the
+    # task line and the latest steps.
+    cap = max(3000, int(sum(len(str(m.get("content") or "")) for m in old) * 0.25))
+    if len(summary) > cap:
+        head = lines[0][:600] + "\n" if lines and lines[0].startswith("TASK:") and not summary.startswith("TASK:") else ""
+        summary = head + "...\n" + summary[-(cap - len(head)):]
     if run.done_calls:  # the exact record of what already ran, whatever the summary says: never redo or invent steps
         summary += "\n\nTool calls already made in this task (do not repeat them):\n" + "\n".join(
             f"- {d}" for d in run.done_calls[-80:])
+        # Every file this task wrote, however long ago (the call list above keeps only the latest 80): they exist on
+        # disk, so a later step never thinks one is missing and writes it again - read_file / edit_file them.
+        written = list(dict.fromkeys(d.split(" ", 1)[1] for d in run.done_calls
+                                     if d.startswith(("write_file ", "edit_file ")) and " " in d))
+        if written:
+            summary += ("\n\nFiles written in this task - they EXIST on disk with the content you gave them (change "
+                        "them with edit_file after read_file, never write them again from memory):\n"
+                        + "\n".join(f"- {w}" for w in written[-200:]))
     if run.todos:  # where the plan stands: the summary must not send the model back to finished items
         summary += "\n\nTo-do list now: " + "; ".join(
             f"[{'x' if t['status'] == 'completed' else '>' if t['status'] == 'in_progress' else ' '}] {t['content']}"
@@ -1564,11 +1862,14 @@ def _auto_todo(run: "Run", name: str, args: dict, res: ToolResult) -> None:
                 if t["status"] == "in_progress":
                     t["status"] = "completed"
     elif name in ("run", "start"):
-        hit = next((t for t in open_items if t["status"] == "in_progress" and TODO_RUN.search(t["content"])), None) \
-            or next((t for t in open_items if TODO_RUN.search(t["content"])), None)
+        # Only the item being worked on now: any successful command ("php -v") used to tick the first open item that
+        # mentions running / testing, even item 6 while item 1 was still in progress, so the list showed later steps
+        # finished out of order.
+        hit = next((t for t in open_items if t["status"] == "in_progress" and TODO_RUN.search(t["content"])), None)
     if not hit:
         return
     hit["status"] = "completed"
+    run.auto_ticked += 1
     if not any(t["status"] == "in_progress" for t in run.todos):
         nxt = next((t for t in run.todos if t["status"] == "pending"), None)
         if nxt:
@@ -1584,8 +1885,8 @@ def todo_line(run: "Run") -> str:
     cur = next((t["content"] for t in run.todos if t["status"] == "in_progress"), None) or \
         next((t["content"] for t in run.todos if t["status"] != "completed"), "")
     done = sum(t["status"] == "completed" for t in run.todos)
-    return (f"\n[To-do {done}/{len(run.todos)} done; now: {cur}. When this item is finished, call todo with the "
-            "whole list updated.]")
+    return (f"\n[To-do {done}/{len(run.todos)} done; now: {cur}. When this item is finished: todo advance=true "
+            "(never retype the list; add=[...] for new work found on the way).]")
 
 
 # Calls that write a file: several in one turn run at the same time when each writes a different file.
@@ -1652,6 +1953,64 @@ async def _exec(run: Run, ctx: ToolContext, name: str, args: dict, body: str,
     if name in run.blocked:
         return ToolResult(False, f"'{name}' is switched off for this task after failing the same way 3 times. "
                                  "Do this part another way (for example write the files yourself), then finish.")
+    # One reply generating calls in a loop (write images/gallery1.jpg ... gallery45.jpg, each refused): after the same
+    # kind of failure 4 times in this turn, or 30 calls in one turn, the rest is skipped without running or tracing.
+    turn_calls = run.turn_counts.get(run.turn_idx, 0) + 1
+    run.turn_counts = {run.turn_idx: turn_calls}
+    sig_hits = {k: v for k, v in run.turn_fail_sigs.items() if k[0] == run.turn_idx}
+    if turn_calls > 30 or any(v >= 4 and k[1] == name for k, v in sig_hits.items()):
+        return ToolResult(False, "Skipped: this reply repeated the same failing call (or made more than 30 calls); "
+                                 "nothing more of it was run. Read the last error and do ONE different step.")
+    # Media tools made in a loop (menu_card1.jpg ... menu_card27.jpg, each a new AI image taking seconds to minutes):
+    # every call succeeds and has new arguments, so nothing else sees it. A page needs a handful; past the cap the
+    # model is told to use what it has.
+    if (name in PLAN_GATED and not run.todos and allowed is None
+            and len(parts := request_parts(ctx.goal or "")) >= 3):
+        # The system works plan-first (SYSTEM_CONTRACT rule 1): a multi-part job does not start writing or running
+        # before its plan exists. Twice the model is shown the exact call; then the app opens the plan itself from the
+        # request's own parts, so the job never stalls on this rule.
+        run.plan_refusals += 1
+        if run.plan_refusals <= 2:
+            example = json.dumps([{"content": p, "status": "in_progress" if i == 0 else "pending"}
+                                  for i, p in enumerate(parts[:4])], ensure_ascii=False)
+            return ToolResult(False, f"Refused: plan first. This job has several parts and there is no to-do list yet. "
+                                     f"Call todo now with the WHOLE plan in the user's language, e.g. todo {example} "
+                                     "(all parts, including running and testing), then do this step again.")
+        run.todos_auto = True
+        run.todos = [{"content": c, "status": "in_progress" if i == 0 else "pending"} for i, c in enumerate(parts)]
+        _emit(run, "todos", todos=run.todos)
+    if name not in ("todo", "read_file", "list_dir", "search_code", "edit_file"):
+        # The same call with only a number changing (menu_card1.jpg, menu_card2.jpg ... gallery45.jpg): a counting
+        # loop of a weak model, whatever the tool. Six are allowed, then it is stopped.
+        pattern = f"{name}:" + re.sub(r"\d+", "#", json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+                                      + (body or "")[:200])
+        if re.search(r"\d", json.dumps(args, ensure_ascii=False, default=str)):
+            run.counted[pattern] = run.counted.get(pattern, 0) + 1
+            if run.counted[pattern] > 6:
+                return ToolResult(False, f"Not run: {name} was already called 6 times with only a number changing "
+                                         "(file1, file2, ...) - that is a counting loop. Reuse what you made and go on "
+                                         "with the next step of the plan.")
+    if (cap := MEDIA_CAP.get(name)) is not None:
+        run.media_calls[name] = run.media_calls.get(name, 0) + 1
+        if run.media_calls[name] > cap:
+            return ToolResult(False, f"Not run: {name} was already used {cap} times in this task - that is enough. "
+                                     "Reuse the images already made (the same picture may appear on several cards), "
+                                     "and go on with the next step of the plan.")
+    if name in ("run", "start"):
+        # The exact command that already failed twice with the same error is not run a third time (a weak model sent
+        # the same broken sqlite3 "..." line nine times): the result cannot change, only the route can.
+        ckey = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}:{body.strip()}"
+        prev = run.outcomes.get(ckey)
+        if prev and prev[1] >= 2 and prev[2] is False:
+            hint = error_playbook(prev[3]) if prev[3] else ""
+            return ToolResult(False, "Not run again: this exact command already failed "
+                                     f"{prev[1]} times with the same error (shown above). Change the route, not the "
+                                     "flags: " + (hint or "another tool, a script file run with its interpreter, or "
+                                     "check the assumption that failed."))
+    if run.tools_off:  # no failure count closes the tools (user: no circuit breaker); only a pure repeat loop does
+        return ToolResult(False, "Tools are closed for this task (the same failures kept coming back). Nothing was run. "
+                                 "Write the answer now: what was done, the exact error that blocks the rest, and what "
+                                 "the user can do (a missing program, a permission, another source).")
     if run.folder_snap and not run.folder_snap.done() and name not in READ_ONLY:
         try:  # the "before" picture must be complete before anything can change a file
             await asyncio.shield(run.folder_snap)
@@ -1660,7 +2019,45 @@ async def _exec(run: Run, ctx: ToolContext, name: str, args: dict, body: str,
     t = time.monotonic()
     res = await _run_tool(run, ctx, name, args, body, allowed)
     run.perf["tools"].append({"name": name, "ms": (time.monotonic() - t) * 1000, "ok": res.ok})
-    if not res.ok and name not in ("run", "start"):  # failing commands have their own debug loop
+    # Different calls failing one after another (unzip a file that is not there, list, unzip again...) are a loop too:
+    # the per-error count above never sees two equal errors. Make the model change the approach, then stop it.
+    # Counted per model turn: ten write_file calls of one turn refused for the same mistake (photos written as text)
+    # are one wrong idea, and pausing every tool for it left the model unable to use the right tool.
+    if name in ("run", "start", "browser_check", "web_screenshot", "edit_file", "read_file", "browser_snapshot"):
+        # The same call giving the same result again and again (run create_db.php / read the .db, 15 times): each
+        # one "succeeds", so no failure counter sees the loop. The third identical result is turned into a failure.
+        ckey = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}:{body.strip()}"
+        digest = hashlib.sha1(re.sub(r"\d{2}:\d{2}:\d{2}|\b\d{9,}\b|process_id=\w+", "", res.output).encode()).hexdigest()
+        prev = run.outcomes.get(ckey)
+        count = prev[1] + 1 if prev and prev[0] == digest else 1
+        run.outcomes[ckey] = (digest, count, res.ok, res.output[-1500:])
+        if count >= 3:
+            res = ToolResult(False, res.output + f"\n\n[App note] This exact call has now given the same result {count} "
+                             "times: repeating it changes nothing. Work out why the result is not what you expect "
+                             "(a script name run alone may only open the file - run it with its interpreter, e.g. "
+                             "php create_db.php; a file may be written somewhere else; the error may be in another "
+                             "file), say it in one line, then do something different.", res.data)
+    if not res.ok:
+        sig = (run.turn_idx, name, re.sub(r"[\w./\\-]+\.\w{1,5}\b|\d+", "#", res.output)[:160])
+        run.turn_fail_sigs = {k: v for k, v in run.turn_fail_sigs.items() if k[0] == run.turn_idx}
+        run.turn_fail_sigs[sig] = run.turn_fail_sigs.get(sig, 0) + 1
+    bumped = False
+    if res.ok:
+        run.fail_streak = 0
+    elif run.fail_turn != run.turn_idx:
+        run.fail_streak += 1
+        run.fail_turn, bumped = run.turn_idx, True
+    if bumped and run.fail_streak % STUCK_WARN == 0:
+        res = ToolResult(False, res.output + f"\n\n[App note] {run.fail_streak} tool calls in a row failed: you are stuck. "
+                         "Do not repeat or slightly vary the same step. Read the error text, say its cause in one "
+                         "line, then take a DIFFERENT route: the exact paths list_dir showed, download with fetch_url "
+                         "save=..., install or use the missing program, another source. Never overwrite a project "
+                         f"file you could not read. If you do not know the cause, web_search the exact error line first.", res.data)
+    # Reading tools are never switched off: without read_file a model "checked" a file by overwriting it.
+    # Nor the tools every project needs: write_file switched off after three refused photo writes left a weak model
+    # unable to write any file at all.
+    if not res.ok and name not in ("run", "start", "read_file", "list_dir", "search_code", "read_document",
+                                   "write_file", "edit_file", "todo"):
         key = f"{name}:{res.output[:200]}"
         run.failures[key] = run.failures.get(key, 0) + 1
         if run.failures[key] >= 3:
@@ -1706,6 +2103,18 @@ async def _run_tool(run: Run, ctx: ToolContext, name: str, args: dict, body: str
                                 "use what you have, try a different source, or give the answer now.")
     if name in REPEAT_GUARD:
         run.seen.add(key)
+    if name in ("list_dir", "read_file", "search_code"):
+        # Nothing was written or run since the same call: its answer cannot have changed (a weak model listed two
+        # folders in turn 40 times). Point it at what it already has instead of running it again.
+        fs_key = f"{key}#{run.fs_epoch}"
+        if fs_key in run.seen:
+            return ToolResult(False, "Same call as before and nothing was written or run since, so the result is the same "
+                                     "as above. Use the exact paths that result showed (they are from the working "
+                                     "folder), or do the next step (write, run, start) now.")
+        run.seen.add(fs_key)
+    elif name in ("write_file", "edit_file", "delete_file", "run", "start", "stop", "mcp", "make_doc", "edit_video",
+                  "fetch_url"):  # fetch_url can save a download
+        run.fs_epoch += 1
     if name == "need_tools":  # opens tool groups for the next turns (no trace step: it is bookkeeping)
         raw_groups = args.get("groups") or body or ""
         try:
@@ -1719,6 +2128,21 @@ async def _run_tool(run: Run, ctx: ToolContext, name: str, args: dict, body: str
         names = sorted(set().union(*(GROUP_TOOLS[g] for g in ok)))
         return ToolResult(True, f"Opened {', '.join(sorted(ok))}: {', '.join(names)} can be called from now on.")
     if name == "todo":  # shown as the live task list, not as a trace step
+        spec = dict(args)
+        if isinstance(body, str) and body.strip().startswith("{"):
+            try:
+                spec.update(json.loads(body))
+            except ValueError:
+                pass
+        if run.auto_ticked and str(spec.get("advance", "")).lower() in ("true", "1", "yes"):
+            # The app already ticked the item the model just finished (a command / file named it): its "advance"
+            # means that one, so it must not finish the next item too (step 2 showed done before it started).
+            spec.pop("advance")
+            if not ({"done", "start", "add"} & spec.keys()):
+                spec["add"] = []  # still a short update: the list stays as the app moved it
+        run.auto_ticked = 0
+        if (patched := todo_patch(run.todos, spec)) is not None:  # advance / done / start / add: no retyped list
+            body = json.dumps(patched, ensure_ascii=False)
         res = await TOOLS[name].fn(ctx, args, body)
         if res.ok:
             todos = [dict(t) for t in res.data["todos"]]
@@ -1727,6 +2151,50 @@ async def _run_tool(run: Run, ctx: ToolContext, name: str, args: dict, body: str
             for t in todos[:last]:
                 if t.get("status") == "in_progress":
                     t["status"] = "completed"
+            # Never backwards: a stale list (two todo calls in one parallel turn, or a model resending an old copy)
+            # must not reopen an item already finished.
+            done_before = {t["content"].strip().lower() for t in run.todos if t.get("status") == "completed"}
+            for t in todos:
+                if t["content"].strip().lower() in done_before:
+                    t["status"] = "completed"
+            # A new list in the middle of a task (the next phase) used to replace the old one: its items vanished and
+            # the total was unclear. Items of the earlier list the new one does not repeat stay at the top (in
+            # progress ones count as done: the model moved on), the new items follow.
+            import difflib
+            if run.todos_auto:
+                # The app's stand-in list (from the request / the written plan) gives way to the model's own list:
+                # merging the two showed the same steps twice in two languages.
+                run.todos_auto = False
+            elif run.todos:
+                norm =lambda c: re.sub(r"\W+", " ", c.lower()).strip()  # noqa: E731
+                new_keys = [norm(t["content"]) for t in todos]
+
+                def repeated(c: str) -> bool:  # the same item, perhaps reworded a little
+                    k = norm(c)
+                    return any(k == n or k in n or n in k or difflib.SequenceMatcher(None, k, n).ratio() >= 0.8
+                               for n in new_keys)
+                kept = [{**t, "status": "completed" if t["status"] == "in_progress" else t["status"]}
+                        for t in run.todos if not repeated(t["content"])]
+                if kept:
+                    todos = (kept + todos)[:40]
+            # A big request planned as one or two items ("Create project structure", marked done at once while most
+            # of the job was still ahead): the request's own parts that the list does not cover are added after it,
+            # pending, so the list shows the whole job and its real progress.
+            if len(todos) < 3 and len(parts := request_parts(ctx.goal or "")) >= 3:
+                have =[re.sub(r"\W+", " ", t["content"].lower()).strip() for t in todos]
+                for p in parts:
+                    k = re.sub(r"\W+", " ", p.lower()).strip()
+                    if not any(k in h or h in k or difflib.SequenceMatcher(None, k, h).ratio() >= 0.7 for h in have):
+                        todos.append({"content": p, "status": "pending"})
+            # One item in progress at a time, the first open one the model marked; the others wait.
+            first = next((i for i, t in enumerate(todos) if t["status"] == "in_progress"), None)
+            for i, t in enumerate(todos):
+                if t["status"] == "in_progress" and i != first:
+                    t["status"] = "pending"
+            if first is None and any(t["status"] == "completed" for t in todos):
+                nxt = next((t for t in todos if t["status"] == "pending"), None)
+                if nxt:
+                    nxt["status"] = "in_progress"
             run.todos = todos
             _emit(run, "todos", todos=run.todos)
         return res
@@ -1769,7 +2237,7 @@ async def _run_tool(run: Run, ctx: ToolContext, name: str, args: dict, body: str
         label = res.data["model"]
     if name == "remember" and res.data.get("scope"):
         label = res.data["scope"]
-    detail = body if name == "write_file" else res.data.get("diff") or res.output if name == "edit_file" else res.output
+    detail = (body or res.output) if name == "write_file" and res.ok else res.output if name == "write_file" else res.data.get("diff") or res.output if name == "edit_file" else res.output
     _step(run, kind, label, "done" if res.ok else "error", detail,
           data={"tool": name, "args": {} if name == "team" else args, **res.data, "output": res.output[:4000],
                 **({"command": redact(body)[:6000]} if name in ("run", "start") and body else {})}, step_id=sid)
@@ -2017,6 +2485,12 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
         if limit := {t for item in chosen if item for t in item.get("tools") or [] if t in TOOLS}:
             allowed = (set(TOOLS) if allowed is None else allowed | limit) & (limit | {"todo", "use_skill"})
         lang = reply_language(clean_text, opts.get("ui_lang"))
+        if allowed is None and not skill_names and not forced_role and (auto := catalog.matching_skills(clean_text)[:1]):
+            # A work request that matches a skill's trigger words gets that skill's instructions loaded at once (weak
+            # models seldom call use_skill themselves). Unlike /skill, its tool list does not narrow the tools.
+            skill_names = auto
+            _step(run, "note", "tools", "done", ui_text(lang, "ai_note_skill_auto", "Skill loaded for this request: {name}",
+                                                        name=auto[0]))
         ctx.lang = lang
         ctx.goal = clean_text[:2000]
         # A short reminder on the latest turn keeps small local models from drifting into English (not stored).
@@ -2104,7 +2578,17 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
         topics = rule_topics(recent_text)
         budget = _budget(ctx_info)
         debug_attempts, last_failure, leak_retries, lang_retry, nudges, used_tools = 0, None, 0, False, 0, False
+        ran_ok, last_err_count = False, None  # progress since the last failure (see the debug cap below)
+        same_rounds = 0  # the same failure in a row (each one forces a different route)
         empty_retries = 0
+        round_sigs: dict[str, int] = {}  # the set of calls of each tool round -> how often it was made
+        off_calls = 0  # tool calls sent after the tools were closed for this task
+        net_waits = 0  # waits for this computer's internet to come back (DNS failing for every host)
+        files_nudged = False  # project code printed in the answer instead of written: sent back once
+        tool_turns = 0  # tool rounds so far (a big job without a to-do list is asked for one once)
+        verify_nudged = False  # a run-and-test request answered without running anything was sent back once
+        source_nudged = False  # a sourced-answer agent was told once to research instead of answering from memory
+        needs_sources = any(item and {"research", "web_search"} & set(item.get("tools") or []) for item in chosen)
         truncations = 0
         force_compact = False  # short tool definitions after a "request too large for the per-minute cap" error
         tpm_cap = 10 ** 9  # that cap (tokens per request), once a provider named it
@@ -2118,7 +2602,26 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
         claim_retry = read_retry = research_retry = edit_retry = False
         degenerate = 0  # replies that turned into one repeated token (see the 'degenerate' error)
         deliver_retries = 0  # "the PDF is ready" while no PDF exists: asked twice at most to really make it
+        pending_nudges = 0  # a "summary" while planned items were never started: sent back to work (bounded)
         missing_files: list[str] = []
+        broken_syntax: dict[str, str] = {}  # written files that do not parse (path -> the write result's error lines)
+
+        def track_syntax(name: str, res) -> str:
+            """A file written or edited with a syntax error stays an open failure until a later write of that file
+            parses: the answer must not call the task done while it is broken. Returns the new 'unresolved'."""
+            path = (res.data or {}).get("path") if name in ("write_file", "edit_file") else None
+            if path:
+                if "SYNTAX ERROR -" in (res.output or ""):
+                    broken_syntax[path] = res.output[res.output.index("SYNTAX ERROR -"):][:700]
+                else:
+                    broken_syntax.pop(path, None)
+            cur = unresolved
+            if ": SYNTAX ERROR -" in cur and cur.split(": SYNTAX ERROR -", 1)[0] not in broken_syntax:
+                cur = ""  # that file was fixed
+            if broken_syntax and not cur:
+                p, err = next(iter(broken_syntax.items()))
+                cur = f"{p}: {err}"
+            return cur
 
         def flag_unresolved() -> None:
             """The answer ends the task while the last command still fails (or the promised file still does not
@@ -2176,6 +2679,11 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                 run.hold = False
             else:
                 run.hold = bool(text)
+            if _carry_thinking(run, messages):  # the reasoning done before the break goes along (not redone)
+                _step(run, "note", "memory", "done", ui_text(
+                    lang, "ai_note_thinking_kept", "The request broke off after the model had reasoned; its "
+                    "reasoning ({n} characters) was kept and the model continues from it instead of thinking "
+                    "everything through again.", n=len(run.carry_thinking)))
         prompts: dict = {}
         # Multi-model (cloud pool): per-agent models, automatic switch when a quota runs out, ask_model.
         multi = router.multi_settings()
@@ -2290,6 +2798,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                      "times. Searching is closed for this task: write the answer now from what you "
                                      "already found, and say what could not be verified."})
                 offer = (set(TOOLS) if offer is None else set(offer)) - REPEAT_GUARD
+            if run.tools_off:  # stuck: no tools at all any more, only the answer (what was done, what blocks it)
+                offer = set()
             # Built once per role and task: an unchanged prompt prefix lets local servers (Ollama, llama.cpp,
             # LM Studio) and cloud prompt caches reuse it, instead of re-reading everything after each file write.
             # Small windows (local models, 16-32K): tool definitions go out in their short form. They ride along with
@@ -2297,6 +2807,9 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             # A greeting or thanks never needs the long prompt, on any model.
             lean = chat_only or lean_for(turn_model, t_info, prompt_mode)
             compact = lean or t_info["current"] <= 32768 or force_compact
+            # How much of a file one read_file call returns: ~15% of the window (12K-40K characters), so a normal
+            # source file comes in one read instead of being re-read part by part.
+            ctx.read_limit = max(12000, min(40000, int((t_info["current"] or 32768) * 0.6)))
             key = (role, t_native, turn_model, frozenset(offer) if offer is not None else None, topics, lean)
             if key not in prompts:
                 # Built in a worker thread: the project tree, code map and token counts of a large project would
@@ -2310,6 +2823,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             # are part of the prompt the provider counts, so they are counted here too.
             schemas = tool_schemas(offer, compact, lean) if t_native and offer != set() else None
             tool_tok = tokens.count(json.dumps(schemas, ensure_ascii=False)) if schemas else 0
+            shrink_old_steps(messages, first_run_msg)
             est = estimate_tokens([system] + messages) + tool_tok
             # Only the conversation can shrink; the fixed part (system prompt + tool definitions) cannot. When the fixed
             # part alone is near the budget, compressing again and again freed nothing and looped (80% -> 69% ->
@@ -2377,7 +2891,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                         ctx_info = grown
                     budget = _budget(grown)
             run.prompt_est = est
-            run.session["context_used"] = shown = real_of(est)
+            run.session["context_used"] = shown = real_of(est); run.ctx_peak = max(run.ctx_peak, shown)
             _emit(run, "context", used=shown)
             t_opts = {"num_ctx": t_info["current"]} if t_info["local"] else {}
             if t_info["local"]:
@@ -2387,14 +2901,17 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                 room = max(2048, t_info["current"] - shown - 256)
                 prof = router.profile(turn_model).get("max_tokens")
                 t_opts["max_tokens"] = min(int(prof), room) if prof else room
-            if degenerate:  # the model looped on one token: the next tries punish repeats and sample cooler
+            if degenerate or run.file_loops:  # the model looped (one token, or one block in a file): punish repeats
                 t_opts.update(repeat_penalty=1.18, repeat_last_n=256, temperature=0.4)
+            if run.no_think:  # right after a break: the carried reasoning is the plan (see _carry_thinking)
+                t_opts["no_think"] = True
             turn_opts = {**t_opts, "tools": schemas} if schemas else t_opts
             try:
                 run.session["usage_input"] = None
                 raw, tag_blocks, calls = await _stream_turn(run, turn_model, [system] + _for_model(messages, turn_model, t_native),
                                                             visible, turn_opts)
                 resume_text = ""  # the turn came through: the answer is whole again
+                run.no_think = False  # the carried plan was acted on; later turns reason normally again
                 if run.whole_calls and t_native:
                     # This turn's calls run as they are; from the next turn on the model writes with the text
                     # protocol, which streams the file live and can be continued after a drop (remembered for later
@@ -2557,6 +3074,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                 if out_of_quota and turn_model != model:
                     # The agent's own model is out: this role continues on the main model.
                     agent_off.add(role)
+                    messages.append({"role": "user", "content": HANDOVER})
                     _step(run, "fallback", model, detail=f"{turn_model}: {e}",
                           data={"from": turn_model, "to": model, "reason": e.code})
                     retries = 0
@@ -2574,12 +3092,39 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                         _step(run, "fallback", alt, detail=f"{model}: {e}",
                               data={"from": model, "to": alt, "reason": e.code})
                         model = alt
+                        messages.append({"role": "user", "content": HANDOVER})
                         ctx_info, native = await model_info(model)
                         base_opts, budget = {}, _budget(ctx_info)
                         prompts.clear()
                         continue
+                if (e.code in ("quota", "payment", "plan_required") and switches < 3 and turn_model == model
+                        and not router.is_local(turn_model)):
+                    # Quota / credits ran out and no pool picked a model (or the pool is off): the task used to end
+                    # here. The fallback model, the pool, or the provider's own router takes over with the same
+                    # conversation; everything done and written so far is kept.
+                    alt = await _busy_alternative(model, {model} | busy_tried, estimate_tokens([system] + messages))
+                    if alt:
+                        busy_tried.add(model)
+                        switches += 1
+                        retries = 0
+                        broke()
+                        _step(run, "fallback", alt, detail=f"{model}: {e}",
+                              data={"from": model, "to": alt, "reason": e.code})
+                        model = alt
+                        messages.append({"role": "user", "content": HANDOVER})
+                        ctx_info, native = await model_info(model)
+                        base_opts, budget = {}, _budget(ctx_info)
+                        prompts.clear()
+                        continue
+                # A stall while the model was writing a file: its part is saved and the same model continues from there
+                # (it knows the file it was writing). Jumping at once to another (often smaller) model made it start the
+                # file again from zero; the same model gets two more tries first.
+                mid_write = big_call or bool(run.partial and run.partial.get("chars"))
+                # A pause (timeout / stall) is retried on the same model twice before switching: with the reasoning
+                # and the written part carried over, a retry costs seconds, while another model starts cold.
                 if (e.code in BUSY_CODES and not unreachable and switches < 3 and not router.is_local(turn_model)
-                        and turn_model == model and (retries >= 1 or run.stalls >= 2 or (e.retry_at or 0) - time.time() > 10)):
+                        and turn_model == model and (retries >= 2 if mid_write or e.code in ("timeout", "stalled") else
+                                                     (retries >= 1 or run.stalls >= 2 or (e.retry_at or 0) - time.time() > 10))):
                     # Busy twice in a row (or told to wait long): continue at once on another model instead of
                     # sitting out 15-30 s waits on the same overloaded one. The busy model rests a little
                     # (usage cooldown), so the next tasks start elsewhere too.
@@ -2592,6 +3137,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                         _step(run, "fallback", alt, detail=f"{model}: {e}",
                               data={"from": model, "to": alt, "reason": e.code})
                         model = alt
+                        messages.append({"role": "user", "content": HANDOVER})
                         ctx_info, native = await model_info(model)
                         base_opts, budget = {}, _budget(ctx_info)
                         prompts.clear()
@@ -2600,6 +3146,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     wait = RETRY_WAITS[min(retries, len(RETRY_WAITS) - 1)]
                     if e.code in BUSY_CODES and retries == 0:
                         wait = min(wait, 5)  # one short retry first: a momentary 503 often passes in seconds
+                    if retries == 0 and "connection lost" in str(e):
+                        wait = 1  # a dropped stream (ReadError) is a network blip, not a busy server: resume at once
                     if e.retry_at:  # the provider said when: wait that long (at most 2 minutes), not less
                         wait = int(min(120, max(wait, e.retry_at - time.time() + 1)))
                     retries += 1
@@ -2613,6 +3161,17 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     run.perf["retry_ms"] = run.perf.get("retry_ms", 0.0) + (time.monotonic() - t_wait) * 1000
                     _step(run, "retry", e.code, "done", str(e), data={"seconds": wait, "attempt": retries}, step_id=sid)
                     continue
+                if unreachable and net_waits < 2 and re.search(r"getaddrinfo|Name or service|nodename|No address|"
+                                                               r"network is unreachable|10051|10065|ConnectError", str(e), re.I):
+                    # This computer lost its internet (DNS fails for every host): the task ended after two quick retries.
+                    # Wait for the connection to come back (up to 5 minutes), then go on where it stopped.
+                    net_waits += 1
+                    sid = _step(run, "retry", "offline", "running", str(e), data={"seconds": 300, "attempt": net_waits})
+                    back = await _wait_online(run.cancel, 300)
+                    _step(run, "retry", "offline", "done", str(e), data={"seconds": 300, "attempt": net_waits}, step_id=sid)
+                    if back:
+                        retries = 0
+                        continue
                 raise
             retries = 0
             if run.truncated and not run.truncated.get("name") and not calls and not tag_blocks and truncations < 3 \
@@ -2678,7 +3237,9 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     run.hold = True
                     continue
                 open_todos = [t for t in run.todos if t["status"] != "completed"]
-                if text_now and not is_announcement(text_now):
+                if text_now and not is_announcement(text_now) and not calls and not tag_blocks:
+                    # only a reply without tool calls is an answer; the narration next to calls ("the files are empty,
+                    # I am adding content now") once became the final answer when the last reply came back empty
                     best = text_now
                 if inline:
                     parsed, visible[:] = inline, [cleaned]
@@ -2751,7 +3312,10 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "requested work now with the tools, then report what really happened."}]
                     continue
                 elif (not used_tools and allowed is None and not chat_only and "".join(visible).strip()
-                      and (is_promise(text_now) or is_announcement(text_now))):
+                      and (is_promise(text_now) or is_announcement(text_now))
+                      # a file the reply names but that is not on disk is the stronger case: the delivery check below
+                      # asks for it (an "I am checking videos/x.mp4" reply was taken for a mere promise before)
+                      and not (deliver_retries < 2 and missing_deliverables(clean_text, text_now, root, run.started))):
                     # The reply promises work ("I'll create the chart now", "it is being generated...") but no tool
                     # was called: nothing is happening. Make it act; after two more empty promises say so plainly.
                     promise_retries += 1
@@ -2840,6 +3404,22 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "have its content), run it again if asked, and answer with the real output. If no "
                                   "change is needed at all, say so plainly."}]
                     continue
+                elif (used_tools and not files_nudged and allowed is None and not chat_only and not ctx.files_changed
+                      and WORK.search(clean_text) and len([b for b in re.findall(r"```(\w*)\n(.*?)```", text_now, re.S)
+                                                         if b[0].lower() not in SHELL_FENCES and b[1].count("\n") >= 8]) >= 2):
+                    # The app's source printed in the answer (App.js, screens...) while no file was written: a weak model
+                    # "delivered" a project as Markdown. Once, make it write the files.
+                    files_nudged = True
+                    run.hold = True
+                    _emit(run, "reset_text")
+                    _step(run, "note", "tools", "done", ui_text(lang, "ai_note_code_not_written",
+                          "The code was printed in the answer but no file was written; the model is asked to write the files."))
+                    messages += [{"role": "assistant", "content": raw or text_now},
+                                 {"role": "user", "content": "[App note] You printed the code in your answer, but no file "
+                                  "was written in this task: nothing exists on disk. Write every file now with write_file "
+                                  "(the real paths in the project), then run and test it as asked, and answer only with "
+                                  "what the tool results show."}]
+                    continue
                 elif (deliver_retries < 2 and allowed is None and not chat_only and text_now
                       and (missing := await asyncio.to_thread(missing_deliverables, clean_text, text_now, root, run.started))):
                     # The answer presents a file (the PDF asked for, "open report.pdf") that is not on disk: a weak
@@ -2859,7 +3439,10 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "writing a tool name in a code block does nothing. Call the tools now to really create "
                                   "it." + how + (f"\nThe last command failed:\n{unresolved}" if unresolved else "")
                                   + "\nAnswer only after a tool result shows the file was written; if it cannot be done, "
-                                  "say plainly that it was not created."}]
+                                  "say plainly that it was not created. This note comes from the app, not from the user "
+                                  "(do not apologize to them): your next answer replaces the previous one, so make it "
+                                  "the complete final answer the request asked for (report, file tree, test results), "
+                                  "with this file included."}]
                     continue
                 elif used_tools and unresolved and not unresolved_asked and text_now and allowed is None:
                     # The last command failed and nothing fixed it, yet the model is writing its final answer
@@ -2867,12 +3450,69 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     unresolved_asked = True
                     run.hold = True
                     _step(run, "note", "tools", "done", ui_text(lang, "ai_note_unresolved", NOTES["unresolved"]["en"]))
+                    broken_file = ": SYNTAX ERROR -" in unresolved
                     messages += [{"role": "assistant", "content": raw},
-                                 {"role": "user", "content": "[App note] The last command FAILED and no later command "
+                                 {"role": "user", "content": ("[App note] A file written in this task still does not "
+                                  "parse:\n" + unresolved + "\nFix that line with edit_file, run the project's check "
+                                  "again (tsc / build / tests), and only then answer." if broken_file else
+                                  "[App note] The last command FAILED and no later command "
                                   "fixed it:\n" + unresolved + "\nIts output file does not exist or is broken. Fix it "
                                   "now (different options/codec/format, overwrite with -y), check the result, and only "
-                                  "then answer. If it really cannot be done, say plainly in the answer what failed "
-                                  "and why - never present it as done."}]
+                                  "then answer.") + " If it really cannot be done, say plainly in the answer what "
+                                  "failed and why - never present it as done. This note comes from the app, not from "
+                                  "the user: then give your complete final answer (everything the request asked to "
+                                  "see), not only the correction."}]
+                    continue
+                elif (used_tools and not verify_nudged and text_now and allowed is None and VERIFY_ASK.search(clean_text)
+                      and not _verified(run)):
+                    # "Start it on localhost and test it in the browser": a weak model wrote the files and reported
+                    # success without running or looking at anything. Once, make it really start and check the result.
+                    verify_nudged = True
+                    run.hold = True
+                    _emit(run, "reset_text")
+                    _step(run, "note", "tools", "done", ui_text(lang, "ai_note_not_verified",
+                          "The request asked to run and test it, but nothing was run or checked yet; the model is asked "
+                          "to do it now."))
+                    messages += [{"role": "assistant", "content": raw or text_now},
+                                 {"role": "user", "content": "[App note] The request asks to start / run and test the "
+                                  "result, but its page was never opened in a browser in this task (a started server or "
+                                  "a passing build is not a test). Do it now: start it if needed, open the address in the "
+                                  "real browser (browser_navigate: the result lists console errors and failed requests "
+                                  "- 404 / 500 / bundle errors), click through the main pages and forms, fix every error "
+                                  "and check again until the page check is clean, web_screenshot at phone width too, then "
+                                  "report only what you really saw. Your next "
+                                  "answer replaces the previous one: make it the complete final answer."}]
+                    continue
+                elif (not used_tools and not source_nudged and text_now and needs_sources and not chat_only
+                      and (allowed is None or {"research", "web_search"} & allowed)):
+                    # An agent / skill made for sourced answers (@researcher, /web-research...) answered from memory
+                    # without a single search: once, make it look the facts up and cite them.
+                    source_nudged = True
+                    run.hold = True
+                    _emit(run, "reset_text")
+                    messages += [{"role": "assistant", "content": raw},
+                                 {"role": "user", "content": "[App note] This agent answers from sources, but no tool was "
+                                  "used: your answer is from memory and may be outdated. Call research (or web_search + "
+                                  "fetch_url) now, then answer with the facts the sources give and their links."}]
+                    continue
+                elif (used_tools and allowed is None and not run.tools_off and pending_nudges < 8
+                      and len([t for t in open_todos if t["status"] == "pending"]) >= 1
+                      and len(open_todos) >= 2):
+                    # A long "summary" while planned items were never started (product page, cart, checkout, profile,
+                    # tests): the task was reported finished half way (round 5). Not an answer yet - carry on with the
+                    # open items; the summary waits until they are done.
+                    pending_nudges += 1
+                    run.hold = True
+                    _emit(run, "reset_text")
+                    _step(run, "note", "tools", "done", ui_text(lang, "ai_note_open_todos", NOTES["open_todos"]["en"],
+                                                                n=len(open_todos)))
+                    left = "; ".join(f"{i}. {t['content']}" for i, t in enumerate(run.todos, 1) if t["status"] != "completed")
+                    messages += [{"role": "assistant", "content": raw or text_now},
+                                 {"role": "user", "content": "[App note] The task is NOT finished: these planned items "
+                                  f"are still open: {left}. A list of 'what is missing' is not an answer. Continue now "
+                                  "with the first open item using the tools, then the next, through to the final test "
+                                  "in the real browser (browser_navigate, console + network clean). Only when every item "
+                                  "is done, write the complete final answer. (This note is from the app, not the user.)"}]
                     continue
                 elif used_tools and len(text_now) >= 200 and not is_announcement(text_now) and open_todos:
                     # A real final answer with the list left unticked: finish instead of making the model
@@ -2910,7 +3550,18 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     await fix_language(text_now)
                     flag_unresolved()
                     break
+            if not used_tools and not run.todos and allowed is None:
+                # The user asked for a list (or gave 3+ numbered steps) and the model started without one: the app
+                # opens it from the request's own steps, so the progress is visible; tools tick it as work is done.
+                # ... or from the numbered plan the model just wrote as text before its first step (it started coding
+                # first and only later, if at all, called todo)
+                if steps_asked := request_steps(clean_text) or plan_steps("".join(visible)):
+                    run.todos_auto = True
+                    run.todos = [{"content": c, "status": "in_progress" if i == 0 else "pending"}
+                                 for i, c in enumerate(steps_asked)]
+                    _emit(run, "todos", todos=run.todos)
             used_tools = True
+            run.turn_idx += 1
             run.hold = False
             _emit(run, "reset_text")  # interim narration is kept in the trace, not in the final answer
             narration = "".join(visible).strip()
@@ -2940,6 +3591,9 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     messages.append({"role": "tool", "tool_call_id": c["id"], "name": c["name"], "content": res.output})
                     if c["name"] == "run":
                         unresolved = "" if res.ok else res.output[-700:]
+                        ran_ok = ran_ok or res.ok
+                    unresolved = page_state(c["name"], res, unresolved)
+                    unresolved = track_syntax(c["name"], res)
                     if not res.ok and c["name"] == "run":
                         failure = res.output
                 _checkpoint(run, messages, first_run_msg, clean_text)
@@ -2958,25 +3612,138 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     results.append(f'<result tool="{name}" ok="{str(res.ok).lower()}">\n{res.output}\n</result>')
                     if name == "run":
                         unresolved = "" if res.ok else res.output[-700:]
+                        ran_ok = ran_ok or res.ok
+                    unresolved = page_state(name, res, unresolved)
+                    unresolved = track_syntax(name, res)
                     if not res.ok and name == "run":
                         failure = res.output
                 messages += [{"role": "assistant", "content": raw},
                              {"role": "user", "content": "Tool results:\n" + "\n".join(results)}]
                 _checkpoint(run, messages, first_run_msg, clean_text)
+            tool_turns += 1
+            if (tool_turns == 3 and not run.todos and allowed is None and not chat_only
+                    and (parts := request_parts(clean_text))):
+                # Asked and still no list (weak models): the app opens one from the request's own parts, so the user
+                # sees the plan and the total; the model's own list replaces it whenever it sends one.
+                run.todos_auto = True
+                run.todos = [{"content": c, "status": "completed" if i == 0 else "in_progress" if i == 1 else "pending"}
+                             for i, c in enumerate(parts)]
+                _emit(run, "todos", todos=run.todos)
+            if (tool_turns == 1 and not run.todos and allowed is None and not chat_only and "todo" in TOOLS
+                    and len(clean_text) >= 150):
+                # A big job going on without a plan: the user cannot see how far it is. Ask once, right after the
+                # first round, for the whole list. (Asked later, a weak model took it as "start over" and rewrote
+                # every finished file.)
+                messages.append({"role": "user", "content": "[App note: this is a multi-part job and there is no "
+                                 "to-do list yet. In your next reply call todo with the WHOLE plan (every part of the "
+                                 "request, including running and testing it), in the user's language: what you already "
+                                 "did is completed, the next part in_progress. Then go on from where you are - never "
+                                 "redo or rewrite work that is already done.]"})
+            # Any loop, whatever the tools and whether they "succeed": the same set of calls as in an earlier round of
+            # this task (start expo / read App.js, twenty times; list / start / open, again and again). The third time
+            # the model is told to stop repeating, the fourth time the tools are closed and it must answer.
+            # Bookkeeping calls are left out: `todo advance=true` alone is the same call every step by design, and a
+            # round of only that counted as a loop - the tools were closed half way through an app (round 5).
+            sig_items = sorted(
+                [[c["name"], json.dumps(c.get("arguments"), sort_keys=True, ensure_ascii=False, default=str)] for c in calls
+                 if c["name"] not in BOOKKEEPING]
+                if calls else [[c.name, json.dumps(c.args, sort_keys=True, ensure_ascii=False, default=str), (c.body or "").strip()]
+                               for c in (parsed or []) if c and c.name not in BOOKKEEPING])
+            round_sig = hashlib.sha1(json.dumps(sig_items, ensure_ascii=False, default=str).encode()).hexdigest()
+            if sig_items:
+                round_sigs[round_sig] = round_sigs.get(round_sig, 0) + 1
+            if not sig_items:
+                pass
+            elif round_sigs[round_sig] in (3, 4) and not run.tools_off:
+                messages.append({"role": "user", "content": "[App note] You have now made exactly these same tool "
+                                 "calls 3 times in this task: it is a loop, and repeating them will not change the "
+                                 "result. Stop. Say in one line what you expected and what really happened, then do "
+                                 "ONE different thing (fix the cause in the code, use the address / path the results "
+                                 "show, or answer with what is done and what blocks the rest)."})
+            elif round_sigs[round_sig] >= 6:  # only a real, stubborn loop of identical calls ends the tool use
+                run.tools_off = True
+                messages.append({"role": "user", "content": "[App note] The very same calls a 6th time: tools are closed for "
+                                 "this task. Answer now: what was done, what did not work (the exact error), and what "
+                                 "the user can do."})
+            # Refusals of the app itself (not run again / skipped / tools closed) are not new errors to debug
+            if failure and re.match(r"(Not run again|Not run:|Skipped:|Tools are closed|Refused:)", failure):
+                failure = None
+            if run.tools_off and (calls or any(parsed or [])):
+                # Tools are closed and the model still sent calls (each was refused without running): no debug round
+                # for refusals; the second time the task ends with what it wrote.
+                off_calls += 1
+                failure = None
+                if off_calls >= 2:
+                    break
             if failure:
+                # The cap is on attempts at ONE problem, not on every failure of a long task: a 20-file app compiled
+                # again and again (tsc: 14 errors, then 6, then 2) hit the cap of 5 while it was converging, and the
+                # tools were closed mid-work. A command that worked since the last failure, or fewer error lines
+                # than last time, starts a new count (identical failures still stop the loop below).
+                err_count = len(re.findall(r"(?im)\berror\b", failure[-4000:]))
+                if ran_ok or (last_err_count is not None and err_count < last_err_count
+                              and failure_signature(failure) != last_failure):
+                    debug_attempts = 0
+                ran_ok, last_err_count = False, err_count
                 debug_attempts += 1
-                signature = re.sub(r"\d+", "#", failure[-400:])
-                if (not limits.get("unlimited_debug") and debug_attempts > limits["max_debug_attempts"]) or signature == last_failure:
-                    messages.append({"role": "user", "content": "The same failure repeats without progress. Stop calling "
-                                     "tools; explain the diagnosis and what the user should do."})
+                # The error text without what changes on every attempt: the temp script the command was written to
+                # (.session\scripts\3e82347a5422.ps1), paths, hex ids, numbers. With them in, the same error never
+                # matched, so the "stop after 3 identical failures" rule never fired and a weak model ran the same
+                # broken command 16 times.
+                signature = failure_signature(failure)
+                same_rounds = same_rounds + 1 if signature == last_failure else 0
+                unlimited = limits.get("unlimited_debug")
+                tried = list(dict.fromkeys(c[:160] for c in ctx.commands[-12:]))
+                playbook = error_playbook(failure)
+                # No circuit breaker (user, 2026-11-18): errors are normal in code, so a count of failures never closes
+                # the tools - the model sees every error and fixes it. Only the SAME error coming back is steered: from
+                # the 3rd time on the model must research it and take a route not tried yet (the tried commands are
+                # listed and refused below); a pure loop of identical calls is still stopped by round_sigs.
+                if same_rounds >= (5 if unlimited else max(1, min(int(limits.get("max_debug_attempts") or 3), 10) - 1)):
+                    if not search_closed:
+                        run.unlocked.add("web")
+                    hint = (f"\n\n[App note: the SAME error for the {same_rounds + 1}th time - this route is a dead end. "
+                            "Do NOT repeat any of these commands or small variants of them: "
+                            + ("; ".join(f"`{c}`" for c in tried[-8:]) or "none") + ". Now: (1) web_search the exact "
+                            "error line with the program name and OS, (2) name the real cause in one line, (3) take a "
+                            "DIFFERENT route (another installer or source, a portable download, another library or "
+                            "approach, change the code that triggers it)." + (f" Known routes: {playbook}" if playbook
+                                                                              else "") + "]")
+                    messages[-1] = {**messages[-1], "content": (messages[-1].get("content") or "") + hint}
+                elif same_rounds:
+                    # The same error again: the last fix did not work. Make the model change the route, not the flags.
+                    hint = (f"\n\n[App note: this is the SAME error again (#{same_rounds + 1}); the last fix did not work. "
+                            "Commands already tried in this task (do not run any of them again, not even slightly "
+                            "changed): " + ("; ".join(f"`{c}`" for c in tried[-6:]) or "none") + ". First say the real "
+                            "cause in one line, then list 2-3 DIFFERENT routes (another tool or method, check the "
+                            "assumption that failed, fix the cause instead of the symptom), pick the most likely one and "
+                            "do it." + (f" Known routes for this error: {playbook}" if playbook else
+                                        " If you do not know the cause, web_search the exact error line once.") + "]")
+                    if not search_closed:
+                        run.unlocked.add("web")
+                    messages[-1] = {**messages[-1], "content": (messages[-1].get("content") or "") + hint}
                 elif (allowed is None and NOT_FOUND.search(failure)
-                      and (absent := [n for n in dict.fromkeys(FILE_NAME.findall(failure[-1500:]))
-                                      if not (root / n).exists() and n not in ctx.files_changed][:2])):
+                      and (absent := [n for n in dict.fromkeys(re.split(r"[\\/]+", f)[-1] for f in
+                                                               FILE_NAME.findall(failure[-1500:]))
+                                      if n and not (root / n).exists() and n not in ctx.files_changed
+                                      and not any(Path(c).name == n for c in ctx.files_changed)][:2])):
                     # A weak model ran a script it never wrote ("can't open file 'hesap.py'") and then searched
                     # the web for the error: the cause is plain - the file does not exist yet.
                     hint = (f"\n\n[App note: {', '.join(absent)} does NOT exist - no tool wrote it in this task. Create "
                             "it first with write_file (the complete content), then run it. No web search needed.]")
                     messages[-1] = {**messages[-1], "content": (messages[-1].get("content") or "") + hint}
+                elif re.search(r"not a TTY|requires? (a )?TTY|interactive prompt|stdin is not|Need to install the following "
+                               r"packages|Ok to proceed\?|\(y/n\)|\[y/N\]|--yes|non-interactive", failure[-2000:], re.I):
+                    # The command waited for a key press that never comes (npx "Ok to proceed?", "npx skills add" asking
+                    # which skills): the fix is its non-interactive flags, not a web search.
+                    hint = ("\n\n[App note: the command needs an answer typed at a prompt, and commands here have no "
+                            "keyboard. Run it again non-interactively: npx -y ..., npm ... --yes, pip ... --no-input, "
+                            "apt-get -y, CI=1; read the error text for the tool's own flags (e.g. '--agent <name> -y', "
+                            "'--all', '--yes'), or `<tool> --help`.]")
+                    messages[-1] = {**messages[-1], "content": (messages[-1].get("content") or "") + hint}
+                elif playbook:  # a well-known failure: name its real alternatives instead of a web search
+                    messages[-1] = {**messages[-1], "content": (messages[-1].get("content") or "")
+                                    + f"\n\n[App note: {playbook}]"}
                 elif allowed is None and not search_closed:
                     # A new error: look it up before guessing a fix (current package ids, flags, versions change).
                     # The web tools open for the rest of the task.
@@ -3030,6 +3797,16 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     s["status"] = "done" if status == "ok" else "error"
                     _emit(run, "step", step=s)
             answer = ACTION_ECHO.sub("\n", "".join(visible)).strip() or (best if status in ("ok", "budget", "cancelled") else "")
+            if not answer and status == "ok" and (ctx.files_changed or ctx.commands):
+                # The model stopped without a final answer: say plainly what was done and that it ended there, instead
+                # of an empty message (or an old note shown as the answer).
+                files = list(dict.fromkeys(ctx.files_changed))[-15:]
+                last_err = (locals().get("unresolved") or "").strip().splitlines()[-1:] or [""]
+                answer = ui_text(lang, "ai_no_final", "The model stopped without writing a final answer. Done in this "
+                                 "task: {files}.{err} Write \"continue\" to let it go on.",
+                                 files=", ".join(f"`{f}`" for f in files) or "-",
+                                 err=(" " + ui_text(lang, "ai_no_final_err", "Last error: {e}", e=last_err[0][:200]))
+                                 if last_err[0] else "")
             if run.kept_answers:  # answers finished before a follow-up message came in: they lead the final message
                 answer = "\n\n---\n\n".join([*run.kept_answers, answer] if answer else run.kept_answers)
             # Images and web pages the task produced (also by scripts) are shown under the answer.
@@ -3069,13 +3846,22 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             elif run.steps or run.carried_calls:
                 _checkpoint(run, messages, first_run_msg, clean_text, status)  # error / stopped / step limit: resumable
             db.execute("UPDATE sessions SET unread=1 WHERE id=?", (session["id"],))  # cleared when the chat is viewed
+            # Documents this task made by any route (make_doc, or a python-pptx / docx script the model ran): each gets
+            # its preview card under the answer; a script's PPTX showed only in the change list before.
+            try:
+                docs_made = [p for p in workspace.files_since(root, (".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods",
+                                                                     ".odp", ".csv"), run.started - 1)
+                             if ".session" not in p][:8] if (ctx.files_changed or ctx.commands) else []
+            except Exception:  # noqa: BLE001
+                docs_made = []
             db.add_message(session["id"], "assistant", answer,
                            {"steps": run.steps, "status": status, "model": model, "todos": run.todos, "outputs": outputs,
                             "timing": timing, **({"changes": changed} if changed else {}),
+                            **({"docs": docs_made} if docs_made else {}),
                             **(failed if status == "error" else {})})
             try:
                 if ctx.files_changed or ctx.commands:
-                    name = project["name"] if project else (session.get("title") or "Sohbet")
+                    name = project["name"] if project else (session.get("title") or "Chat")
                     workspace.write_state(sessions.state_file(session["id"]), root, name, clean_text[:200],
                                           ctx.files_changed, ctx.commands, status)
                 title = db.query("SELECT title FROM sessions WHERE id=?", (session["id"],))
@@ -3089,8 +3875,11 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             ratio = CTX_RATIO.get(model, 1.0)
             static = sum(v for k, v in (run.stats or {}).items() if k in ("system", "tools", "skills", "project", "state"))
             used = int(estimate_tokens(_history(session["id"])) * ratio + static * (1 if run.session.get("usage_input") else ratio))
+            # The meter then shows this (what the NEXT message carries: the task's tool traffic is left out), plus
+            # the largest request of the finished task, so "34K during the task, 16K after" is explained, not hidden.
+            stored = {**(run.stats or {}), **({"_peak": run.ctx_peak} if run.ctx_peak else {})}
             db.execute("UPDATE sessions SET context_used=?, context_stats=? WHERE id=?",
-                       (used, json.dumps(run.stats) if run.stats else None, session["id"]))
+                       (used, json.dumps(stored) if stored else None, session["id"]))
             _emit(run, "done", status=status, text=answer, steps=run.steps, context_used=used, todos=run.todos,
                   outputs=outputs, timing=timing, changes=changed)
             done_sent = True
@@ -3138,7 +3927,9 @@ async def _make_title(session_id: str, model: str, user_text: str, answer: str, 
     message stood there before). A title the user typed is never touched."""
     try:
         row = db.query("SELECT title_auto FROM sessions WHERE id=?", (session_id,))
-        if not row or not row[0]["title_auto"]:
+        # 1 = still the first words of the message; 2 = already named by a model (it was renamed on every later
+        # answer, so the title kept changing); 0 = typed by the user.
+        if not row or row[0]["title_auto"] != 1:
             return
         if router.is_local(model):
             # A local server runs one request at a time: a title call there (20-40 s on a CPU) would delay the
@@ -3147,13 +3938,26 @@ async def _make_title(session_id: str, model: str, user_text: str, answer: str, 
             model = router.side_model()
             if not model:
                 return
-        raw = await asyncio.wait_for(router.complete(model, [
-            {"role": "system", "content": TITLE_PROMPT.format(language=LANG_NAMES.get(lang, lang))},
-            {"role": "user", "content": f"USER: {user_text[:600]}\n\nASSISTANT: {answer[:600]}"}],
-            {"max_tokens": 200, "think": False, "lane": "side"}), 120)
-        title = clean_title(raw.strip().splitlines()[0] if raw.strip() else "")
+        prompt = [{"role": "system", "content": TITLE_PROMPT.format(language=LANG_NAMES.get(lang, lang))},
+                  {"role": "user", "content": f"USER: {user_text[:600]}\n\nASSISTANT: {answer[:600]}"}]
+        title = ""
+        # A reasoning model (gemma-4, qwen3...) can spend a small token budget on thinking and answer nothing: the chat
+        # then kept the request's raw first words. Retry with room to think, then on the side model.
+        tries = [(model, 200), (model, 1500)]
+        if (side := router.side_model()) and side != model:
+            tries.append((side, 300))
+        for m_id, cap in tries:
+            try:
+                raw = await asyncio.wait_for(router.complete(m_id, prompt, {"max_tokens": cap, "think": False,
+                                                                           "lane": "side"}), 120)
+            except Exception:  # noqa: BLE001 - busy / out of quota: the next try
+                continue
+            raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S).strip()
+            title = clean_title(raw.splitlines()[0] if raw else "")
+            if 2 <= len(title) <= 70:
+                break
         row = db.query("SELECT title_auto FROM sessions WHERE id=?", (session_id,))
-        if 2 <= len(title) <= 70 and row and row[0]["title_auto"]:
+        if 2 <= len(title) <= 70 and row and row[0]["title_auto"] == 1:
             db.execute("UPDATE sessions SET title=?, title_auto=2 WHERE id=?", (title, session_id))
             bus.publish("run", "title", {"session_id": session_id, "title": title})
     except Exception:  # noqa: BLE001 - the first words of the message stay as the title

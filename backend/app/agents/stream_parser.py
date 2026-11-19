@@ -27,7 +27,13 @@ STRAY = re.compile(r"</?tool_call>|</function>|<\|start\|>assistant|<\|channel\|
 # A reasoning closer with no opener: the template opened the block in the prompt (DeepSeek-R1 / QwQ style), so
 # everything shown before it was reasoning.
 LONE_CLOSE = re.compile(r"</(?:think|thinking|reasoning)>")
-ATTR = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+# key="value" or key='value' (models copy the args='[...]' style of the examples; single-quoted values were
+# dropped, so a call like mcp arguments='{...}' reached the tool with no arguments at all)
+ATTR = re.compile(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
+
+
+def attrs(text: str) -> dict:
+    return {k: html.unescape(a if a or not b else b) for k, a, b in ATTR.findall(text or "")}
 MAX_OPEN = max(len(o) for o, _ in TAGS)
 CLOSERS = ("</tool_call>", "</function>", "</think>", "</thinking>", "</reasoning>")
 
@@ -97,7 +103,7 @@ def parse_tool(raw: str, names: set[str] | frozenset[str] = frozenset()) -> Tool
     m = re.match(r"<tool\b([^>]*)>(.*?)(?:</tool>)?\s*$", raw, re.S)
     if not m:
         return None
-    args = {k: html.unescape(v) for k, v in ATTR.findall(m.group(1))}
+    args = attrs(m.group(1))
     name = args.pop("name", "")
     if not name and m.group(2).strip().startswith("{"):  # <tool>{"name": ..., "arguments": {...}}</tool>
         return parse_tool(f"<tool_call>{m.group(2).strip()}</tool_call>")
@@ -151,17 +157,32 @@ def extract_inline_calls(text: str, tool_names: set[str]) -> tuple[list[ToolCall
     def bracket(m: re.Match) -> str:  # [tool="write_file" path="a.md"]...[/tool] (also [tools=...], <tools="...">)
         if m.group(1) not in tool_names:
             return m.group(0)
-        args = {k: html.unescape(v) for k, v in ATTR.findall(m.group(2))}
+        args = attrs(m.group(2))
         calls.append(ToolCall(m.group(1), args, (m.group(3) or "").strip("\n")))
         return ""
     text = re.sub(r'\[tools?\s*(?:name\s*)?=\s*"([\w.-]+)"([^\]]*)\](.*?)(?:\[/tools?\]|$)', bracket, text, flags=re.S | re.I)
     text = re.sub(r'<tools?\s*(?:name\s*)?=\s*"([\w.-]+)"([^>]*)>(.*?)(?:</tools?>|$)', bracket, text, flags=re.S | re.I)
+    # The tag with its "<" lost, often inside a fence: ```tool name="stock_photo" folder="images">coffee</tool>```
+    # (evren:auto wrote exactly this; nothing ran and the chat showed an empty "tool" code block).
+    text = re.sub(r'(?:```[ \t]*)?(?<![\w<])tools?\s+name\s*=\s*"([\w.-]+)"([^>\n]*)>(.*?)(?:</tools?>[ \t]*(?:\n```)?|\n```|$)',
+                  bracket, text, flags=re.S | re.I)
     text = re.sub(r"```(?:json)?\s*(\{[^`]*?\"name\"[^`]*\})\s*```", repl, text, flags=re.S)
     if not calls and text.strip().startswith("{") and text.strip().endswith("}"):
         text = re.sub(r"^\s*(\{.*\})\s*$", repl, text, flags=re.S)
     if not calls:
         found, text = cli_calls(text, tool_names)
         calls.extend(found)
+    if not calls and "edit_video" in tool_names:
+        # A video timeline written as a bare JSON fence ({"clips": [...]}) instead of a tool call: it is the edit_video
+        # call the model meant (the same way a printed shell command is run), so the render really happens.
+        named = re.search(r"[\w./\\-]+\.(?:mp4|mov|mkv)\b", text, re.I)  # the file the reply names is the output
+
+        def timeline(m: re.Match) -> str:
+            args = {"output": named.group(0).replace("\\", "/")} if named else {}
+            calls.append(ToolCall("edit_video", args, m.group(1).strip()))
+            return ""
+        text = re.sub(r"```(?:json)?\s*(\{(?:(?!```).)*?\"(?:clips|scenes|photos)\"\s*:(?:(?!```).)*\})\s*```",
+                      timeline, text, flags=re.S)
     return calls, text.strip()
 
 
@@ -207,7 +228,7 @@ def parse_named(raw: str, names: set[str] | frozenset[str]) -> ToolCall | None:
     m = re.match(r"<([\w-]+)\b([^>]*?)(/?)>(.*?)(?:</\1>)?\s*$", raw.strip(), re.S)
     if not m or m.group(1) not in names:
         return None
-    args = {k: html.unescape(v) for k, v in ATTR.findall(m.group(2))}
+    args = attrs(m.group(2))
     return ToolCall(m.group(1), args, m.group(4) if not m.group(3) else "")
 
 

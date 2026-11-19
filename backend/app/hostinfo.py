@@ -139,6 +139,14 @@ def os_line() -> str:
         + (f" (build {o['build']})" if o["build"] else "") + f", {o['arch']}"
 
 
+PY_READY = ("python-docx, python-pptx, openpyxl, reportlab, Pillow, numpy, matplotlib, httpx, playwright, "
+            "markdown-it, edge-tts, faster-whisper; any `pip install` always goes into this app Python (.venv). A "
+            "project with its own venv (or a requirements.txt / pyproject that asks for one) uses THAT venv for "
+            "everything: first list what it already has with `<venv>/Scripts/python -m pip list --format=json` "
+            "(bin/python on macOS/Linux), install only what is missing with `<venv>/Scripts/python -m pip install ...`, "
+            "and run the project with that same python")
+
+
 def prompt_section(short: bool = False) -> str:
     i = info()
     osline = os_line()
@@ -147,7 +155,8 @@ def prompt_section(short: bool = False) -> str:
         ps = (("PowerShell 7 (pwsh)" if "pwsh" in sh else "Windows PowerShell 5.1 (no && / ||, no ternary)")
               if sys.platform == "win32" else "bash")
         extra = (", cmd" + (", Git Bash" if "bash" in sh else "")) if sys.platform == "win32" else ""
-        return (f"# This computer\nDefault shell: {ps}{extra}; shell=python is the app's Python {i['app_python']}. "
+        return (f"# This computer\nDefault shell: {ps}{extra}; shell=python is the app's Python {i['app_python']} "
+                f"({PY_READY}: already installed, never pip install them). "
                 f"Installed: {', '.join(i['tools']) or 'nothing detected'} (anything else: install it first).")
     sh = i["shells"]
     shells = []
@@ -165,7 +174,8 @@ def prompt_section(short: bool = False) -> str:
         shells.append(f'shell="bash" = bash {sh.get("bash", "")}'.rstrip())
         if "pwsh" in sh:
             shells.append(f'shell="pwsh" = PowerShell {sh["pwsh"]}')
-    shells.append(f'shell="python" = Python {i["app_python"]} (the app\'s own, with its packages)')
+    shells.append(f'shell="python" = Python {i["app_python"]} (the app\'s own; already installed, never pip install '
+                  f'them again: {PY_READY})')
     tools = ", ".join(f"{k} {v}" for k, v in i["tools"].items()) or "none detected"
     return ("# This computer (detected)\n"
             f"OS: {osline}\nShells: " + "; ".join(shells) + f"\nTools on PATH: {tools}\n"
