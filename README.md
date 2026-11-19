@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.12.0-2563eb" alt="version">
+  <img src="https://img.shields.io/badge/version-0.14.3-2563eb" alt="version">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -22,7 +22,33 @@ AI IQ 300 is a **software development and automation hub** that runs on your own
 
 > Say "build a full e-commerce site in PHP". The project structure, database, UI and tests are built step by step. The model splits the work into a to-do list and you follow every step live in the chat.
 
+## 🎬 Promo video
+
+<p align="center"><a href="video/aiiq300-promo.en.mp4"><img src="video/aiiq300-promo.en.poster.jpg" alt="AI IQ 300 promo video" width="100%"></a></p>
+
+<p align="center"><b>▶ <a href="video/aiiq300-promo.en.mp4">Watch the promo (YouTube 16:9)</a></b> · 📱 <a href="video/aiiq300-promo.en.vertical.mp4">Vertical cut (Reels / Shorts / TikTok 9:16)</a> · 🇹🇷 <a href="video/aiiq300-promo.tr.mp4">Türkçe</a></p>
+
+From one sentence to a working app: the command is typed, the agent plans, writes every file in one turn, compiles with `tsc`, opens the app in a **real browser** to check console + network, fixes the error it catches on the spot and delivers a tested result. The video shows the real AI IQ 300 panel, every settings screen, hardware scan and system repair, web research, speech to text / text to speech, documents and the video studio.
+
+<sub>Music: “Epic Trailer” · Soundrider/Dope ([Jamendo](https://www.jamendo.com/track/1670474)) · [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)</sub>
+
 ## 🖼️ Screenshots
+
+| **PowerPoint preview: the real slide layout, pictures, thumbnails** | **Excel preview: formula bar, merged cells, sheet tabs** |
+|---|---|
+| ![PowerPoint preview](screenshots/en-51-pptx-preview.png) | ![Excel preview](screenshots/en-52-excel-preview.png) |
+| **Free AI video engines (text / image to video)** | **∞ / Off / Auto buttons next to the sliders** |
+| ![AI video engines](screenshots/en-53-video-engines.png) | ![Setting buttons](screenshots/en-54-setting-buttons.png) |
+
+| **Video Studio: drag and style any text on the picture, timeline, live AI edits** | **Studio music: original tracks in 8 styles or a royalty-free library** |
+|---|---|
+| ![Video Studio](screenshots/en-44-video-studio.png) | ![Studio music](screenshots/en-45-studio-music.png) |
+| **Logo maker: AI directions, AI symbols, transparent PNG** | **Text to speech from a free library of 400+ natural voices** |
+| ![Logo maker](screenshots/en-47-logo-maker.png) | ![Voice library](screenshots/en-48-voice-library.png) |
+| **The colorful (+) menu: a Create section** | **Image generation services with keys, quotas and a free fallback** |
+| ![Create menu](screenshots/en-46-create-menu.png) | ![Image services](screenshots/en-49-image-services.png) |
+
+<p align="center"><img src="screenshots/en-50-studio-mobile-dark.png" width="300" alt="Video Studio on a phone"><br><i>Video Studio on a phone: tap anything on the picture or the timeline and its settings open below</i></p>
 
 | **No false "done": a plain warning when the PDF asked for is not on disk** | **Even a weak model makes a real PDF: `system_info` + `make_doc`** |
 |---|---|
@@ -132,9 +158,13 @@ AI IQ 300 is a **software development and automation hub** that runs on your own
 | **Node.js** (with npm) | 20+ (22 LTS recommended) | ✅ Required | Building the UI |
 | **Git** | 2.40+ | ⭐ Recommended | Time machine, automatic commits |
 | **Ollama** or **LM Studio** | latest | ⭐ For local models (either one) | Running models on your computer |
-| **PHP** | 8.2+ | Optional | Running PHP projects |
+| **FFmpeg** | 7+ (the app downloads it when missing) | ⭐ Recommended | Video Studio, video tools, speech to text |
+| **PHP** + Composer | 8.2+ | Optional | Running PHP projects (the `localhost-project` skill installs it on request) |
+| **.NET SDK** | 8+ | Optional | Running ASP.NET projects (classic ASP / ASP.NET Framework: Windows + IIS) |
 | **WSL2 + Docker** | latest | Optional | Running projects in containers; the planned sandbox |
 | **Browser** | Chrome / Edge / Firefox | ✅ Required | The UI |
+
+> Python packages for the media features come with `requirements.txt`: `gradio_client` (free AI image-to-video), `uv` (Python MCP servers via `uvx`), `edge-tts` (voices), `faster-whisper` (speech to text), `numpy` + `Pillow` (music generator, logo cut-out). Video text uses the system fonts (Arial / Georgia / Impact on Windows and macOS; `install.sh` adds DejaVu on Linux). No new npm packages are needed.
 
 > Syntax-tree grammars download automatically on first use (an internet connection is needed once). Many MCP servers are started with `npx` (Node.js) or `uvx` (Python).
 > Don't want local models? Enter a cloud API key (OpenRouter, OpenAI, Anthropic, Gemini, EVREN…) in Settings > Providers.
@@ -304,7 +334,7 @@ See the in-app **Guide** for details.
 
 ## 🏗️ Architecture
 
-> Folder layout and the full feature history: [PROJECT_STATE.md](PROJECT_STATE.md) · [Türkçe](PROJECT_STATE.tr.md)
+> Folder layout and the full feature history: [PROJECT_STATE.md](../PROJECT_STATE.md) · [Türkçe](../PROJECT_STATE.tr.md)
 
 ```
 backend/   FastAPI · agent orchestrator · agent teams · provider adapters · MCP client · Tree-sitter · process manager · policy
@@ -315,6 +345,176 @@ languages/ tr.json · en.json
 chat/      One folder per chat: chat/<chat id>/ (its files) + .session/ (its record); chat/projects/ (projects without a chosen folder)
 tanitim/   Banners, screenshots and promo texts
 ```
+
+## 🆕 New in v0.14.2 (no circuit breaker, real-browser page checks, design check, honest finish, promo video)
+
+A full code scan plus 6 big real-model rounds with EVREN `glm-5.3` / `gemma-4-31b` building an **Expo + TypeScript grocery super app**; the bugs each round exposed were fixed. 90 unit tests and 43 end-to-end checks pass.
+
+- **No circuit breaker:** a count of failures never closes the tools any more. The model sees every error and fixes it; when the same error comes back it must research it and take a route not tried yet. Only a stubborn repeat of identical calls is stopped.
+- **Console + network check on every page:** after each page load and click in the browser, new console errors and failed requests (404 files, 500 / bundle errors) are reported with their URLs at once, and the model fixes them first.
+- **Final test in a real browser:** for web and Expo web projects a started server no longer counts as tested; the page is opened with `browser_navigate`, every error is fixed and a phone-width screenshot is taken.
+- **Design check:** a page without styles (a column of raw text, uncompiled NativeWind classes) is caught as **UNSTYLED** and the task is not done. Models are taught design rules: a style system, cards, grids, spacing, real images.
+- **Honest finish:** source files the request names (like `data/mockProducts.ts`) must exist on disk; a "what is missing" summary while planned items are open is not an answer, the model carries on with them.
+- **Syntax check on write:** a file that does not parse after `write_file` / `edit_file` (Python, JS, TS, TSX, PHP …) is reported with its line and stays open until fixed.
+- **edit_file:** blocks that match are saved, failed ones come back with the file's current content (the model edits the real text, not an old memory of it).
+- **To-do list:** short updates (`advance`, `done`, `start`, `add`); the model no longer retypes the list, and the app's auto-ticking never advances twice.
+- **Install anything:** `mobile_env action=java` installs a portable JDK 17 without MSI or admin rights; the Windows Installer lock (1618) gets another route.
+- **Long tasks:** the context summary lists every file the task wrote; a step's files are planned and written together in one reply.
+- **Waiting:** the silence right after thinking is no longer cut as a stall; the step says "the model finished thinking and is writing its answer".
+- **Chat media:** file links and images in answers open inside the app (no page reload); task screenshots are a compact strip in phone / browser frames.
+- **UI:** the jump-to-latest button no longer drifts sideways; a rebuilt app reloads once when its old files are gone.
+
+## 🆕 New in v0.14.0 – v0.14.1 (mobile app testing, AI video clips, pro PowerPoint / Excel previews, sturdier tool use)
+
+Found in live tests with EVREN `auto` and `gemma-4-31b` and fixed: the 9-case live suite (chat, file + run, to-do, web, PDF, PowerPoint, MCP, agent, mobile) passes 9/9 on both; 84 unit tests and 43 end-to-end checks pass.
+
+- **Mobile app testing:** the `mobile-app-test` skill and the `mobile_env` tool:
+  - Android emulator (Windows, macOS, Linux): set up without admin rights, started, APK installed, screenshots taken, **Maestro** UI flows run.
+  - iOS simulator on macOS with Xcode.
+  - Web builds (Expo web, Flutter web, Capacitor) are tested at phone size in the browser.
+  - `install.bat` / `install.sh` ask at the end (`AIIQ_MOBILE=1` installs without asking; needs Java 17+).
+- **Every localhost project:** `localhost-project` covers Node, Python, PHP, Ruby, Java, Go, Rust, .NET / ASP, static sites and Docker Compose, and loads by itself from the request's words.
+- **AI clips, text or image to real video:** the new `generate_video` tool makes a first frame (keyed image services, else free FLUX), then animates it with Wan 2.2.
+  - (+) > Create > **AI clip**.
+  - **Settings > Web research > AI video engines** shows the free engines' live state.
+- **Documents:**
+  - PDF / Word / PowerPoint are written as HTML (the document's own structure, nothing lost in a Markdown conversion).
+  - `make_doc` refuses placeholders (`\pdfcontent`, `{{title}}`, `[content here]`).
+  - The document skill loads by itself.
+- **Previewers:**
+  - **PowerPoint:** real slide layout with pictures, colour bands, tables and charts, a thumbnail rail and keyboard paging.
+  - **Excel:** formula bar, merged cells, the file's column widths and fills, frozen header, sheet tabs.
+- **Tools, sturdier:**
+  - `pip` always installs into the app's `.venv` (or the project's own venv, whose packages are checked first).
+  - argv quotes are cleaned, and a missing program is named with its install command.
+  - `fetch_url save=` downloads archives and installers to disk; a repository read file by file becomes one ZIP download.
+  - `cd` accepts paths from the task folder, and a busy port restarts this chat's own server.
+  - The same error twice makes the model take a different route (known fixes for common errors).
+- **Fixes:**
+  - **To-do list:**
+    - A command no longer ticks a later item while the first is still running.
+    - A stale list cannot reopen finished items.
+    - One item is in progress at a time.
+  - **Chat titles:** a title is named once and no longer changes on every answer.
+  - **Chat display:** the app's action log no longer leaks into the chat, and pictures in a live answer show from the chat folder.
+  - **Photo provider:** stock photo steps name their provider, and photo file names keep Turkish words readable (`ic-mekan.jpg`).
+  - **File edits:** `edit_file` accepts every shape models send: SEARCH/REPLACE and its variants, `old_string` / `search` names, JSON lists, unified diffs, or the whole new text. No more "No edit given" loops.
+  - **Tool calls:** tag attributes in single quotes are read (`arguments='{...}'` was dropped). MCP arguments are a JSON string every model can fill, missing ones are named with an example, and DeepWiki works on every tested model.
+  - **Documents:** real HTML tags (`<title>`, `<body>`) are no longer mistaken for placeholders. A PPTX / DOCX / PDF made by a script also gets its preview card.
+  - **Chat titles:** reasoning models (gemma-4) get a title too (retry with room to think, then the side model).
+  - **Message box:** a paste no longer triggers the browser's recursive `execCommand` warning.
+  - **Connection drops:** a dropped stream retries within 1 s.
+- **Big-task fixes (15-20 minute PHP site, Expo app and multi-page site runs on EVREN `auto`, `gemma-4-31b`, `glm-5.3`):**
+  - **Model switching:**
+    - A stall in the middle of a big file no longer switches the model at once: the same model is retried twice first.
+    - The stall limit adapts to the provider's real pace.
+    - On a rate limit, quota or payment error the task moves to another model mid-way, even without a model pool.
+  - **Handover:**
+    - The next model is told it continues someone else's work: it keeps the files, names and style.
+    - It finishes a half-written file from where it stopped (append), instead of rewriting it from zero or redesigning it.
+  - **Overwrite protection:**
+    - A plain write after a drop continues the saved part.
+    - A finished file overwritten without being read is backed up first (`.session/backups`).
+  - **Generation loops:**
+    - A model repeating the same `<script>` block hundreds of times is stopped while it streams.
+    - The repeat is removed from the file.
+    - The retry runs with a repeat penalty.
+  - **Plan first:**
+    - A numbered plan becomes the to-do list.
+    - A big job running without a list is asked for one once.
+    - A new list merges with the old one instead of replacing it, so the total stays visible.
+  - **Reading files:**
+    - `read_file` returns whole files up to ~15% of the model's window, in whole lines, and names the next range.
+    - A file is no longer cut in the middle and then re-read part by part.
+    - An unchanged range read again is answered from memory.
+  - **Test what was built:**
+    - A "start it and test it" request answered without running anything is sent back once.
+    - Dev servers such as `npm run web`, `expo start` and `flutter run` start in the background.
+    - Java / Android SDK are installed only when an emulator test was asked for, and only with the package manager.
+  - **Browser tests:**
+    - A form or modal the model opened is no longer closed by the pop-up cleaner. On local sites only cookie banners are closed.
+    - A ref that went stale after the page re-rendered is found again by its role and name.
+    - Fields can be targeted by their label or placeholder, and a CSS selector sent as a ref works.
+    - A label that is not linked to its field (no `for=`) leads to the field next to it. Steps that name the element under other keys (`element`, `target`, `locator`) work too.
+    - A hidden element is reported at once, with what to open first, instead of an 8-second timeout.
+    - A covered element is clicked by script as a last resort, and the trace says so.
+    - `browser_batch` understands `js`, `fill`, `select`, `press`, `hover` and more. Its description teaches: read the page once, plan the flow, run it in one batch.
+    - Select boxes take the option's text or value in any case, and a missing option is answered at once with the real options. A form can also be sent as `{label: value}`.
+  - **Servers and edits:**
+    - The chat's own server started through a script file is recognised and restarted on the same port.
+    - `stop` accepts a port or the only running server.
+    - A script name run alone (`create_db.php`) runs with its interpreter. Before, Windows only opened the file and reported success.
+    - The same holds when the file name is sent as code (`shell=php` with `database.php` printed the name and ran nothing).
+    - A to-do list written in the wrong language is sent back to the model to rewrite in the user's language.
+    - `read_file` on an SQLite database lists its tables and row counts, and another binary file says how to inspect it.
+    - The same call giving the same result three times in a row is turned into a failure that tells the model to change route.
+    - A localhost address nothing listens on opens the page's own HTML file, and the model is told to start a server for anything else.
+    - Installs and `mkdir` no longer count as "tested". Project code printed in the answer instead of written to files is sent back once.
+    - `cd folder` followed by more lines in one command is no longer taken as a lone `cd` (it failed with "no such folder").
+    - An edit that changes nothing tells the model to look for the real cause, and a repeat counts as a failure.
+    - Failed tool calls are counted per model turn: ten photos written as text in one turn no longer pause every tool (the refusal now points to `stock_photo`).
+    - A context summary is never larger than what it replaces (it once grew and was redone every turn).
+    - A model that still opens no to-do list gets one built by the app from the request's own parts (the model's list replaces it).
+  - **Error messages:**
+    - Provider and tool errors are shown in the user's language.
+    - The technical detail is behind a toggle.
+    - A refused binary write (`.db`, `.jpg`) shows its reason.
+- **The system sets the rules, the model follows them (v0.14.1 final round):**
+  - **System contract:** every model gets the same short rules in every task:
+    - plan first;
+    - files only through write_file / edit_file;
+    - pictures only through stock_photo / generate_image;
+    - servers through start;
+    - never repeat a failing call;
+    - done means checked.
+  - **Plan gate:** in a multi-part job, writing and running are refused until the to-do list exists, and the exact call is shown. If the model still does not plan, the app opens the list from the request's own parts.
+  - **No guessing:** the app no longer quietly "fixes" what a model meant (an image written as text gets a refusal with the correct stock_photo call, not a picture chosen for it).
+  - **Loops are stopped whatever the tool:**
+    - the same set of calls a 3rd time gets a warning, a 4th time closes the tools;
+    - counting loops (menu_card1 ... menu_card34) stop after 6;
+    - media tools have a per-task cap;
+    - the same failing command is not run a third time;
+    - the same-error check ignores temp script names (it never matched before).
+  - **Smaller requests:** older steps (whole files the model wrote, long tool outputs) are shortened in later turns and the latest steps stay complete, so a long task no longer resends everything every turn.
+  - **Context meter:** it also shows the highest context of the last task (the value after a task is lower because tool output is not sent with the next message).
+  - **Documents:** a chart or photo saved from the task folder (images/grafik.png) now gets into PDF, Word and PowerPoint even when the document is rebuilt from its source in docs/.doc-sources/.
+  - **Servers and commands:**
+    - `shell=php` with `-S 127.0.0.1:8000` starts the PHP server (it was run as PHP code and exited at once);
+    - Python child processes use UTF-8 (Turkish output was garbled);
+    - an internet outage waits for the connection (up to 5 min).
+  - **Files and pages:**
+    - The app's note for a shortened earlier file ("[1202 characters omitted ...]") can no longer be written into a file. A model that forgot its file copied it and the page showed only that line; it is now told to read_file the real content.
+    - A page that shows a PHP Fatal error, a 500 or an uncaught exception keeps the task open until a clean look.
+  - **Browser:**
+    - Clicking an option of a select box selects it.
+    - confirm() dialogs are accepted on the user's own local site, so Delete buttons really delete during tests.
+  - **Code checks:** tools are verified to be registered to their own functions (a misplaced helper had replaced web_screenshot); pyflakes over the whole backend, star imports expanded, is clean.
+- **Settings:** **∞ / Off / Auto** buttons next to sliders (one tap, mobile friendly).
+- **MCP:** the Krea and Poko presets are removed. Sequential Thinking and Fetch are added; all six no-key presets connect and expose their tools.
+- **Guide:** a new **Create and media** section (Video Studio, AI clip, voices, logo maker, image / photo services), plus **Testing a project on localhost and on mobile** and **Setting buttons**, in TR and EN.
+
+## 🆕 New in v0.13.0 (Video Studio, logo maker, voice library, image and photo services, MCP self-install, any project on localhost)
+
+Tested live with EVREN `auto` and GLM 5.3; 49 unit tests and 43 end-to-end checks pass.
+
+- **Video Studio (timeline editor, ffmpeg):**
+  - Scenes, picture/logo layers, texts, voice-over and music on a timeline; drag, trim and stretch blocks; undo/redo; autosave to `<name>.timeline.json`.
+  - **Every text is draggable and styleable** on the picture (scene titles too): font, color, box color and opacity, outline, shadow, alignment, animation (fade, slide, pop). Text presets: heading, caption, price, quote, social, call to action.
+  - **Click anything to open it:** a text, a picture layer or the picture itself on the preview, or a block on the timeline, opens its settings; the playhead jumps into it and the timeline scrolls to it.
+  - **Live AI edits:** type "put the logo top right, make the caption yellow" and the chosen model returns a patch that is applied at once. The model sees every scene and layer with its number, a style sent to the wrong layer is refused and retried, and requests that need new media go to the chat agent, whose steps show live in the studio.
+  - **Free effects:** film grain, old film, VHS, glitch, camera shake, letterbox, glow, light leak, sepia, black-and-white, dreamy, vignette, sharpen, flash in, per scene or for the whole video, previewed live.
+  - **Real image-to-video:** "Animate with AI" turns photos into moving clips with free Hugging Face Spaces (Wan 2.2, AnimateLCM-SVD); otherwise Ken Burns motion.
+  - **Music:** original background music generated offline in 8 styles (corporate, upbeat, lo-fi, cinematic, acoustic, electronic, ambient, calm) with new variations, or a royalty-free library (Openverse: Jamendo and more, licences for commercial use, credits saved); automatic ducking under the voice and loudness normalization.
+  - **Mobile:** on a phone the picture, controls, timeline and a scrolling settings panel stack; toolbar icons, touch-friendly trim handles.
+- **Voice library:** 400+ free natural Microsoft neural voices with search (name, language, country), gender filter, listening and speed; used for text to speech, voice-over in the studio and video narration. **Speech to text** (offline faster-whisper) with SRT subtitles, from a file or the microphone.
+- **Logo maker:** AI suggests three brand directions, generates symbols and removes their background; fonts, layouts (symbol left/top, text only, badge), shapes and colors; transparent, trimmed PNG download or save to the chat.
+- **The (+) menu** has a colorful Create section: Video Studio, make a video, logo maker, generate an image, text to speech, speech to text.
+- **Image generation services:** Hugging Face, Together, OpenAI, Gemini, Stability and Cloudflare FLUX with a key, each with save/test cards, quota and rate-limit tracking; when one is out of quota the next is used, and the free FLUX (Pollinations) answers when all are unavailable. **Stock photos:** Pexels, Pixabay, Unsplash with keys, then Openverse and Wikimedia Commons.
+- **MCP:** servers with OAuth sign-in (protected-resource metadata, dynamic client registration, PKCE), removal fixed, `npx` commands split correctly, and the agent finds (`mcp_search`: official registry, npm, GitHub) and adds servers by itself.
+- **New skills:** `video-studio`, and `localhost-project` for any project that needs a local server: it finds the repository (or takes yours), detects the stack (Node, Python, PHP, Ruby, Java, Go, Rust, .NET / ASP, static, Docker Compose, monorepos), installs the missing runtimes, packages and database on Windows, macOS or Linux, fixes the setup, starts every process on localhost and tests it (smoke, link crawl, real-browser flows, mobile layout, the project's own test suite) with a report. Skills are now suggested automatically by their own trigger words (`triggers:` in the skill file).
+- **Errors in your language:** service errors (rate limit, quota, blocked search, missing key) and every backend error code are shown in Turkish and English. DuckDuckGo falls back to a real browser after a block; system services show a green dot without a test.
+- **No more loops, real alternatives:** when the same error comes back, the model is shown the commands it already tried and must take a different route (with known fixes for common errors: program not on PATH, wrong path, permission, busy port, missing package or PHP extension, certificate, timeout); several different calls failing in a row also count as a loop (a warning at 4, a clear report at 10). `fetch_url` saves archives and installers to disk (`save=`), a repository read file by file is turned into one ZIP download, `list_dir` gives paths from the working folder, and a missing path answers with where the file really is. Reading tools are never switched off.
+- **Safer tests:** the test suite always uses a throw-away data folder, never your keys.
 
 ## 🆕 New in v0.12.0 (no false "done", real tool use for weak models, chat search, model report card)
 
@@ -930,10 +1130,10 @@ v0.6: uninterrupted orchestration, live to-do list, goal mode, automatic skill d
 
 The full project state (vision, architecture and folder layout, every completed feature by version, open tasks, key decisions, next step) is kept in two languages:
 
-- 🇬🇧 **English:** [PROJECT_STATE.md](PROJECT_STATE.md)
-- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md)
+- 🇬🇧 **English:** [PROJECT_STATE.md](../PROJECT_STATE.md)
+- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md)
 
-**Now:** v0.12.0 is complete (no false "done": plain-text tool calls are run, the requested file is checked on disk; `system_info` and the right-tool hint for weak models; full-text chat search; model report card; LM Studio memory guard; a test suite in the repo). v0.11.0 is complete (full audit: no stalls, nothing forgotten after drops and model switches, half-size first prompt, RAM / VRAM guard that keeps the model loaded, exact reconnects). v0.10.7 is complete (bulk select and delete, every ability from the first message, tool detection in 14 languages, no-split writing). v0.10.6 is complete (professional web design with real stock photos, pages tested for JS errors and broken images, a context meter anchored on the provider's real counts, no local-window overflow, Markdown-rendered live answers). v0.10.5: context from real token counts, vision model on screenshots, settings audit. v0.10.4: Settings, local GPU tuning, live sync, MCP from npm / PyPI / GitHub, automatic tool setup and eight new skills were all tested live.
+**Now:** v0.14.1 is complete (mobile app testing with the Android emulator and Maestro, AI clips from text or images, HTML-first documents, pro PowerPoint / Excel previews, sturdier tools: pip into .venv, no loops, ordered to-do lists; big-task fixes: careful model switching with handover, quota switch mid-task, loop and overwrite protection, whole-file reads, translated errors). v0.13.0 is complete (Video Studio with draggable styled texts, live AI edits, effects, AI image-to-video, original and library music, mobile layout; logo maker; voice library with text to speech and speech to text; keyed image and photo services with quota fallback; MCP OAuth and self-install; `localhost-project` skill). v0.12.0 is complete (no false "done": plain-text tool calls are run, the requested file is checked on disk; `system_info` and the right-tool hint for weak models; full-text chat search; model report card; LM Studio memory guard; a test suite in the repo). v0.11.0 is complete (full audit: no stalls, nothing forgotten after drops and model switches, half-size first prompt, RAM / VRAM guard that keeps the model loaded, exact reconnects). v0.10.7 is complete (bulk select and delete, every ability from the first message, tool detection in 14 languages, no-split writing). v0.10.6 is complete (professional web design with real stock photos, pages tested for JS errors and broken images, a context meter anchored on the provider's real counts, no local-window overflow, Markdown-rendered live answers). v0.10.5: context from real token counts, vision model on screenshots, settings audit. v0.10.4: Settings, local GPU tuning, live sync, MCP from npm / PyPI / GitHub, automatic tool setup and eight new skills were all tested live.
 
 | Area | State |
 |---|---|

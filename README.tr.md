@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/sürüm-0.12.0-2563eb" alt="sürüm">
+  <img src="https://img.shields.io/badge/sürüm-0.14.3-2563eb" alt="sürüm">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -22,7 +22,33 @@ AI IQ 300, bilgisayarınızda çalışan ve ChatGPT/Claude tarzı sade bir sohbe
 
 > "PHP ile tam bir e-ticaret sitesi kur" deyin; proje yapısı, veritabanı, arayüz ve test adım adım oluşur. Model işi bir yapılacaklar listesine böler, her adımı sohbette canlı izlersiniz.
 
+## 🎬 Tanıtım videosu
+
+<p align="center"><a href="video/aiiq300-promo.tr.mp4"><img src="video/aiiq300-promo.tr.poster.jpg" alt="AI IQ 300 tanıtım videosu" width="100%"></a></p>
+
+<p align="center"><b>▶ <a href="video/aiiq300-promo.tr.mp4">Tanıtım videosunu izle (YouTube 16:9)</a></b> · 📱 <a href="video/aiiq300-promo.tr.vertical.mp4">Dikey sürüm (Reels / Shorts / TikTok 9:16)</a> · 🇬🇧 <a href="video/aiiq300-promo.en.mp4">English</a></p>
+
+Tek cümleden çalışan uygulamaya: komut yazılır, ajan planlar, bütün dosyaları tek turda yazar, `tsc` ile derler, uygulamayı **gerçek tarayıcıda** açıp console + network denetimini yapar, yakaladığı hatayı anında düzeltir ve test edilmiş sonucu teslim eder. Videoda gerçek AI IQ 300 paneli, tüm ayar ekranları, donanım taraması ve sistem onarımı, web araştırması, sesten yazı / yazıdan ses, belge ve video stüdyosu yer alıyor.
+
+<sub>Müzik: “Epic Trailer” · Soundrider/Dope ([Jamendo](https://www.jamendo.com/track/1670474)) · [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)</sub>
+
 ## 🖼️ Ekran görüntüleri
+
+| **PowerPoint önizleme: gerçek slayt yerleşimi, resimler, küçük resimler** | **Excel önizleme: formül çubuğu, birleşik hücreler, sayfa sekmeleri** |
+|---|---|
+| ![PowerPoint önizleme](screenshots/tr-51-pptx-preview.png) | ![Excel önizleme](screenshots/tr-52-excel-preview.png) |
+| **Ücretsiz AI video motorları (yazıdan / resimden video)** | **Kaydırıcıların yanında ∞ / Kapalı / Otomatik düğmeleri** |
+| ![AI video motorları](screenshots/tr-53-video-engines.png) | ![Ayar düğmeleri](screenshots/tr-54-setting-buttons.png) |
+
+| **Video Stüdyosu: resimdeki her yazıyı sürükle ve biçimlendir, zaman çizelgesi, canlı AI düzenleme** | **Stüdyo müziği: 8 stilde özgün parça veya telifsiz kütüphane** |
+|---|---|
+| ![Video Stüdyosu](screenshots/tr-44-video-studio.png) | ![Stüdyo müziği](screenshots/tr-45-studio-music.png) |
+| **Logo yapıcı: AI yönleri, AI sembolleri, saydam PNG** | **400+ ücretsiz doğal sesten oluşan kütüphaneyle yazıdan ses** |
+| ![Logo yapıcı](screenshots/tr-47-logo-maker.png) | ![Ses kütüphanesi](screenshots/tr-48-voice-library.png) |
+| **Renkli (+) menüsü: Oluştur bölümü** | **Anahtar, kota ve ücretsiz yedekli görsel üretim servisleri** |
+| ![Oluştur menüsü](screenshots/tr-46-create-menu.png) | ![Görsel servisleri](screenshots/tr-49-image-services.png) |
+
+<p align="center"><img src="screenshots/tr-50-studio-mobile-dark.png" width="300" alt="Telefonda Video Stüdyosu"><br><i>Telefonda Video Stüdyosu: resimde veya zaman çizelgesinde neye dokunursanız ayarları altta açılır</i></p>
 
 | **Yalan "bitti" yok: istenen PDF diskte yoksa cevabın başında uyarı** | **Zayıf model bile gerçek PDF üretir: `system_info` + `make_doc`** |
 |---|---|
@@ -132,9 +158,13 @@ AI IQ 300, bilgisayarınızda çalışan ve ChatGPT/Claude tarzı sade bir sohbe
 | **Node.js** (npm dahil) | 20+ (22 LTS önerilir) | ✅ Zorunlu | Arayüzün derlenmesi |
 | **Git** | 2.40+ | ⭐ Önerilir | Zaman makinesi, otomatik commit |
 | **Ollama** veya **LM Studio** | güncel | ⭐ Yerel model için (biri yeterli) | Modelleri bilgisayarda çalıştırma |
-| **PHP** | 8.2+ | İsteğe bağlı | PHP projelerini çalıştırma |
+| **FFmpeg** | 7+ (yoksa uygulama indirir) | ⭐ Önerilir | Video Stüdyosu, video araçları, sesten yazı |
+| **PHP** + Composer | 8.2+ | İsteğe bağlı | PHP projelerini çalıştırma (`localhost-project` yeteneği istenince kurar) |
+| **.NET SDK** | 8+ | İsteğe bağlı | ASP.NET projeleri (klasik ASP / ASP.NET Framework: Windows + IIS) |
 | **WSL2 + Docker** | güncel | İsteğe bağlı | Projeleri konteynerde çalıştırma; yol haritasındaki sandbox |
 | **Tarayıcı** | Chrome / Edge / Firefox | ✅ Zorunlu | Arayüz |
+
+> Medya özelliklerinin Python paketleri `requirements.txt` ile gelir: `gradio_client` (ücretsiz AI ile resimden video), `uv` (`uvx` ile Python MCP sunucuları), `edge-tts` (sesler), `faster-whisper` (sesten yazı), `numpy` + `Pillow` (müzik üreteci, logo arka plan temizleme). Video yazıları sistem yazı tiplerini kullanır (Windows ve macOS'ta Arial / Georgia / Impact; Linux'ta `install.sh` DejaVu kurar). Yeni npm paketi gerekmez.
 
 > Söz dizimi ağacı gramerleri ilk kullanımda otomatik iner (bir kez internet gerekir). Birçok MCP sunucusu `npx` (Node.js) ya da `uvx` (Python) ile başlatılır.
 > Yerel model kurmak istemiyorsanız Ayarlar > Sağlayıcılar'dan bir bulut API anahtarı (OpenRouter, OpenAI, Anthropic, Gemini, EVREN…) girmeniz yeterli.
@@ -304,7 +334,7 @@ Ayrıntılı kullanım için uygulamadaki **Rehber** bölümüne bakın.
 
 ## 🏗️ Mimari
 
-> Klasör yapısı ve tam özellik geçmişi: [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md) · [English](PROJECT_STATE.md)
+> Klasör yapısı ve tam özellik geçmişi: [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md) · [English](../PROJECT_STATE.md)
 
 ```
 backend/   FastAPI · ajan orkestratörü · ajan takımları · sağlayıcı adaptörleri · MCP istemcisi · Tree-sitter · süreç yöneticisi · politika
@@ -315,6 +345,176 @@ languages/ tr.json · en.json
 chat/      Her sohbete bir klasör: chat/<sohbet kimliği>/ (dosyaları) + .session/ (kaydı); chat/projects/ (klasör seçilmeden açılan projeler)
 tanitim/   Banner, ekran görüntüleri ve tanıtım metinleri
 ```
+
+## 🆕 v0.14.2 ile gelenler (devre kesici yok, gerçek tarayıcıda sayfa denetimi, tasarım denetimi, dürüst bitiş, tanıtım videosu)
+
+Kapsamlı kod taraması ve EVREN `glm-5.3` / `gemma-4-31b` ile **Expo + TypeScript market süper uygulaması** üzerinde 6 büyük gerçek model turu yapıldı; her turda bulunan hatalar giderildi. 90 birim testi ve 43 uçtan uca denetim geçiyor.
+
+- **Devre kesici yok:** hata sayısı artık hiçbir zaman araçları kapatmaz. Model her hatayı görüp düzeltir; aynı hata tekrar gelirse web'de araştırıp denenmemiş bir yol seçmesi istenir. Yalnızca birebir aynı çağrıların inatçı tekrarı durdurulur.
+- **Her sayfada console + network denetimi:** tarayıcıda her sayfa yüklemesi ve tıklamadan sonra yeni console hataları ve başarısız istekler (404 dosyalar, 500 / bundle hataları) adresleriyle anında bildirilir; model önce bunları düzeltir.
+- **Gerçek tarayıcıda son test:** web ve Expo web projelerinde sunucuyu başlatmak artık "test edildi" sayılmaz; sayfa `browser_navigate` ile açılır, her hata giderilir, telefon genişliğinde ekran görüntüsü alınır.
+- **Tasarım denetimi:** stil uygulanmamış sayfa ("düz metin sütunu", derlenmemiş NativeWind sınıfları) **UNSTYLED** olarak yakalanır ve görev bitmiş sayılmaz. Modellere tasarım kuralları öğretildi: stil sistemi, kartlar, ızgara, boşluk, gerçek görseller.
+- **Dürüst bitiş:** istekte adı geçen kaynak dosyalar (`data/mockProducts.ts` gibi) diskte yoksa görev bitmez; planlanan maddeler açıkken yazılan "eksikler" özeti cevap sayılmaz, model kalan maddelere devam eder.
+- **Yazımda sözdizimi denetimi:** `write_file` / `edit_file` sonrası bozuk dosya (Python, JS, TS, TSX, PHP …) satır numarasıyla bildirilir ve düzeltilene kadar açık kalır.
+- **edit_file:** tutan bloklar kaydedilir, tutmayanlar dosyanın güncel içeriğiyle geri döner (model eski hâlinden değil gerçek metinden düzenler).
+- **Yapılacaklar:** kısa güncellemeler (`advance`, `done`, `start`, `add`); model listeyi her seferinde yeniden yazmaz, uygulamanın otomatik işaretlemesiyle çift ilerleme olmaz.
+- **Her şeyi kurabilme:** `mobile_env action=java` taşınabilir JDK 17'yi MSI'sız, yöneticisiz kurar; Windows Installer kilidi (1618) için başka yol önerilir.
+- **Uzun görevler:** bağlam özetine görevde yazılan tüm dosyaların listesi eklenir; adımın dosyaları planlanıp tek cevapta hep birlikte yazılır.
+- **Bekleme:** düşünmeden sonraki sessizlik artık "takıldı" sayılıp kesilmez; ekranda "model düşünmeyi bitirdi, cevabını yazıyor" görünür.
+- **Sohbet medyası:** cevaptaki dosya bağlantıları ve resimler uygulama içinde açılır (sayfa yenilenmez); görev ekran görüntüleri telefon / tarayıcı çerçeveli kompakt bir şerit.
+- **Arayüz:** en alta git düğmesi artık yana kaymıyor; yeniden derlenen uygulama eski dosyaları isteyince sayfa kendini bir kez yeniliyor.
+
+## 🆕 v0.14.0 – v0.14.1 ile gelenler (mobil uygulama testi, AI video klipleri, pro PowerPoint / Excel önizleme, daha sağlam araç kullanımı)
+
+EVREN `auto` ve `gemma-4-31b` ile canlı testlerde bulunan sorunlar giderildi: 9 senaryoluk canlı paket (sohbet, dosya + çalıştırma, yapılacaklar, web, PDF, PowerPoint, MCP, ajan, mobil) iki modelde de 9/9 geçiyor; 84 birim testi ve 43 uçtan uca denetim geçiyor.
+
+- **Mobil uygulama testi:** `mobile-app-test` yeteneği ve `mobile_env` aracı:
+  - Android emülatörü (Windows, macOS, Linux) yönetici yetkisi olmadan kurulur ve başlatılır; APK yüklenir, ekran görüntüsü alınır, **Maestro** UI akışları çalıştırılır.
+  - macOS'ta Xcode ile iOS simülatörü kullanılır.
+  - Web derlemeleri (Expo web, Flutter web, Capacitor) tarayıcıda telefon boyutunda test edilir.
+  - `install.bat` / `install.sh` kurulumun sonunda sorar (`AIIQ_MOBILE=1` sormadan kurar; Java 17+ gerekir).
+- **Her localhost projesi:** `localhost-project` Node, Python, PHP, Ruby, Java, Go, Rust, .NET / ASP, statik siteler ve Docker Compose'u kapsar; isteğin kelimelerinden kendiliğinden yüklenir.
+- **AI klip, yazıdan / resimden gerçek video:** yeni `generate_video` aracı önce ilk kareyi üretir (anahtarlı görsel servisleri, yoksa ücretsiz FLUX), sonra Wan 2.2 ile canlandırır.
+  - (+) > Oluştur > **AI klip**.
+  - **Ayarlar > Web araştırması > AI video motorları** ücretsiz motorların canlı durumunu gösterir.
+- **Belgeler:**
+  - PDF / Word / PowerPoint HTML olarak yazılır (belgenin kendi yapısı, Markdown dönüşümünde kayıp yok).
+  - `make_doc` yer tutucuları reddeder (`\pdfiçeriği`, `{{title}}`, `[İçerik buraya]`).
+  - Belge yeteneği kendiliğinden yüklenir.
+- **Önizleyiciler:**
+  - **PowerPoint:** resimler, renk bantları, tablolar ve grafiklerle gerçek slayt yerleşimi; küçük resim şeridi ve klavyeyle gezinme.
+  - **Excel:** formül çubuğu, birleştirilmiş hücreler, dosyanın sütun genişlikleri ve dolguları, sabit başlık, sayfa sekmeleri.
+- **Araçlar, daha sağlam:**
+  - `pip` her zaman uygulamanın `.venv`'ine kurar (ya da projenin kendi venv'ine; önce içinde ne olduğu sorgulanır).
+  - argv tırnakları temizlenir; eksik program kurulum komutuyla birlikte söylenir.
+  - `fetch_url save=` arşiv ve kurulum dosyalarını diske indirir; dosya dosya okunan bir depo tek bir ZIP indirmesine dönüşür.
+  - `cd` görev klasöründen verilen yolları kabul eder; port doluysa bu sohbetin kendi sunucusu yeniden başlatılır.
+  - Aynı hata iki kez gelince model farklı bir yol seçer (yaygın hatalar için bilinen çözümlerle).
+- **Düzeltmeler:**
+  - **Yapılacaklar listesi:**
+    - İlk madde sürerken bir komut artık sonraki bir maddeyi tamamlandı işaretlemiyor.
+    - Eski bir liste bitmiş maddeleri yeniden açamıyor.
+    - Aynı anda tek madde "devam ediyor" görünüyor.
+  - **Sohbet başlığı:** başlık bir kez veriliyor, her yanıtta değişmiyor.
+  - **Sohbet görünümü:** uygulamanın işlem kaydı artık sohbete sızmıyor; canlı yanıttaki resimler sohbet klasöründen gösteriliyor.
+  - **Fotoğraf kaynağı:** stok fotoğraf adımları kaynağını (sağlayıcıyı) gösteriyor; dosya adlarında Türkçe kelimeler okunur kalıyor (`ic-mekan.jpg`).
+  - **Dosya düzenleme:** `edit_file` modellerin gönderdiği her biçimi kabul ediyor: SEARCH/REPLACE ve türevleri, `old_string` / `search` adları, JSON listeleri, unified diff ya da dosyanın tamamı. "No edit given" döngüsü bitti.
+  - **Araç çağrıları:** tek tırnaklı etiket öznitelikleri okunuyor (`arguments='{...}'` düşüyordu). MCP argümanları her modelin doldurabildiği JSON metni; eksik olanlar örnekle söyleniyor ve DeepWiki test edilen her modelde çalışıyor.
+  - **Belgeler:** gerçek HTML etiketleri (`<title>`, `<body>`) artık yer tutucu sanılmıyor. Betikle üretilen PPTX / DOCX / PDF de önizleme kartı alıyor.
+  - **Sohbet başlığı:** akıl yürüten modellerde (gemma-4) de başlık veriliyor (düşünmeye yer açan ikinci deneme, sonra yardımcı model).
+  - **Mesaj kutusu:** yapıştırma artık tarayıcının iç içe `execCommand` uyarısını tetiklemiyor.
+  - **Bağlantı kopması:** kopan akış 1 sn içinde yeniden deneniyor.
+- **Büyük görev düzeltmeleri (EVREN `auto`, `gemma-4-31b`, `glm-5.3` ile 15-20 dakikalık PHP sitesi, Expo uygulaması ve çok sayfalı site testleri):**
+  - **Model değişimi:**
+    - Büyük bir dosyanın ortasında takılma artık modeli hemen değiştirmiyor: önce aynı model iki kez yeniden deneniyor.
+    - Takılma sınırı sağlayıcının gerçek hızına uyuyor.
+    - Hız sınırı, kota veya ödeme hatasında görev, model havuzu olmasa da yarıda başka modele geçiyor.
+  - **Devir teslim:**
+    - Yeni model başka bir modelin işini sürdürdüğünü biliyor: dosyaları, adları ve stili koruyor.
+    - Yarım kalan dosyayı kaldığı yerden tamamlıyor (ekleme); sıfırdan yazmıyor, yeniden tasarlamıyor.
+  - **Üzerine yazma koruması:**
+    - Kopmadan sonraki düz yazım, kaydedilen kısmın devamı olarak ekleniyor.
+    - Okunmadan üzerine yazılan bitmiş dosya önce yedekleniyor (`.session/backups`).
+  - **Üretim döngüsü:**
+    - Aynı `<script>` bloğunu yüzlerce kez tekrar eden model, akış sırasında durduruluyor.
+    - Tekrar dosyadan siliniyor.
+    - Yeniden deneme tekrar cezasıyla çalışıyor.
+  - **Önce plan:**
+    - Numaralı plan yapılacaklar listesine dönüşüyor.
+    - Listesiz yürüyen büyük işten bir kez liste isteniyor.
+    - Yeni liste eskisinin yerine geçmiyor, onunla birleşiyor; toplam adım görünür kalıyor.
+  - **Dosya okuma:**
+    - `read_file`, dosyayı modelin penceresinin ~%15'ine kadar bütün olarak, tam satırlarla veriyor ve sonraki aralığı söylüyor.
+    - Dosya artık ortadan kesilip parça parça tekrar tekrar okunmuyor.
+    - Değişmemiş aynı aralığın yeniden okunması bellekten yanıtlanıyor.
+  - **Yapılanı test et:**
+    - Hiçbir şey çalıştırılmadan yanıtlanan "başlat ve test et" isteği bir kez geri gönderiliyor.
+    - `npm run web`, `expo start`, `flutter run` gibi geliştirme sunucuları arka planda başlıyor.
+    - Java / Android SDK yalnızca emülatör testi istendiyse ve yalnızca paket yöneticisiyle kuruluyor.
+  - **Tarayıcı testleri:**
+    - Modelin açtığı form veya modal, açılır pencere temizleyicisi tarafından artık kapatılmıyor. Yerel sitelerde yalnızca çerez bannerları kapatılıyor.
+    - Sayfa yeniden çizilince eskiyen ref, rolü ve adıyla yeniden bulunuyor.
+    - Alanlar etiketi veya placeholder'ı ile hedeflenebiliyor; ref olarak gönderilen CSS seçici de çalışıyor.
+    - Alana bağlı olmayan etiket (`for=` yok) yanındaki alana yönlendiriliyor. Elemanı başka anahtarla (`element`, `target`, `locator`) veren adımlar da çalışıyor.
+    - Gizli eleman, 8 sn zaman aşımı yerine hemen ve önce neyin açılacağı söylenerek bildiriliyor.
+    - Üstü örtülen eleman son çare olarak betikle tıklanıyor ve bu adımda yazıyor.
+    - `browser_batch` artık `js`, `fill`, `select`, `press`, `hover` gibi adları anlıyor. Açıklaması modele şunu öğretiyor: sayfayı bir kez oku, akışı planla, tek seferde çalıştır.
+    - Açılır listeler seçeneğin metnini veya değerini büyük/küçük harf fark etmeden alıyor; olmayan seçenekte gerçek seçenekler hemen bildiriliyor. Form `{etiket: değer}` biçiminde de gönderilebiliyor.
+  - **Sunucular ve düzenlemeler:**
+    - Sohbetin betik dosyasıyla başlattığı kendi sunucusu tanınıyor ve aynı portta yeniden başlatılıyor.
+    - `stop` port numarasını veya çalışan tek sunucuyu kabul ediyor.
+    - Tek başına çalıştırılan betik adı (`create_db.php`) yorumlayıcısıyla çalışıyor. Önceden Windows dosyayı sadece açıp başarılı diyordu.
+    - Dosya adı kod olarak gönderildiğinde de böyle (`shell=php` ile `database.php` sadece adı yazdırıyor, hiçbir şey çalışmıyordu).
+    - Yanlış dilde yazılan yapılacaklar listesi, kullanıcının dilinde yeniden yazılması için modele geri gönderiliyor.
+    - `read_file` SQLite veritabanında tabloları ve satır sayılarını veriyor; diğer ikili dosyalarda nasıl inceleneceğini söylüyor.
+    - Aynı çağrı üst üste üç kez aynı sonucu verirse hata sayılıyor ve modelden yol değiştirmesi isteniyor.
+    - Hiçbir şeyin çalışmadığı localhost adresinde sayfanın kendi HTML dosyası açılıyor; diğer projelerde modele önce sunucuyu başlatması söyleniyor.
+    - Kurulum ve `mkdir` artık "test edildi" sayılmıyor. Dosyaya yazılmayıp cevaba dökülen proje kodu bir kez geri gönderiliyor.
+    - Tek komutta `cd klasör` ve ardından gelen satırlar artık yalnız `cd` sanılmıyor ("böyle bir klasör yok" hatası veriyordu).
+    - Hiçbir şeyi değiştirmeyen düzenleme, modele asıl nedeni aramasını söylüyor; tekrarı hata sayılıyor.
+    - Başarısız araç çağrıları model turu başına sayılıyor: bir turda metin olarak yazılan on fotoğraf artık tüm araçları durdurmuyor (ret mesajı `stock_photo`'yu gösteriyor).
+    - Bağlam özeti, yerine geçtiği metinden asla büyük olmuyor (bir kez büyüyüp her turda yeniden yapılıyordu).
+    - Hâlâ liste açmayan modele, uygulama isteğin kendi parçalarından bir liste açıyor (modelin listesi gelince onun yerine geçiyor).
+  - **Hata mesajları:**
+    - Sağlayıcı ve araç hataları kullanıcının dilinde gösteriliyor.
+    - Teknik ayrıntı açılır kapanır bir bölümde.
+    - Reddedilen ikili dosya yazımı (`.db`, `.jpg`) nedenini gösteriyor.
+- **Kuralları sistem koyar, model uyar (v0.14.1 son tur):**
+  - **Sistem kuralları:** her model, her görevde aynı kısa kuralları alır:
+    - önce plan;
+    - dosyalar yalnızca write_file / edit_file ile;
+    - resimler yalnızca stock_photo / generate_image ile;
+    - sunucu start ile;
+    - başarısız çağrı tekrarlanmaz;
+    - bitti demek denetlendi demek.
+  - **Plan kapısı:** çok parçalı bir işte yapılacaklar listesi açılmadan yazma ve çalıştırma reddedilir ve doğru çağrı gösterilir. Model yine plan yapmazsa listeyi uygulama isteğin kendi parçalarından açar.
+  - **Tahmin yok:** uygulama modelin ne demek istediğini artık sessizce "düzeltmiyor" (metin olarak yazılan resme kendisi resim seçmiyor; ret ve doğru stock_photo çağrısı veriyor).
+  - **Döngüler, araç ne olursa olsun durur:**
+    - aynı çağrı grubu 3. kez gelince uyarı, 4. kez gelince araçlar kapanır;
+    - sayma döngüleri (menu_card1 … menu_card34) 6'dan sonra durur;
+    - medya araçlarına görev başına sınır var;
+    - aynı başarısız komut üçüncü kez çalıştırılmaz;
+    - aynı hata kontrolü geçici betik adlarını yok sayar (önceden hiç eşleşmiyordu).
+  - **Daha küçük istekler:** eski adımlar (modelin yazdığı dosyaların tamamı, uzun araç çıktıları) sonraki turlarda kısaltılır, son adımlar tam kalır; uzun görev her turda her şeyi yeniden göndermez.
+  - **Bağlam sayacı:** son görevin en yüksek değerini de gösterir (görev bitince araç çıktıları sonraki mesaja gitmediği için değer düşer).
+  - **Belgeler:** görev klasöründen kaydedilen grafik ya da fotoğraf (images/grafik.png), belge docs/.doc-sources/ içindeki kaynağından yeniden üretildiğinde de PDF, Word ve PowerPoint'e girer.
+  - **Sunucular ve komutlar:**
+    - `shell=php` ile `-S 127.0.0.1:8000` PHP sunucusunu başlatır (PHP kodu sanılıp hemen kapanıyordu);
+    - Python alt süreçleri UTF-8 kullanır (Türkçe çıktı bozuluyordu);
+    - internet kesintisinde bağlantı beklenir (en fazla 5 dk).
+  - **Dosyalar ve sayfalar:**
+    - Uygulamanın kısaltılmış eski dosya notu ("[1202 characters omitted ...]") artık dosyaya yazılamaz. Dosyasını unutan model bunu kopyalıyordu ve sayfada yalnızca o satır görünüyordu; artık modele read_file ile gerçek içeriği okuması söyleniyor.
+    - PHP Fatal error, 500 ya da yakalanmamış hata gösteren sayfa, temiz bir kontrol olana kadar görevi açık tutar.
+  - **Tarayıcı:**
+    - Açılır listedeki seçeneğe tıklamak onu seçer.
+    - Kullanıcının kendi yerel sitesinde confirm() pencereleri kabul edilir; testlerde Sil düğmeleri gerçekten siler.
+  - **Kod denetimi:** her aracın kendi fonksiyonuna kayıtlı olduğu test edilir (yanlış yere konan bir yardımcı web_screenshot'ın yerine geçmişti); tüm backend pyflakes ile (yıldızlı importlar açılarak) temiz.
+- **Ayarlar:** kaydırıcıların yanında **∞ / Kapalı / Otomatik** düğmeleri (tek dokunuş, mobil uyumlu).
+- **MCP:** Krea ve Poko hazırları kaldırıldı. Sequential Thinking ve Fetch eklendi; anahtarsız altı hazırın hepsi bağlanıyor ve araçlarını sunuyor.
+- **Rehber:** yeni **Oluşturma ve medya** bölümü (Video Stüdyosu, AI klip, sesler, logo yapıcı, görsel / fotoğraf servisleri), ayrıca **Projeyi localhost'ta ve mobilde test etme** ile **Ayar düğmeleri** maddeleri; TR ve EN.
+
+## 🆕 v0.13.0 ile gelenler (Video Stüdyosu, logo yapıcı, ses kütüphanesi, görsel ve fotoğraf servisleri, kendi kendine MCP, her projeyi localhost'ta kurma)
+
+EVREN `auto` ve GLM 5.3 ile canlı test edildi; 49 birim testi ve 43 uçtan uca denetim geçiyor.
+
+- **Video Stüdyosu (zaman çizelgeli düzenleyici, ffmpeg):**
+  - Sahneler, görsel/logo katmanları, yazılar, seslendirme ve müzik zaman çizelgesinde; blokları taşıma, kırpma, uzatma; geri al/yinele; `<ad>.timeline.json` dosyasına otomatik kayıt.
+  - **Her yazı resmin üzerinde sürüklenir ve biçimlendirilir** (sahne başlıkları da): yazı tipi, renk, kutu rengi ve saydamlığı, kontur, gölge, hizalama, animasyon (belirme, kayma, zıplama). Hazır yazı stilleri: başlık, alt yazı, fiyat, alıntı, sosyal, harekete çağrı.
+  - **Neye tıklarsanız o açılır:** önizlemedeki bir yazı, görsel katmanı veya resmin kendisi ya da zaman çizelgesindeki bir blok, kendi ayarlarını açar; oynatma başlığı oraya atlar ve zaman çizelgesi o bloğa kayar.
+  - **Canlı AI düzenleme:** "logoyu sağ üste koy, alt yazıyı sarı yap" yazın; seçili model bir yama döndürür ve anında uygulanır. Model her sahne ve katmanı numarasıyla görür; yanlış katmana gönderilen stil reddedilip yeniden denenir; yeni medya isteyen işler sohbet ajanına gider ve adımları stüdyoda canlı görünür.
+  - **Ücretsiz efektler:** film greni, eski film, VHS, glitch, kamera sallantısı, sinema bantları, parlama, ışık sızıntısı, sepya, siyah-beyaz, rüya, vinyet, keskinleştirme, flaşla giriş; sahneye veya tüm videoya, canlı önizlemeyle.
+  - **Gerçek resimden video:** "AI ile canlandır" fotoğrafları ücretsiz Hugging Face Space'leriyle (Wan 2.2, AnimateLCM-SVD) hareketli klibe çevirir; olmazsa Ken Burns hareketi.
+  - **Müzik:** çevrimdışı üretilen 8 stilde özgün fon müziği (kurumsal, neşeli, lo-fi, sinematik, akustik, elektronik, ambiyans, sakin) ve yeni varyasyonlar ya da telifsiz kütüphane (Openverse: Jamendo ve diğerleri, ticari kullanım lisansları, kaynak bilgisi kaydedilir); ses altında otomatik kısma ve ses seviyesi dengeleme.
+  - **Mobil:** telefonda resim, kontroller, zaman çizelgesi ve kayan ayar paneli alt alta; ikonlu araç çubuğu, dokunmatik dostu kırpma tutamaçları.
+- **Ses kütüphanesi:** 400+ ücretsiz doğal Microsoft nöral ses; arama (ad, dil, ülke), cinsiyet filtresi, dinleme ve hız. Yazıdan ses, stüdyoda seslendirme ve video anlatımında kullanılır. **Sesten yazı** (çevrimdışı faster-whisper), SRT altyazıyla; dosyadan veya mikrofondan.
+- **Logo yapıcı:** AI üç marka yönü önerir, sembol üretir ve arka planını temizler; yazı tipleri, yerleşimler (sembol solda/üstte, yalnız yazı, rozet), şekiller ve renkler; saydam, kırpılmış PNG indirme veya sohbete kaydetme.
+- **(+) menüsü** renkli bir Oluştur bölümü aldı: Video Stüdyosu, video üret, logo yapıcı, görsel üret, yazıdan ses, sesten yazı.
+- **Görsel üretim servisleri:** anahtarla Hugging Face, Together, OpenAI, Gemini, Stability ve Cloudflare FLUX; her biri kaydet/test kartlı, kota ve hız sınırı takipli. Biri dolunca sıradakine geçilir, hepsi kapalıysa ücretsiz FLUX (Pollinations) devreye girer. **Stok fotoğraf:** anahtarla Pexels, Pixabay, Unsplash; sonra Openverse ve Wikimedia Commons.
+- **MCP:** OAuth ile oturum açan sunucular (korumalı kaynak bilgisi, dinamik istemci kaydı, PKCE), kaldırma hatası giderildi, `npx` komutları doğru ayrılıyor; ajan sunucuları kendisi bulur (`mcp_search`: resmi kayıt, npm, GitHub) ve ekler.
+- **Yeni yetenekler:** `video-studio` ve yerel sunucu isteyen her proje için `localhost-project`: depoyu bulur (ya da sizinkini alır), yığını tanır (Node, Python, PHP, Ruby, Java, Go, Rust, .NET / ASP, statik, Docker Compose, monorepo), Windows, macOS veya Linux'ta eksik çalışma ortamını, paketleri ve veritabanını kurar, kurulumu düzeltir, tüm süreçleri localhost'ta başlatır ve test eder (duman testi, bağlantı taraması, gerçek tarayıcı akışları, mobil görünüm, projenin kendi test paketi), rapor verir. Yetenekler isteğe uyan tetik kelimeleriyle otomatik önerilir.
+- **Hatalar kendi dilinizde:** servis hataları (hız sınırı, kota, engellenen arama, eksik anahtar) ve tüm backend hata kodları Türkçe ve İngilizce. DuckDuckGo engellenince gerçek tarayıcıya geçer; sistem servisleri test etmeden yeşil görünür.
+- **Döngü yok, gerçek alternatifler:** aynı hata tekrar gelince modele daha önce denediği komutlar gösterilir ve farklı bir yol seçmesi zorunlu olur (yaygın hatalar için bilinen çözümlerle: PATH'te olmayan program, yanlış yol, izin, dolu port, eksik paket veya PHP eklentisi, sertifika, zaman aşımı); üst üste başarısız olan farklı çağrılar da döngü sayılır (4'te uyarı, 10'da net rapor). `fetch_url` arşivleri ve kurulum dosyalarını diske kaydeder (`save=`), dosya dosya okunan bir depo tek bir ZIP indirmesine çevrilir, `list_dir` yolları çalışma klasöründen verir, olmayan bir yol dosyanın gerçek yerini söyler. Okuma araçları asla kapatılmaz.
+- **Daha güvenli testler:** test paketi her zaman geçici bir veri klasörü kullanır, anahtarlarınıza asla dokunmaz.
 
 ## 🆕 v0.12.0 ile gelenler (yalan "bitti" yok, zayıf modellere gerçek araç kullanımı, sohbet araması, model karnesi)
 
@@ -930,10 +1130,10 @@ v0.6: kesintisiz orkestrasyon, canlı yapılacaklar listesi, hedef modu, otomati
 
 Projenin tam durumu iki dilde tutuluyor: vizyon, mimari ve klasör yapısı, sürüm sürüm tamamlanan tüm özellikler, açık görevler, önemli kararlar ve sonraki adım.
 
-- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md)
-- 🇬🇧 **English:** [PROJECT_STATE.md](PROJECT_STATE.md)
+- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md)
+- 🇬🇧 **English:** [PROJECT_STATE.md](../PROJECT_STATE.md)
 
-**Şu an:** v0.12.0 tamamlandı (yalan "bitti" yok: düz metin araç çağrıları çalıştırılır, istenen dosya diskte denetlenir; zayıf modellere `system_info` ve doğru araç ipucu; sohbetlerde tam metin araması; model karnesi; LM Studio bellek koruması; depoda test paketi). v0.11.0 tamamlandı (kapsamlı tarama: tıkanma yok, kopma ve model değişiminde unutma yok, yarı boyutta ilk istem, modeli kapatmayan RAM / VRAM koruması, eksiksiz yeniden bağlanma). v0.10.7 tamamlandı (toplu seçme ve silme, ilk mesajda tüm yetenekler, 14 dilde araç algılama, bölmeden yazım). v0.10.6 tamamlandı (gerçek stok fotoğraflarla profesyonel web tasarımı, JS hatası ve kırık görsel için test edilen sayfalar, sağlayıcının gerçek sayılarına çapalı bağlam sayacı, yerel pencerede taşma yok, Markdown olarak akan canlı yanıt). v0.10.5: gerçek token verisiyle bağlam, ekran görüntülerinde görsel model, ayar denetimi. v0.10.4: Ayarlar, yerel GPU ayarları, canlı senkron, npm / PyPI / GitHub'dan MCP, otomatik araç kurulumu ve sekiz yeni beceri canlı test edildi.
+**Şu an:** v0.14.1 tamamlandı (Android emülatörü ve Maestro ile mobil uygulama testi, yazıdan / resimden AI klip, HTML öncelikli belgeler, pro PowerPoint / Excel önizleme, daha sağlam araçlar: .venv'e pip, döngü yok, sıralı yapılacaklar; büyük görev düzeltmeleri: devir teslimli dikkatli model değişimi, görev ortasında kota geçişi, döngü ve üzerine yazma koruması, bütün dosya okuma, çevrilmiş hatalar). v0.13.0 tamamlandı (sürüklenip biçimlendirilen yazılarla Video Stüdyosu, canlı AI düzenleme, efektler, AI ile resimden video, özgün ve kütüphane müziği, mobil düzen; logo yapıcı; yazıdan ses ve sesten yazıyla ses kütüphanesi; kota yedekli anahtarlı görsel ve fotoğraf servisleri; MCP OAuth ve kendi kendine kurulum; `localhost-project` yeteneği). v0.12.0 tamamlandı (yalan "bitti" yok: düz metin araç çağrıları çalıştırılır, istenen dosya diskte denetlenir; zayıf modellere `system_info` ve doğru araç ipucu; sohbetlerde tam metin araması; model karnesi; LM Studio bellek koruması; depoda test paketi). v0.11.0 tamamlandı (kapsamlı tarama: tıkanma yok, kopma ve model değişiminde unutma yok, yarı boyutta ilk istem, modeli kapatmayan RAM / VRAM koruması, eksiksiz yeniden bağlanma). v0.10.7 tamamlandı (toplu seçme ve silme, ilk mesajda tüm yetenekler, 14 dilde araç algılama, bölmeden yazım). v0.10.6 tamamlandı (gerçek stok fotoğraflarla profesyonel web tasarımı, JS hatası ve kırık görsel için test edilen sayfalar, sağlayıcının gerçek sayılarına çapalı bağlam sayacı, yerel pencerede taşma yok, Markdown olarak akan canlı yanıt). v0.10.5: gerçek token verisiyle bağlam, ekran görüntülerinde görsel model, ayar denetimi. v0.10.4: Ayarlar, yerel GPU ayarları, canlı senkron, npm / PyPI / GitHub'dan MCP, otomatik araç kurulumu ve sekiz yeni beceri canlı test edildi.
 
 | Alan | Durum |
 |---|---|
