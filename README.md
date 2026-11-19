@@ -24,9 +24,9 @@ AI IQ 300 is a **software development and automation hub** that runs on your own
 
 ## 🎬 Promo video
 
-<p align="center"><a href="https://www.youtube.com/watch?v=Fcy0ib8GEA4"><img src="video/aiiq300-promo.en.poster.jpg" alt="AI IQ 300 promo video" width="100%"></a></p>
+<p align="center"><a target="_blank" href="https://www.youtube.com/watch?v=Fcy0ib8GEA4"><img src="video/aiiq300-promo.en.poster.jpg" alt="AI IQ 300 promo video" width="100%"></a></p>
 
-<p align="center"><b>▶ <a href="https://www.youtube.com/shorts/cm_WbMM4lJk">Watch the promo (YouTube 16:9)</a></b> · 🇹🇷 <a href="https://www.youtube.com/watch?v=oiVHmz4ilxI">Türkçe</a></p>
+<p align="center"><b>▶ <a target="_blank" href="https://www.youtube.com/shorts/cm_WbMM4lJk">Watch the promo (YouTube 16:9)</a></b> · 🇹🇷 <a target="_blank" href="https://www.youtube.com/watch?v=oiVHmz4ilxI">Türkçe</a></p>
 
 From one sentence to a working app: the command is typed, the agent plans, writes every file in one turn, compiles with `tsc`, opens the app in a **real browser** to check console + network, fixes the error it catches on the spot and delivers a tested result. The video shows the real AI IQ 300 panel, every settings screen, hardware scan and system repair, web research, speech to text / text to speech, documents and the video studio.
 
