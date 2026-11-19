@@ -6,10 +6,119 @@
 Otonom, çoklu ajan destekli, yerel ve bulut LLM'leri ile çalışan tam kapsamlı yazılım geliştirme ve komuta merkezi.
 
 ## Mevcut Durum (State)
-- **Tarih:** 2026-11-17
+- **Tarih:** 2026-11-19
 - **Aktif Görev:** v0.12.0 tamamlandı (zayıf modeller: düz metin araç çağrıları çalıştırılır, istenen dosya diskte denetlenir, system_info, sohbet araması, model kaydı, LM Studio bellek koruması, test paketi, orkestratör bölündü); v0.11.0 tamamlandı (kapsamlı tarama: yalın istem, kopma ve model değişiminde süreklilik, modeli kapatmayan RAM / VRAM koruması, eksiksiz WebSocket yeniden bağlanma, yarış düzeltmeleri); v0.10.7 tamamlandı (toplu seçme/silme, ilk mesajda yetenekler, 14 dilde araç algılama, bölmeden yazım); v0.10.6 tamamlandı (web tasarımı + stock_photo, sayfa JS/kırık görsel testi, gerçek sayıya çapalı bağlam, yerel pencere büyütme, Markdown canlı yanıt); v0.10.5 tamamlandı (gerçek token verisi, görsel model, ayar denetimi); v0.10.4 tamamlandı (ayarlar, yerel GPU, MCP, araç zinciri, beceriler); v0.10.3 tamamlandı (canlı test: Evren auto, NVIDIA Nemotron 3 Ultra 550B, Groq)
 - **Son Başarılı İşlem:** v0.10.0 — profesyonel belge motoru (Chromium PDF/HTML + KaTeX, tasarımlı DOCX/PPTX/XLSX), ayarlanabilir akış zaman aşımları ve parçalı yazma, run_state.json ile kesinti sonrası devam, paralel araç yürütme, canlı todos, çok dilli niyet tablosu, zengin mesaj kutusu, mesaj sayfalama/kopyala/sil/alıntı, sağ tık menüleri, gruplu değişiklik kartı, medya oynatıcılar, servis kartları, kota/bakiye ekranı.
 - **Önceki:** v0.6 — kesintisiz orkestrasyon (devam ettirme, sessiz araç yazımında heartbeat, görev içi bağlam kırpma/özetleme, canlı bağlam sayımı, takılı adım temizliği, tekrar eden çağrı koruması, asılsız dosya iddiası koruması), todo aracı + canlı yapılacaklar listesi, otomatik yetenek algılama (use_skill), bilgi sorularında salt-okuma araçlar, arama alaka filtresi + Bing URL çözümü, canlı gruplu adımlar, model seçiciden bağlam düzenleme (ayarlarla senkron), aç/kapat popover'lar, çizim ekranı, klasör yükleme, hedef modu, belge kartları ve önizleme (xlsx/docx/pdf/pptx), kökteki gereksiz docs/ kaldırıldı.
+
+## Proje Durumu — v0.14.3
+Süreklilik turu; `evren:qwen3.8-flash-next` ile 4 sa 16 dk süren gerçek testle kanıtlandı (BakkalX Expo + Express +
+yönetim paneli + iyzico/PayTR görevi: 301 model turu, 9/9 yapılacak, API duman testi 24/24, iki tarafta `tsc --noEmit`
+0 hata, tek bağlantı kopması 1 sn'de toparlandı). pytest 102, mock e2e 43/43.
+- **Düşünce kopmada korunur:** `_carry_thinking`, kopan turun (duraklama, zaman aşımı, kopma, model değişimi)
+  düşüncesini sonraki isteğe taşır (`THINK_CARRY`, en çok 14K karakter, tek mesaj, devam eden cevaptan önce) ve o
+  istek düşünmeden gönderilir (`run.no_think`; EVREN: `chat_template_kwargs.enable_thinking=false`, ölçüldü: 0 düşünme
+  tokenı; `reasoning_effort` orada yok sayılıyor). Önceden her yeniden deneme tüm görevi baştan düşünüyordu (birkaç
+  kopmada 18 dakika "düşünüyor"). Zaman aşımı / takılmada aynı model iki kez denenir, sonra değiştirilir.
+- **Akıtan sağlayıcı "sessiz yazar" sayılmaz:** ölçümler EVREN'in araç argümanlarını parça parça akıttığını gösterdi
+  (2.289 parça, en uzun boşluk 2,7 sn). `router.mark_streams_tool_args` bunu sağlayıcı başına öğrenir
+  (data/streams_args.json); böyle bir sağlayıcı 75 sn'de "araç çağrısını sonda gönderiyor" diye kesilmez, metin
+  protokolüne geçirilmez, stream_tools.json'daki yanlış kayıtlar silinir. "Düşünme bitti" bekleme metni artık
+  sağlayıcının sonda gönderdiğini söylemiyor.
+- **Anlık silme:** sohbetler hemen kaybolur (iyimser liste, siliniyor / silindi bildirimi); sunucu görevlerini paralel
+  durdurur, geliştirme sunucularını kapatır, satırları siler, `session.deleted` yayınlar, klasörü arka planda siler
+  (node_modules tüm uygulamayı kilitliyordu). Çalışan sohbetin mesajları silinince 409 yerine görev durdurulur.
+  `db.add_message` silinmiş sohbete yazmaz.
+- **İstek seli yok:** `/api/models/health` değişiklik olunca `_health_watch` ile WebSocket'ten itilir (sayfa açılışta,
+  odakta en fazla 30 sn'de bir ve dakikada bir sorar); bağlam paneli görev sırasında 4 sn yerine 30 sn'de bir yenilenir.
+- **system_info part=software:** çalışma klasörü ve bağımlılık dosyaları, kabuklar, CLI araçları, uygulama Python
+  paketleri, global npm paketleri, MCP sunucuları ve araçları, etkin arama motorları, kullanılabilir stok / görsel
+  servisleri, GitHub bulma ve indirme yolları, yetenekler, ajanlar, komutlar, sağlayıcılar.
+- **Adımlar Markdown olarak:** her görevin adım listesinde kopyala / .md indir düğmeleri (`stepsMarkdown`).
+- **Canlı testten düzeltmeler:** geçmişteki eski dosya gövdeleri tek satır olur (`_gone_body`) - model "ilk 300
+  karakter + kısaltma notu" kalıbını yeni dosyalara kopyalıyordu, dört yazım reddedildi; path'siz write_file append
+  yazılmakta olan dosyaya gider; search_code `regex=` içinde gönderilen deseni alır; browser_wait (en çok 60 sn) boş
+  kalan ve hata veren sayfada hemen biter; browser_navigate yerel SPA'nın çizilmesini 20 sn'ye kadar bekler; konsol
+  kayıtları URL'leri ve başarısız isteklerle gelir; HTML JS kontrolü file:// altında yalnız sunucuda çalışan
+  referansları atlar; hazırlanıyor adımı dosya adını (ya da henüz gelmediğini) gösterir.
+
+## Proje Durumu — v0.14.2
+Kod taraması (ruff, pyflakes, ön yüzde ESLint, pytest 87, mock e2e 43/43) ve büyük gerçek model testi: Expo +
+TypeScript "market süper uygulaması" evren glm-5.3 (503 -> evren auto) ve gemma-4-31b ile uçtan uca kuruldu.
+- **Dürüst bitiş:** `missing_deliverables` isteğin adını verdiği kaynak dosyaları da denetler (`REQUESTED_SOURCE`,
+  ör. `data/mockProducts.ts`); `_on_disk` node_modules / build klasörlerine girmez. Düzeltme notları uygulamadan
+  geldiğini ve sonraki cevabın tam son cevap olması gerektiğini söyler (rapor "düzelttim" ile değişiyordu).
+- **Yazımda sözdizimi denetimi:** `write_file` / `edit_file` sonrası `syntax.syntax_errors` (Python `compile`, diğer
+  diller tree-sitter; `_syntax_note`); bozuk dosya ayrıştırılana kadar `unresolved` kalır (`track_syntax`).
+- **Sorun başına hata ayıklama sınırı:** `max_debug_attempts`, çalışan bir komuttan ya da daha az hata satırından
+  sonra yeniden başlar (`ran_ok`, `last_err_count`); yakınsayan tsc döngüsü 5'te kesiliyordu.
+- **Kabuk argv:** `argv` + `shell=powershell|bash|cmd` ile programı PATH'te olmayan komut (`Move-Item`, `mv`) o kabukta
+  çalışır (`_shell_join`), "kurulu değil" denmez.
+- **Takılma sınırı:** `_heartbeat`'in uyarlamalı 45 sn sınırı düşünmenin hemen ardından uygulanmaz (EVREN araç
+  çağrısını ancak bitince gönderir); mesaj, sınırın akışın hızından geldiğini söyler.
+- **Devre kesici yok (kullanıcı isteği):** hata sayısı artık araçları kapatmaz (`max_debug_attempts` aynı hata
+  eşiği oldu, varsayılan 3; `STUCK_STOP` kaldırıldı, `fail_streak` her 4'te uyarır). Aynı hata yeniden gelirse model
+  araştırıp denenmemiş bir yol seçer; yalnızca birebir tekrarlanan çağrılar (`round_sigs`) durdurulur.
+- **Her şeyi kurabilme:** `mobile.install_java` / `mobile_env action=java` (Adoptium API'den taşınabilir Temurin 17,
+  data/mobile/jdk; MSI yok, yönetici yok; `setup` kendisi çağırır); MSI 1618 için `ERROR_PLAYBOOK` (taşınabilir / bekleme).
+- **Her sayfada denetim:** `BrowserAgent.news()` her sayfa işleminden sonra console hatalarıyla birlikte başarısız
+  istekleri (4xx/5xx, yüklenemeyenler) bildirir ve önce düzeltilmesini ister; `browser_check` ağ hatalarını da listeler.
+- **Uzun görevler:** ilerleme özeti görevde yazılan tüm dosyaları listeler (diskte var; düzenlenir, yeniden yazılmaz);
+  çalışma kuralları: adımın dosyalarını planla, hepsini tek cevapta yaz, sonra bir kez denetle.
+- **Bekleme:** "sağlayıcı yoğun olabilir" yerine `after_think` aşaması ("düşünmeyi bitirdi, cevabını yazıyor").
+- **Arayüz:** en alta git butonu ve video göstergesi artık yana kaymıyor (animasyon Tailwind 4 `translate`'ine ikinci
+  bir -50% ekliyordu).
+- **Gerçek tarayıcıda son test:** `_verified` başlatılmış sunucuyu artık test saymaz; yalnızca sayfayı açmak
+  (tarayıcı araçları, web_screenshot, mobile_env) sayılır. Çalışma kuralları / SYSTEM_CONTRACT / mobil beceri: web ve
+  Expo web uygulamaları browser_navigate ile açılır, her console / ağ hatası giderilir. `PAGE_ERR`, `HTTP 5xx`,
+  `JS error`, 404 js/css, reddedilen paketleri ve sayfa denetimi notunu tutar. Başarısız istekler yanıt anında
+  kaydedilir (`BrowserAgent.bad`); 404 / 500 istek kayıtlarında önceden durum kodu yoktu.
+- **edit_file:** tutan bloklar kaydedilir, tutmayanlar güncel dosyayla bildirilir (7K altıysa tamamı).
+- **todo:** kısa güncellemeler `advance` / `done` / `start` / `add` (`todo_patch`); her sonuçtaki hatırlatma artık tüm
+  listeyi yeniden göndermeyi istemiyor (bir Expo görevinde 26 kez tam liste yazılmıştı).
+- **Tur 6 sonrası düzeltmeler:** `todo_patch` sayıları her biçimde okur ("4,5,6", "4-8"); `_babble_cut` farklı dillerde art arda gelen minik satırları ("BOOM.", "LFG.", "火.") keser, sonraki istek tekrar cezasıyla gider; edit_file her anahtar yazımını alır (`oldText`, `old_str`, iç içe `changes` / `replacements`); olmayan dosya için klasörün gerçek içeriği listelenir; yerel sayfalar tarayıcı önbelleği kapalı yüklenir; canlı alan son notu yalnızca ondan sonra iş yapılmadıysa gösterir; döngü imzası defter tutma çağrılarını (`BOOKKEEPING`) saymaz, araçları yalnızca 6 birebir aynı tur kapatır.
+- **Sohbet medyası:** cevaplardaki yerel dosya bağlantıları (`[x](screenshots/a.png)`) uygulamada açılır (düz bağlantı olarak uygulamanın kendi sayfasına gidiyor, sohbet yenilenmiş gibi görünüyordu); cevap resimleri 460×256 ile sınırlı; görev ekran görüntüleri kompakt kaydırmalı sıra (telefon görüntüleri telefon çerçevesinde, masaüstü tarayıcı çerçevesinde). `wrong_language` diğer Latin dillerini de yakalar (Türkçe sohbette Fransızca cevap); Windows uzun yol hataları için `ERROR_PLAYBOOK`.
+- **Tanıtım videosu:** tanitim/video (TR/EN, 16:9 ve 9:16), gerçek panel sahneleri, Gemini seslendirme, CC BY fragman müziği.
+- **Diğer:** zaten bitmiş süreçte `stop` hata değil; yeniden derlenmiş paketin dosyaları yoksa ön yüz bir kez kendini
+  yeniler (`vite:preloadError`, 404 stil dosyası).
+- **Expo:** `create-expo-app --template typescript` (TypeScript paketini iskele yapar) ve `@types/*` 404 için
+  `ERROR_PLAYBOOK`; `mobile-app-test` becerisine iskele bölümü (`blank-typescript` / `tabs`, `npx expo install`).
+- **Diğer düzeltmeler:** projesiz sohbetin çatalı klasörünü de kopyalar; `messages.jsonl` temizliği yarım satırı
+  atlar; `process_manager` 64 KB üstü `\r` ilerleme çubuklarını boşaltır, öldürülen süreci sonsuza dek beklemez;
+  `mobile.py` (log satırsız AVD listesi, adb yok, zaman aşımında kill); PROJECT_STATE / summary.md başlıkları
+  İngilizce; başlatıcı ve e2e çalıştırıcı Windows konsolunda UTF-8 yazar.
+
+## Proje Durumu — v0.14.1
+- **Mobil test:** `tools/mobile.py` (durum / kurulum / başlatma / adb / ekran görüntüsü / Maestro; Android SDK, emülatör, Pixel AVD data/mobile altında; `java_home()` PATH dışındaki JDK 17+'yı bulur), `mobile_env` aracı (`mobile` grubu), install.bat / install.sh'in istenince çağırdığı `backend/mobile_setup.py` (`AIIQ_MOBILE`), `mobile-app-test` yeteneği.
+- **AI video:** `generate_video` (`imagegen.generate` ile ilk kare, sonra `animate.animate`), `/api/video/engines` (HF Space çalışma durumu), Ayarlar `VideoEnginesCard`, (+) > Oluştur > AI klip.
+- **Araçlar:** `venv_pip` / `PIP_CALL` her pip çağrısını uygulama Python'una yönlendirir (argv dahil); `_unquote_arg`; PATH'te olmayan program için `INSTALL_HINT`; `fetch_url save=` + `_download`; `_github_repo` (dosya dosya 4. okuma -> ZIP); görev klasöründen `cd`; `start` içinde `_port_of` / `_port_busy`; `ERROR_PLAYBOOK` (+ gh auth, yanlış bayraklar); make_doc'ta `placeholder_marks`; stok fotoğraf için `_provider_of`.
+- **Orkestratör:** `_auto_todo` yalnızca devam eden maddeyi kapatır; todo birleştirme bitmiş maddeyi yeniden açmaz ve tek "devam ediyor" bırakır; başlık yalnızca `title_auto == 1` iken; `_step` `ACTION_ECHO` satırlarını (tam satır) temizler; bağlantı kopmasında 1 sn sonra yeniden deneme; yetenekler `triggers:` ile otomatik yüklenir (docs, video-studio, localhost-project, mobile-app-test).
+- **Ön yüz:** `RangeField` ∞ / Kapalı / Otomatik düğmeleri; `Markdown` resim çözümleyici (sohbet klasörü); `stripActionEcho`; `RichInput` ertelenmiş execCommand; `DocPreview` slayt yerleşimi (`tools/slides_view.py`: konumlu yazı / resim / tablo / grafik, yer tutucu varsayılanları) ve Excel ızgarası (formül çubuğu, birleşik hücreler, genişlikler, dolgular); rehber bölümleri create / testing / settings-buttons.
+- **Son düzeltmeler (canlı paket evren auto ve gemma-4-31b ile 9/9):** `editing.parse_blocks` blok türevlerini, JSON düzenleme listelerini ve unified diff'i kabul eder, `edit_file` old/new takma adlarını ya da dosyanın tamamını alır; `stream_parser.attrs` tek tırnaklı öznitelikleri okur; `mcp` aracı `arguments`'ı JSON metni ve üst düzey alanlar olarak alır, eksik zorunluları söyler; `PLACEHOLDER` HTML etiketlerini yakalamaz; `meta.docs` betikle üretilen belgeleri listeler (önizleme kartları); `_make_title` akıl yürüten modellerde geniş bütçeyle, sonra yardımcı modelle yeniden dener; `request_steps` numaralı isteklerden yapılacaklar listesini açar; kaynaklı cevap ajanlarına bir kez araştırma hatırlatılır.
+- **Büyük görev düzeltmeleri (evren auto / gemma-4-31b / glm-5.3 ile 15-20 dk gerçek testler):**
+  - Model değişimi ve devir: dosya ortasındaki takılmada `_busy_alternative` için `retries >= 2` gerekir; bulut sağlayıcılarda `_heartbeat(adaptive=True)`; quota / payment / plan_required havuz olmadan da başka modele geçer; her geçiş noktasında `HANDOVER` notu.
+  - Döngü ve üzerine yazma koruması: yazma / ekleme / kurtarmada `editing.collapse_repeats`, akış sırasında `_file_loop_check` (ProviderError `looping`, `run.file_loops` -> `frequency_penalty`); kurtarılan yolun düz yazımı eklemeye döner; okunmadan üzerine yazılan 1.500 karakterden büyük dosyalar `.session/backups`'a yedeklenir.
+  - Yapılacaklar ve test: `todos_auto` + modelin listesiyle birleştirme; yazılı plandan `plan_steps`; `tool_turns == 4` iken tek seferlik liste hatırlatması; `VERIFY_ASK` / `VERIFY_TOOLS` test edilmemiş çalıştır-ve-test yanıtını bir kez geri gönderir (`ai_note_not_verified`).
+  - Araçlar: `read_file` `ctx.read_limit`'e (pencerenin %15'i, 12K-40K) kadar tam satır ve sonraki aralığı verir, aynı aralığın tekrarı `read_seen`'den yanıtlanır; `SERVER_CMD` `npm run web/preview`, `expo start`, `flutter run`, `artisan serve`'ü kapsar; başarısız yazım adımının ayrıntısı araç çıktısıdır; `JAVA_HINT` ve `mobile-app-test` önce tarayıcıyı, kurulumda yalnız paket yöneticisini kullanır.
+  - Ön yüz: `ProviderIssue` ve `toolErrorLine` (`te_*`, `te_binary` dahil).
+  - Tarayıcı: `BrowserAgent.target()` (eskiyen ref -> `remember_refs`'teki rol + ad, etiket / placeholder / tam metin önceliği, ilk görünür eşleşme, gizli eleman hemen bildirilir), örtülü elemanda betikle tıklama, yerel sitelerde ve model işlem yaptıktan sonra `dismiss_popups(cookie_only)` (`acted`), `_batch_step` / `BATCH_ALIASES`; `start` sohbetin kendi sunucusunun portunu betik dosyasından okur; `stop` port veya tek sunucuyu kabul eder; tekrarlanan etkisiz `edit_file` hata sayılır.
+  - `fail_streak` model turu başına bir sayılır (`turn_idx` / `fail_turn`); `_summarize_progress` özeti yerine geçtiği metnin dörtte biriyle sınırlar; `verify.MAKERS` resim retinde `stock_photo` / `generate_image` önerir; `CD_ONLY` satır sonunda durur; `FIELD_NEAR_JS` (for= olmayan etiket -> alanı); `_target_keys` (element / target / locator).
+  - `SCRIPT_ONLY` tek başına betik adını yorumlayıcısıyla çalıştırır; `read_file` SQLite dosyasını (tablolar, satırlar) açıklar, diğer ikili dosyaları reddeder; `Run.outcomes` aynı çağrının üçüncü aynı sonucunu hataya çevirir; `request_parts` model liste açmazsa 3. turda listeyi açar; açılır liste seçenekleri metin/değerle eşlenir, `browser_form` `{etiket: değer}` alır.
+  - `local_page_instead` (web_screenshot, browser_check, browser_navigate): ölü localhost portunda sayfanın HTML dosyası açılır; `_verified` / `TEST_CMD` (kurulum test sayılmaz); `files_nudged` (yazılmayıp cevaba dökülen kod); `todo` kullanıcının dilini ister; `shell=php|python|node` ile dosya adı dosyayı çalıştırır.
+
+  - Son tur: her çalışma isteminde `SYSTEM_CONTRACT` (prompts); `PLAN_GATED` + `plan_refusals` (plan kapısı, request_parts yedeği); `_photo_for` kaldırıldı (resim yazımı stock_photo çağrısıyla reddedilir); `round_sigs` döngü dedektörü, `counted` (yalnız sayı değişen döngüler), `MEDIA_CAP`, `tools_off`; `failure_signature`; `shrink_old_steps` (eski araç trafiği kısaltılır, KEEP_RECENT=6); `ctx_peak` -> `context_stats._peak` (ContextPanel `ctx_peak`); make_doc'ta `_anchor_images`, `docs_gen._image_bytes` file: URI; yorumlayıcı bayrakları (`shell=php -S ...`) `php -S ...` olarak çalışır; alt süreçlerde `PYTHONUTF8`; `_wait_online`; `test_every_tool_runs_its_own_function`.
+  - Sonra: `APP_MARKS` / `app_placeholder` uygulamanın kısaltma notlarını dosya içeriği olarak reddeder; `page_state` / `PAGE_ERR` sayfası hata gösteren görevi açık tutar; `<option>` tıklaması üst select'te seçer; yerel sitelerde confirm() kabul edilir; `OLD_STEP_MARK` (`SHRUNK` ile çakışıyordu).
+
+## Proje Durumu — v0.13.0
+Medya ve araç turu; EVREN `auto` ve GLM 5.3 ile canlı test edildi; 49 birim testi (`tests/test_checks.py`, `test_media_services.py`, `test_studio.py`, `test_tools.py`) + 43 uçtan uca denetim.
+- **Servisler (`tools/services.py`):** anahtarlı görsel (HF, Together, OpenAI, Gemini, Stability, Cloudflare) ve stok (Pexels, Pixabay, Unsplash) servisleriyle sistem servislerinin (Pollinations, Openverse, Commons) `CATALOG`'u; `run()` kullanılabilenleri sırayla dener, `QuotaError` servisi sıfırlanana kadar engeller, en son sistem servisi cevap verir; kullanım `data/service_usage.json`'da; `/api/services`, `/api/media/test/{id}`, `/api/stock/test/{id}`.
+- **Video motoru (`tools/video_edit.py`):** zaman çizelgesi JSON'u (sahneler, klipler, müzik, ses, logo, efektler, görünüm, oran), yama biçimi (`scenes{"n":…}`, `clips{"n":…}`, `add_*`, `remove_*`), `numbered_view` (modelin gördüğü: `#` + klip türü), yazı stilinin yazı olmayan klibe gitmesini reddeden koruma, serbest biçimli yazı (`free_text`), `EFFECTS` + `effect_chain`, zoompan/xfade, loudnorm + sidechain kısma, `-/filter_complex` ile filtre grafiği; projeler `<ad>.timeline.json`.
+- **Stüdyo API'si (`main.py`):** `/video/media`, `/video/project` GET/PUT, `/video/render`, `/video/ai` (hatayla beslenen bir yeniden denemeli model yaması), `/video/voice`, `/api/video/music` (`tools/music.py`, 8 çevrimdışı stil), `/api/music/library` (yeniden deneme/yedek sorgulu Openverse), `/music/download` (+ CREDITS.txt), `/api/stt`, logo uç noktaları (`tools/logo.py`). `tools/animate.py`: `gradio_client` ile HF ZeroGPU Space'lerinde resimden video.
+- **Ön yüz:** `VideoStudio.jsx` (sürüklenip boyutlanan yazı ve katmanlı sahne, denetçi, zaman çizelgesi, `focus()` = neye tıklanırsa ayarlarını açıp oraya gider, müzik kütüphanesi, seslendirme, efekt önizlemesi, canlı AI günlüğü; telefon düzeni: sabit sahne / araç çubuğu / zaman çizelgesi + kayan panel, `pointer:coarse` dokunma tutamaçları), `VoiceLibrary.jsx`, `LogoMaker.jsx`, (+) menüsünde renkli Oluştur bölümü, `lib/errors.js`; backend'deki her `fail()` kodunun TR/EN `err_<kod>` çevirisi var.
+- **MCP (`mcp_client.py`):** OAuth 2.1 (bilgi keşfi, DCR, PKCE, `/api/mcp/{id}/oauth`, geri dönüş), `split_command` (npx `-y`), `mcp_search` aracının arkasında `search_servers` (kayıt, npm, GitHub; resmiler önce).
+- **Yetenekler:** `video-studio`, `localhost-project` (her yığını localhost'ta: tanı, Win/macOS/Linux'ta çalışma ortamı/paket/veritabanı kur, başlat, test et, raporla). Yetenek dosyasında isteğe bağlı yeni `triggers:` regex'i (`catalog.matching_skills`): eşleşen isteğin sistem istemine "önce use_skill X" satırı eklenir.
+- **Döngüler ve hata ayıklama (PHP projesinde gerçek EVREN çalışması):** `checks.ERROR_PLAYBOOK` / `error_playbook()` (yaygın hatalar için yollar); hata ayıklama dalı `same_rounds` sayar ve ikinci aynı hatada pes etmek yerine denenmiş komutları listeleyip farklı yol ister (3'te, sınırsız modda 6'da bırakır); `Run.fail_streak` (`STUCK_WARN`=4 not, `STUCK_STOP`=10 araçlar durur, cevap istenir); `Run.fs_epoch` hiçbir şey değişmeden tekrarlanan `list_dir` / `read_file` / `search_code`'u reddeder; okuma araçları `run.blocked`'a asla girmez. `fetch_url` `save=` + arşiv/kurulum dosyalarını otomatik indirme (`_download`, `DOWNLOAD_EXT`), `_github_repo` bir deponun dosya dosya 4. okumasını ZIP talimatına çevirir, GitHub API 403/429 açıklanır; `list_dir` yolları çalışma klasöründen, olmayan yollar için `_did_you_mean`. Yetenekler `triggers:` ile otomatik yüklenir (araçları daraltmadan), `ai_note_skill_auto`.
+- **Testler:** `tests/conftest.py`, herhangi bir test modülü yüklenmeden `AIIQ_DATA`'yı geçici klasöre yönlendirir; gerçek `data/` kullanılacaksa çalışmayı durdurur (önceki bir sıralama bir testin gerçek bir anahtarı silmesine yol açmıştı; geri yüklendi). `run_e2e.py` `AIIQ_E2E_KEEP=1` ile geçici klasörünü saklar.
 
 ## Proje Durumu — v0.12.0
 Zayıf model turu: EVREN `auto` (bulut) ve Ollama Qwen2.5-Coder 7B (yerel CPU) ile gerçek testler; depoda 43 uçtan uca sahte model denetimi + 6 birim testi.

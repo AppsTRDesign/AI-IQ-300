@@ -44,6 +44,22 @@ call npm install || (popd & exit /b 1)
 call npm run build || (popd & exit /b 1)
 popd
 
+rem Mobile app testing (Android emulator + Maestro UI flows) for the agent: several GB, so asked (AIIQ_MOBILE=1: yes,
+rem AIIQ_MOBILE=0: no). It can also be set up later by the agent itself (mobile_env action=setup).
+set "MOB=%AIIQ_MOBILE%"
+if "%MOB%"=="" set /p MOB="Android/iOS uygulama test ortami kurulsun mu? / Set up the mobile app test environment? (E/H, Y/N) [H]: "
+if /i "%MOB%"=="e" set MOB=1
+if /i "%MOB%"=="y" set MOB=1
+if not "%MOB%"=="1" goto :mobile_done
+python backend\mobile_setup.py
+if errorlevel 2 (
+  echo Java 17 kuruluyor / installing Java 17...
+  winget install --id EclipseAdoptium.Temurin.17.JDK --exact --silent --accept-source-agreements --accept-package-agreements >nul 2>nul
+  python backend\mobile_setup.py
+)
+if errorlevel 1 echo [UYARI] Mobil test ortami kurulamadi; ajan sonra mobile_env action=setup ile kurabilir.
+:mobile_done
+
 echo.
 echo Kurulum tamamlandi. Baslatmak icin: run.bat
 endlocal

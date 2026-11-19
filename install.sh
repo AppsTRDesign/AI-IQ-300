@@ -48,6 +48,14 @@ if [ "${AIIQ_SKIP_SYSTEM_TOOLS:-0}" != "1" ]; then
   install_tool gh gh gh gh || true
   install_tool php php php-cli php-cli || true
   install_tool composer composer composer composer || true
+  # Fonts for video titles, captions and logos (Windows and macOS ship Arial / Georgia / Impact; Linux gets DejaVu).
+  if [ "$(uname)" = "Linux" ] && ! ls /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /usr/share/fonts/TTF/DejaVuSans.ttf \
+       /usr/share/fonts/dejavu/DejaVuSans.ttf >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y fonts-dejavu-core || true
+    elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts || true
+    elif command -v pacman >/dev/null 2>&1; then sudo pacman -S --noconfirm ttf-dejavu || true
+    else echo "[UYARI/WARN] DejaVu yazi tiplerini kurun / install DejaVu fonts (video text)"; fi
+  fi
 fi
 
 echo "Python: $($PY --version) | Node: $(node --version)"
@@ -58,6 +66,22 @@ echo "Python: $($PY --version) | Node: $(node --version)"
 .venv/bin/python -m playwright install chromium || echo "[UYARI/WARN] Playwright Chromium kurulamadi / could not be installed"
 
 (cd frontend && npm install && npm run build)
+
+# Mobile app testing (Android emulator + Maestro; iOS simulator on macOS with Xcode): several GB, so asked
+# (AIIQ_MOBILE=1 yes, AIIQ_MOBILE=0 no). The agent can also set it up later (mobile_env action=setup).
+MOB="${AIIQ_MOBILE:-}"
+if [ -z "$MOB" ] && [ -t 0 ]; then
+  read -r -p "Android/iOS uygulama test ortami kurulsun mu? / Set up the mobile app test environment? (y/N): " MOB || MOB=""
+fi
+case "$MOB" in 1|y|Y|e|E)
+  if ! java -version 2>&1 | grep -Eq 'version "(1[7-9]|2[0-9])'; then
+    if command -v brew >/dev/null 2>&1; then brew install --cask temurin@17 || true
+    elif command -v apt-get >/dev/null 2>&1; then sudo apt-get install -y openjdk-17-jdk || true
+    elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y java-17-openjdk || true; fi
+  fi
+  .venv/bin/python backend/mobile_setup.py || echo "[UYARI/WARN] mobile test setup failed; the agent can run mobile_env action=setup later"
+  ;;
+esac
 
 chmod +x run.sh
 echo

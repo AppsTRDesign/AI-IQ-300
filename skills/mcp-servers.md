@@ -6,13 +6,16 @@ title_en: Add MCP servers
 description: Finds an MCP server for a need (GitHub, databases, Slack, Notion, files, browsers...) on npm, PyPI or GitHub, connects it with mcp_add, checks its tools and uses them through the mcp tool.
 description_tr: Bir ihtiyaç için MCP sunucusu bulur (GitHub, veritabanları, Slack, Notion, dosyalar, tarayıcılar...), npm, PyPI veya GitHub'dan mcp_add ile bağlar, araçlarını kontrol eder ve mcp aracıyla kullanır.
 description_en: Finds an MCP server for a need (GitHub, databases, Slack, Notion, files, browsers...) on npm, PyPI or GitHub, connects it with mcp_add, checks its tools and uses them through the mcp tool.
-tools: mcp_add, mcp, run, web_search, fetch_url, research, read_file, list_dir, todo
+tools: mcp_search, mcp_add, mcp, run, web_search, fetch_url, research, read_file, list_dir, todo
 ---
 MCP (Model Context Protocol) servers add tools. Connect one only when the built-in tools cannot do the job.
 
 ## 1. Find the server (fast)
+- Call `mcp_search` with the need in English ("postgres", "notion", "figma"): it searches the official MCP registry,
+  npm and GitHub at once and returns the best candidates with ready mcp_add arguments, the env vars they need and
+  whether a sign-in is needed. Pick the vendor's own / reference server when listed.
 - Official reference servers: github.com/modelcontextprotocol/servers (filesystem, git, fetch, memory, time...).
-  Registry: registry.modelcontextprotocol.io. Search: `npm search mcp <topic>` or web_search "<topic> MCP server".
+  Only when mcp_search finds nothing: web_search "<topic> MCP server".
 - Prefer the vendor's own server (GitHub: `ghcr.io/github/github-mcp-server` or the hosted
   `https://api.githubcopilot.com/mcp/`; Notion, Stripe, Supabase, Cloudflare... publish theirs).
 - Read its README (fetch_url) for the exact command and required env vars / tokens.
@@ -28,6 +31,11 @@ Tokens the user gave go in the body as JSON (`{"GITHUB_PERSONAL_ACCESS_TOKEN": "
 secret store, never in files. If the server does not start, mcp_add returns its error: run the same command once
 with `run` (timeout 30) to see the output, fix (missing token, Node/Python version, wrong entry file), call
 mcp_add again with the same id.
+
+A hosted server that answers "needs sign-in" (OAuth: Krea, Poko, Notion, Linear...) cannot be signed in by you: tell
+the user to click **Sign in** next to it in Settings > MCP (the service's own page opens; nothing else to type).
+Commands run without a keyboard: never use an installer that asks questions (`npx skills add`, `npm init`); an
+installer or login command is not an MCP server.
 
 ## 3. Use
 mcp_add returns the tool names; call them with `mcp` (server = the id). The server stays connected for later chats

@@ -104,6 +104,7 @@ svglib>=1.5
 #  - Markdown / HTML to PDF, DOCX or PPTX: use the make_doc tool (it already does this with a professional template);
 #    do not build your own converter.
 markdown>=3.7
+markdown-it-py>=3.0
 jinja2>=3.1
 
 # =============================================================================
@@ -291,3 +292,5 @@ ruff>=0.7
 #  - State & Data Fetching (zustand or axios / native fetch + WebSocket): Manage client state and real-time streaming events from the FastAPI backend.
 #  - Desktop Wrapper (electron, if desktop mode): Bridges Node.js/OS native APIs (file dialogs, system tray, window controls) with the React frontend via IPC (ipcRenderer / ipcMain).
 # =============================================================================
+gradio_client>=1.3  # free image-to-video (Hugging Face ZeroGPU Spaces) for animate_image
+uv>=0.5  # uvx: runs MCP servers published on PyPI (mcp_add / Settings > MCP), on every platform

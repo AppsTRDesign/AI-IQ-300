@@ -10,6 +10,11 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 
 def main() -> None:
+    for s in (sys.stdout, sys.stderr):  # Windows consoles (cp1254 / cp437) cannot print every log line's symbols
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(description="AI IQ 300")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (loopback by default)")
     parser.add_argument("--port", type=int, default=8300)

@@ -6,7 +6,7 @@
 A full-scale software development and command center: autonomous, multi-agent, working with local and cloud LLMs.
 
 ## Current State
-- **Date:** 2026-11-17
+- **Date:** 2026-11-19
 - **Active task:** v0.12.0 done (weak models: plain-text tool calls run, requested files checked on disk, system_info, chat search, model record, LM Studio memory relief, test suite, orchestrator split). v0.11.0 done (full audit: lean prompt, continuity after drops and model switches, RAM / VRAM guard that keeps the model loaded, exact WebSocket reconnects, race fixes). v0.10.7 done (bulk select/delete, abilities from the first message, tool detection in 14 languages, no-split writing). v0.10.6 done (web design + stock_photo, page JS/broken-image testing, context anchored on real counts, local window growth, Markdown live answers). v0.10.5 done (real token data, vision model, settings audit). v0.10.4 done (settings, local GPU, MCP, toolchain, skills). v0.10.3 done (live tests: Evren auto, NVIDIA Nemotron 3 Ultra 550B, Groq).
 - **Last major release:** v0.10.0, which added:
   - a professional document engine (Chromium PDF/HTML + KaTeX, designed DOCX/PPTX/XLSX)
@@ -28,6 +28,116 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - toggle popovers, a drawing pad, folder upload and goal mode
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
+
+## Project Status: v0.14.3
+Continuity round, proven by a 4 h 16 min real run on `evren:qwen3.8-flash-next` (the BakkalX Expo + Express +
+admin + iyzico/PayTR task: 301 model turns, 9/9 to-dos, API smoke test 24/24, `tsc --noEmit` 0 errors on both sides,
+one dropped connection recovered in 1 s). pytest 102, mock e2e 43/43.
+- **Reasoning survives a break:** `_carry_thinking` puts the reasoning of a turn that broke off (pause, timeout, drop,
+  model switch) into the next request (`THINK_CARRY`, at most 14K characters, one message, before a continued answer)
+  and that request goes without reasoning (`run.no_think`; EVREN: `chat_template_kwargs.enable_thinking=false`, measured
+  0 reasoning tokens; `reasoning_effort` is ignored there). Before, every retry thought the whole task through again
+  (18 minutes in "thinking" after a few drops). Timeouts / stalls retry the same model twice before a switch.
+- **Streaming providers are not "silent writers":** probes showed EVREN streams native tool arguments chunk by chunk
+  (2,289 chunks, longest gap 2.7 s). `router.mark_streams_tool_args` learns this per provider (data/streams_args.json);
+  such a provider is never cut at 75 s as "sends tool calls only at the end", never switched to the text protocol, and
+  wrongly learned entries in stream_tools.json are dropped. The "after thinking" wait text no longer says the provider
+  sends at the end.
+- **Instant deletes:** chats disappear at once (optimistic list, busy / done toasts); the server stops their tasks in
+  parallel, stops their dev servers, deletes rows, publishes `session.deleted` and removes the folder in a worker thread
+  (node_modules used to block the whole app). Deleting messages of a working chat stops the task instead of a 409.
+  `db.add_message` writes nothing for a deleted chat.
+- **No request flood:** `/api/models/health` is pushed by `_health_watch` over the WebSocket only on a change (the page
+  asks at start, on focus at most every 30 s, and once a minute); the context panel refetches every 30 s during a task
+  instead of every 4 s.
+- **system_info part=software:** working folder and its dependency files, shells, CLI tools, app Python packages,
+  global npm packages, MCP servers and tools, active search engines, usable stock / image services, GitHub find and
+  download routes, skills, agents, commands, providers.
+- **Steps as Markdown:** copy or download (.md) buttons on every task's step list (`stepsMarkdown`).
+- **Fixes from the live run:** old file bodies in the history become one line (`_gone_body`) - the model copied the
+  "first 300 characters + shortened note" shape into new files and four writes were refused; write_file append without
+  path goes to the file being written; search_code takes a pattern sent in `regex=`; browser_wait (max 60 s) ends at
+  once on a page that stays blank with errors; browser_navigate waits up to 20 s for a local SPA to render; console
+  entries carry their URL and the failed requests; the HTML JS check skips server-only references under file://; the
+  preparing step names the file (or says the name has not arrived yet).
+
+## Project Status: v0.14.2
+Code scan (ruff, pyflakes, ESLint on the front end, pytest 87, mock e2e 43/43) plus a big real-model test: an Expo +
+TypeScript "market super app" built end to end on evren glm-5.3 (503 -> evren auto) and gemma-4-31b.
+- **Finishing honestly:** `missing_deliverables` also checks source files the request names (`REQUESTED_SOURCE`,
+  e.g. `data/mockProducts.ts`); `_on_disk` walks without node_modules / build folders. Correction notes say they come
+  from the app and that the next answer must be the complete final answer (the report was replaced by "fixed it").
+- **Syntax check on write:** `syntax.syntax_errors` (Python `compile`, other languages tree-sitter) after
+  `write_file` / `edit_file` (`_syntax_note`); a broken file stays `unresolved` (`track_syntax`) until it parses.
+- **Debug cap per problem:** `max_debug_attempts` restarts after a command that worked or fewer error lines
+  (`ran_ok`, `last_err_count`); a converging tsc loop was cut at 5.
+- **Shell argv:** `argv` plus `shell=powershell|bash|cmd` whose program is not on PATH (`Move-Item`, `mv`) runs in
+  that shell (`_shell_join`) instead of "not installed".
+- **Stall limit:** the adaptive 45 s limit of `_heartbeat` no longer applies right after reasoning (EVREN sends a
+  tool call only when complete) and its message says when the limit came from the stream's pace.
+- **No circuit breaker (user request):** a count of failures never closes the tools any more (`max_debug_attempts`
+  is now the same-error threshold, default 3; `STUCK_STOP` removed, `fail_streak` warns every 4). The same error
+  again makes the model research it and take an untried route; only identical repeated calls (`round_sigs`) stop.
+- **Install anything:** `mobile.install_java` / `mobile_env action=java` (portable Temurin 17 from the Adoptium API
+  into data/mobile/jdk, no MSI, no admin; `setup` calls it); `ERROR_PLAYBOOK` for MSI 1618 (portable / wait route).
+- **Per-page check:** `BrowserAgent.news()` reports failed requests (4xx/5xx, failed loads) with console errors after
+  every page action and asks to fix them first; `browser_check` lists network errors too.
+- **Long tasks:** the progress summary lists every file written in the task (exists on disk; edit, never rewrite);
+  work rules: plan a step's files and write them all in one reply, then check once.
+- **Waiting:** prep phase `after_think` ("finished thinking, writing its answer") instead of "provider may be busy".
+- **UI:** jump-to-latest button and video ping no longer drift sideways (keyframes stacked a second -50% on
+  Tailwind 4's `translate`).
+- **Real-browser final test:** `_verified` no longer counts a started server; only opening the page (browser tools,
+  web_screenshot, mobile_env) does. Work rules / SYSTEM_CONTRACT / mobile skill: web and Expo web apps are opened with
+  browser_navigate, every console / network error fixed. `PAGE_ERR` holds `HTTP 5xx`, `JS error`, 404 js/css, refused
+  bundles and the page-check note. Failed requests are noted at the response event (`BrowserAgent.bad`); request
+  log entries for 404 / 500 had no status before.
+- **edit_file:** blocks that match are saved, failed ones are reported with the current file (whole when < 7K).
+- **todo:** short updates `advance` / `done` / `start` / `add` (`todo_patch`); the per-result reminder no longer asks
+  to resend the whole list (26 full-list rewrites in one Expo task).
+- **Late round-6 fixes:** `todo_patch` reads numbers in any shape ("4,5,6", "4-8"); `_babble_cut` stops runs of tiny mixed-language lines ("BOOM.", "LFG.", "火.") with a repeat penalty next; edit_file takes any key spelling (`oldText`, `old_str`, nested `changes` / `replacements`); a missing file lists what its folder really has; local pages load with the browser cache off; the live slot shows the latest note only while nothing newer happened; round signatures skip bookkeeping calls (`BOOKKEEPING`) and only 6 identical rounds close the tools.
+- **Chat media:** local-file links in answers (`[x](screenshots/a.png)`) open in the app (as plain links they navigated to the app's own page and the chat looked reloaded); answer images are capped at 460×256; task screenshots are a compact scroll row (phone shots in a phone frame, desktop shots in a browser frame). `wrong_language` also catches other Latin languages (a French answer in a Turkish chat); `ERROR_PLAYBOOK` for Windows long-path errors.
+- **Promo video:** tanitim/video (TR/EN, 16:9 and 9:16), real panel scenes, Gemini narration, CC BY trailer music.
+- **Misc:** `stop` on a process that already ended is not an error; the front end reloads once when a rebuilt
+  bundle's hashed files are gone (`vite:preloadError`, 404 stylesheet).
+- **Expo:** `ERROR_PLAYBOOK` for `create-expo-app --template typescript` (scaffolds the TypeScript package) and
+  `@types/*` 404s; the `mobile-app-test` skill has a scaffold section (`blank-typescript` / `tabs`, `npx expo install`).
+- **Other fixes:** fork copies a project-less chat's folder; `messages.jsonl` cleanup skips half-written lines;
+  `process_manager` flushes `\r` progress bars over 64 KB and never waits forever on a killed process; `mobile.py`
+  (AVD list without log lines, adb missing, timeouts kill); PROJECT_STATE / summary.md headings in English;
+  launcher and e2e runner print UTF-8 on Windows consoles.
+
+## Project Status: v0.14.1
+- **Mobile testing:** `tools/mobile.py` (status / setup / start / adb / screenshot / Maestro; Android SDK, emulator, Pixel AVD in data/mobile; `java_home()` finds a JDK 17+ outside PATH), `mobile_env` tool (group `mobile`), `backend/mobile_setup.py` called by install.bat / install.sh on request (`AIIQ_MOBILE`), skill `mobile-app-test`.
+- **AI video:** `generate_video` (first frame via `imagegen.generate`, then `animate.animate`), `/api/video/engines` (HF Space runtime stage), Settings `VideoEnginesCard`, (+) > Create > AI clip.
+- **Tools:** `venv_pip` / `PIP_CALL` rewrite every pip call to the app Python (argv too); `_unquote_arg`; `INSTALL_HINT` for a program not on PATH; `fetch_url save=` + `_download`; `_github_repo` (4th file-by-file read -> ZIP); `cd` from the task folder; `_port_of` / `_port_busy` in `start`; `ERROR_PLAYBOOK` (+ gh auth, wrong flags); `placeholder_marks` in make_doc; `_provider_of` for stock photos.
+- **Orchestrator:** `_auto_todo` only ticks the item in progress; todo merge never reopens finished items and keeps one in progress; title only while `title_auto == 1`; `_step` strips `ACTION_ECHO` lines (whole line); connection-lost retry after 1 s; skills auto-load by `triggers:` (docs, video-studio, localhost-project, mobile-app-test).
+- **Front end:** `RangeField` ∞ / Off / Auto buttons; `Markdown` img resolver (chat folder); `stripActionEcho`; `RichInput` deferred execCommand; `DocPreview` slide layout (`tools/slides_view.py`: positioned text / pictures / tables / charts, placeholder defaults) and Excel grid (formula bar, merges, widths, fills); guide sections create / testing / settings-buttons.
+- **Late fixes (live suite 9/9 on evren auto and gemma-4-31b):** `editing.parse_blocks` accepts block variants, JSON edit lists and unified diffs, `edit_file` takes old/new aliases or the whole new text; `stream_parser.attrs` reads single-quoted tag attributes; the `mcp` tool takes `arguments` as a JSON string plus top-level extras and names missing required ones; `PLACEHOLDER` no longer matches HTML tags; `meta.docs` lists documents made by scripts (preview cards); `_make_title` retries reasoning models with a bigger budget, then the side model; `request_steps` opens the to-do list from numbered requests; sourced-answer agents are told once to research.
+- **Big-task fixes (15-20 min real runs on evren auto / gemma-4-31b / glm-5.3):**
+  - Model switching and handover: mid-write stalls need `retries >= 2` before `_busy_alternative`; `_heartbeat(adaptive=True)` for cloud providers; quota / payment / plan_required switch without a pool; `HANDOVER` note at every switch point.
+  - Loop and overwrite protection: `editing.collapse_repeats` at write / append / salvage plus `_file_loop_check` while streaming (ProviderError `looping`, `run.file_loops` -> `frequency_penalty`); a salvaged path's plain write appends; unread overwrites of files over 1,500 characters are backed up to `.session/backups`.
+  - To-do list and testing: `todos_auto` + merge of the model's list; `plan_steps` from a written plan; a one-time to-do nudge at `tool_turns == 4`; `VERIFY_ASK` / `VERIFY_TOOLS` send untested run-and-test answers back once (`ai_note_not_verified`).
+  - Tools: `read_file` returns whole lines up to `ctx.read_limit` (15% of the window, 12K-40K) with the next range, and same-range rereads are answered from `read_seen`; `SERVER_CMD` covers `npm run web/preview`, `expo start`, `flutter run`, `artisan serve`; the failed write step's detail is the tool output; `JAVA_HINT` and the `mobile-app-test` skill use the browser first and the package manager only.
+  - Front end: `ProviderIssue` and `toolErrorLine` (`te_*`, incl. `te_binary`).
+  - Browser: `BrowserAgent.target()` (stale ref -> role + name from `remember_refs`, label / placeholder / exact-text priority, first visible match, hidden reported at once), script click when covered, `dismiss_popups(cookie_only)` for local sites and after the model acted (`acted`), `_batch_step` / `BATCH_ALIASES`; `start` reads the script file of the chat's own server for its port; `stop` takes a port or the only server; repeated no-op `edit_file` fails.
+  - `fail_streak` counts one per model turn (`turn_idx` / `fail_turn`); `_summarize_progress` caps the summary at a quarter of what it replaces; the image refusal in `verify.MAKERS` names `stock_photo` / `generate_image`; `CD_ONLY` stops at the line end; `FIELD_NEAR_JS` (a label without for= -> its field); `_target_keys` (element / target / locator).
+  - `SCRIPT_ONLY` runs a lone script name with its interpreter; `read_file` describes SQLite files (tables, rows) and refuses other binaries; `Run.outcomes` turns the third identical result of the same call into a failure; `request_parts` opens the to-do list at tool round 3 when the model has none; select options matched by text/value, `browser_form` takes `{label: value}`.
+  - `local_page_instead` (web_screenshot, browser_check, browser_navigate): a dead localhost port opens the page's HTML file; `_verified` / `TEST_CMD` (installs are not tests); `files_nudged` (code printed instead of written); `todo` asks for the user's language; `shell=php|python|node` with a file name runs the file.
+
+  - Final round: `SYSTEM_CONTRACT` (prompts) in every work prompt; `PLAN_GATED` + `plan_refusals` (plan gate, request_parts fallback); `_photo_for` removed (image writes refused with the stock_photo call); `round_sigs` loop detector, `counted` (number-only loops), `MEDIA_CAP`, `tools_off`; `failure_signature`; `shrink_old_steps` (older tool traffic shortened, KEEP_RECENT=6); `ctx_peak` -> `context_stats._peak` (ContextPanel `ctx_peak`); `_anchor_images` in make_doc, file: URIs in `docs_gen._image_bytes`; interpreter flags (`shell=php -S ...`) run as `php -S ...`; `PYTHONUTF8` for child processes; `_wait_online`; `test_every_tool_runs_its_own_function`.
+  - Then: `APP_MARKS` / `app_placeholder` refuse the app's shortening notes as file content; `page_state` / `PAGE_ERR` hold a task whose page shows an error; `<option>` clicks select in the parent select; confirm() accepted on local sites; `OLD_STEP_MARK` (it collided with `SHRUNK`).
+
+## Project Status: v0.13.0
+Media and tooling round, tested live with EVREN `auto` and GLM 5.3; 49 unit tests (`tests/test_checks.py`, `test_media_services.py`, `test_studio.py`, `test_tools.py`) + 43 end-to-end checks.
+- **Services (`tools/services.py`):** `CATALOG` of keyed image (HF, Together, OpenAI, Gemini, Stability, Cloudflare) and stock (Pexels, Pixabay, Unsplash) services plus system ones (Pollinations, Openverse, Commons); `run()` tries usable ones in order, `QuotaError` blocks a service until its reset, the system service answers last; usage in `data/service_usage.json`; `/api/services`, `/api/media/test/{id}`, `/api/stock/test/{id}`.
+- **Video engine (`tools/video_edit.py`):** timeline JSON (scenes, clips, music, voice, logo, effects, look, aspect), patch format (`scenes{"n":…}`, `clips{"n":…}`, `add_*`, `remove_*`), `numbered_view` (what models see: `#` + clip type), a guard that refuses text styles sent to a non-text clip, free styled text (`free_text`: x/y %, `size_pct`, color, box, outline, shadow, align, animation), `EFFECTS` + `effect_chain`, zoompan/xfade, loudnorm + sidechain ducking, filter graph via `-/filter_complex`; projects saved as `<name>.timeline.json`.
+- **Studio API (`main.py`):** `/video/media`, `/video/project` GET/PUT, `/video/render`, `/video/ai` (model patch with one error-fed retry), `/video/voice`, `/api/video/music` (`tools/music.py`, 8 offline styles), `/api/music/library` (Openverse with retry/fallback queries), `/music/download` (+ CREDITS.txt), `/api/stt`, logo endpoints (`tools/logo.py` cut-out). `tools/animate.py`: image-to-video on HF ZeroGPU Spaces via `gradio_client`.
+- **Front end:** `VideoStudio.jsx` (stage with draggable/resizable texts and layers, inspector, timeline, `focus()` = click anything to open its settings and jump to it, music library, voice-over, effects preview, live AI log; phone layout: fixed stage / toolbar / timeline + scrolling panel, `pointer:coarse` touch handles), `VoiceLibrary.jsx` (VoicePicker, TTS, STT dialogs), `LogoMaker.jsx`, colorful Create section in the (+) menu, `lib/errors.js` service-error translation; every backend `fail()` code has `err_<code>` in TR/EN.
+- **MCP (`mcp_client.py`):** OAuth 2.1 (metadata discovery, DCR, PKCE, `/api/mcp/{id}/oauth`, callback), `split_command` (npx `-y`), `search_servers` (registry, npm, GitHub, official first) behind the `mcp_search` tool.
+- **Skills:** `video-studio`, `localhost-project` (any stack on localhost: detect, install runtimes/packages/DB on Win/macOS/Linux, start, test, report). New optional `triggers:` regex in a skill's frontmatter (`catalog.matching_skills`): a matching request gets a "use_skill X first" line in the system prompt.
+- **Loops and debugging (real EVREN run on a PHP project):** `checks.ERROR_PLAYBOOK` / `error_playbook()` (routes for common failures); the debug branch counts `same_rounds` and, instead of giving up on the second identical failure, lists the commands already tried and demands a different route (gives up after 3, or 6 with unlimited debugging); `Run.fail_streak` (`STUCK_WARN`=4 note, `STUCK_STOP`=10 tools paused, answer required); `Run.fs_epoch` refuses a repeated `list_dir` / `read_file` / `search_code` when nothing changed; read tools are never added to `run.blocked`. `fetch_url` `save=` + automatic download of archives/installers (`_download`, `DOWNLOAD_EXT`), `_github_repo` turns the 4th file-by-file read of a repository into the ZIP instruction, GitHub API 403/429 explained; `list_dir` paths from the working folder, `_did_you_mean` for missing paths. Skills auto-load by `triggers:` (without narrowing the tools), `ai_note_skill_auto`.
+- **Tests:** `tests/conftest.py` points `AIIQ_DATA` at a temp folder before any test module loads and stops the run if the real `data/` would be used (an earlier ordering let a test clear a real key; it was restored). `run_e2e.py` keeps its temp folder with `AIIQ_E2E_KEEP=1`.
 
 ## Project Status: v0.12.0
 Weak-model round: real tests on EVREN `auto` (cloud) and Ollama Qwen2.5-Coder 7B (local CPU); 43 end-to-end mock checks + 6 unit checks in the repo.
