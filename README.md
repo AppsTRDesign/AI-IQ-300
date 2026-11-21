@@ -24,7 +24,7 @@ AI IQ 300 is a **software development and automation hub** that runs on your own
 
 ## 🎬 Promo video
 
-<p align="center"><a href="https://www.youtube.com/watch?v=Fcy0ib8GEA4"><img src="video/aiiq300-promo.en.poster.jpg" alt="AI IQ 300 promo video" width="100%"></a></p>
+<p align="center"><a href="https://www.youtube.com/watch?v=Fcy0ib8GEA4"><img src="https://img.youtube.com/vi/Fcy0ib8GEA4/maxresdefault.jpg" alt="AI IQ 300 promo video" width="100%"></a></p>
 
 <p align="center"><b>▶ <a href="https://www.youtube.com/shorts/cm_WbMM4lJk">Watch the promo (YouTube 16:9)</a></b> · 🇹🇷 <a href="https://www.youtube.com/watch?v=IxbYD4iCyb0">Türkçe</a></p>
 
