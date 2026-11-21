@@ -1,9 +1,29 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 chcp 65001 >nul
 cd /d "%~dp0"
-echo === AI IQ 300 - Kurulum ===
+title AI IQ 300 - Setup
 
+rem Language of the messages below: Turkish on a Turkish Windows, English everywhere else (AIIQ_LANG=tr/en forces it).
+set "UILANG=%AIIQ_LANG%"
+if "%UILANG%"=="" for /f "usebackq delims=" %%l in (`powershell -NoProfile -Command "(Get-UICulture).TwoLetterISOLanguageName" 2^>nul`) do set "UILANG=%%l"
+if /i not "%UILANG%"=="tr" set "UILANG=en"
+set "AIIQ_LANG=%UILANG%"
+
+if /i "%UILANG%"=="tr" (
+  set "M_PY=Python 3.12 bulunamadi. https://www.python.org/downloads/ adresinden 3.12.x kurun ve tekrar deneyin."
+  set "M_NODE=Node.js bulunamadi. https://nodejs.org adresinden LTS surumunu kurun ve tekrar deneyin."
+  set "M_CHECK=Gereksinimler denetleniyor..."
+  set "M_FAIL=Kurulum tamamlanamadi. Ayrintilar icin data\logs klasorundeki kayda bakin."
+) else (
+  set "M_PY=Python 3.12 was not found. Install 3.12.x from https://www.python.org/downloads/ and run this again."
+  set "M_NODE=Node.js was not found. Install the LTS version from https://nodejs.org and run this again."
+  set "M_CHECK=Checking requirements..."
+  set "M_FAIL=Setup did not finish. See the log in the data\logs folder for details."
+)
+
+echo.
+echo   !M_CHECK!
 where py >nul 2>nul
 if %errorlevel%==0 (
   py -3.12 --version >nul 2>nul && set "PY=py -3.12"
@@ -12,61 +32,22 @@ if not defined PY (
   python --version 2>nul | findstr /b "Python 3.12" >nul && set "PY=python"
 )
 if not defined PY (
-  echo [HATA] Python 3.12 bulunamadi. https://www.python.org/downloads/ adresinden 3.12.x kurun.
+  echo   [x] !M_PY!
+  pause
   exit /b 1
 )
-where node >nul 2>nul || (echo [HATA] Node.js bulunamadi. & exit /b 1)
-for /f "delims=" %%v in ('node --version') do echo Node %%v
-
-rem Optional system tools the agent uses (video, git, GitHub, PHP/Composer): installed with winget when missing.
-rem A failure only prints a note; the app also fetches ffmpeg and Composer by itself (backend/app/toolchain.py).
-where winget >nul 2>nul
-if %errorlevel%==0 (
-  call :tool ffmpeg Gyan.FFmpeg
-  call :tool git Git.Git
-  call :tool gh GitHub.cli
-  call :tool php PHP.PHP.8.4
-) else (
-  echo [UYARI] winget yok: ffmpeg, git, gh, php elle kurulabilir. Uygulama ffmpeg ve Composer'i kendisi indirir.
+where node >nul 2>nul || (
+  echo   [x] !M_NODE!
+  pause
+  exit /b 1
 )
 
-if not exist .venv (
-  echo Sanal ortam olusturuluyor...
-  %PY% -m venv .venv || exit /b 1
+rem The installer itself (steps, progress bar, elapsed / remaining time, log): installer.py, standard library only.
+%PY% installer.py
+if errorlevel 1 (
+  echo   !M_FAIL!
+  pause
+  exit /b 1
 )
-call .venv\Scripts\activate.bat
-python -m pip install --upgrade pip
-pip install -r requirements.txt || exit /b 1
-python -m playwright install chromium
-
-pushd frontend
-call npm install || (popd & exit /b 1)
-call npm run build || (popd & exit /b 1)
-popd
-
-rem Mobile app testing (Android emulator + Maestro UI flows) for the agent: several GB, so asked (AIIQ_MOBILE=1: yes,
-rem AIIQ_MOBILE=0: no). It can also be set up later by the agent itself (mobile_env action=setup).
-set "MOB=%AIIQ_MOBILE%"
-if "%MOB%"=="" set /p MOB="Android/iOS uygulama test ortami kurulsun mu? / Set up the mobile app test environment? (E/H, Y/N) [H]: "
-if /i "%MOB%"=="e" set MOB=1
-if /i "%MOB%"=="y" set MOB=1
-if not "%MOB%"=="1" goto :mobile_done
-python backend\mobile_setup.py
-if errorlevel 2 (
-  echo Java 17 kuruluyor / installing Java 17...
-  winget install --id EclipseAdoptium.Temurin.17.JDK --exact --silent --accept-source-agreements --accept-package-agreements >nul 2>nul
-  python backend\mobile_setup.py
-)
-if errorlevel 1 echo [UYARI] Mobil test ortami kurulamadi; ajan sonra mobile_env action=setup ile kurabilir.
-:mobile_done
-
-echo.
-echo Kurulum tamamlandi. Baslatmak icin: run.bat
 endlocal
-exit /b 0
-
-:tool
-where %1 >nul 2>nul && (echo [OK] %1 & exit /b 0)
-echo %1 kuruluyor (winget %2)...
-winget install --id %2 --exact --silent --accept-source-agreements --accept-package-agreements --scope user >nul 2>nul || winget install --id %2 --exact --silent --accept-source-agreements --accept-package-agreements >nul 2>nul || echo [UYARI] %1 kurulamadi; elle kurabilirsiniz.
 exit /b 0

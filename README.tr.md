@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/sürüm-0.14.3-2563eb" alt="sürüm">
+  <img src="https://img.shields.io/badge/sürüm-0.18.5-2563eb" alt="sürüm">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -24,9 +24,9 @@ AI IQ 300, bilgisayarınızda çalışan ve ChatGPT/Claude tarzı sade bir sohbe
 
 ## 🎬 Tanıtım videosu
 
-<p align="center"><a target="_blank" href="https://www.youtube.com/watch?v=oiVHmz4ilxI"><img src="video/aiiq300-promo.tr.poster.jpg" alt="AI IQ 300 tanıtım videosu" width="100%"></a></p>
+<p align="center"><a href="video/aiiq300-promo.tr.mp4"><img src="video/aiiq300-promo.tr.poster.jpg" alt="AI IQ 300 tanıtım videosu" width="100%"></a></p>
 
-<p align="center"><b>▶ <a target="_blank" href="https://www.youtube.com/shorts/2hlEQY_8nmA">Tanıtım videosunu izle (YouTube 16:9)</a></b> · 🇬🇧 <a target="_blank" href="https://www.youtube.com/watch?v=Fcy0ib8GEA4">English</a></p>
+<p align="center"><b>▶ <a href="video/aiiq300-promo.tr.mp4">Tanıtım videosunu izle (YouTube 16:9)</a></b> · 📱 <a href="video/aiiq300-promo.tr.vertical.mp4">Dikey sürüm (Reels / Shorts / TikTok 9:16)</a> · 🇬🇧 <a href="video/aiiq300-promo.en.mp4">English</a></p>
 
 Tek cümleden çalışan uygulamaya: komut yazılır, ajan planlar, bütün dosyaları tek turda yazar, `tsc` ile derler, uygulamayı **gerçek tarayıcıda** açıp console + network denetimini yapar, yakaladığı hatayı anında düzeltir ve test edilmiş sonucu teslim eder. Videoda gerçek AI IQ 300 paneli, tüm ayar ekranları, donanım taraması ve sistem onarımı, web araştırması, sesten yazı / yazıdan ses, belge ve video stüdyosu yer alıyor.
 
@@ -345,6 +345,87 @@ languages/ tr.json · en.json
 chat/      Her sohbete bir klasör: chat/<sohbet kimliği>/ (dosyaları) + .session/ (kaydı); chat/projects/ (klasör seçilmeden açılan projeler)
 tanitim/   Banner, ekran görüntüleri ve tanıtım metinleri
 ```
+
+## 🆕 v0.18.5 ile gelenler (kopmadan dev dosyalar, daha güçlü tarayıcı testi, kendini öldürme koruması)
+
+- **Dev dosyalar canlı yazılır:** modelin akıttığı dosya yazılırken 2 sn'de bir diske kaydedilir, büyüdüğünü görürsün. Akış koparsa yazılan kısım kalır, model oradan devam eder, baştan yazılan içerik asla sona eklenmez (tek belge, asla iki `<!DOCTYPE>`). Canlı: NVIDIA Nemotron 3 Ultra 152.690 karakterlik oyunu tek çağrıda yazdı (660 sn), tarayıcıda test etti, tek hatasını küçük bir düzeltmeyle giderdi.
+- **Sağlayıcı süre sınırları ölçülür:** bazı sağlayıcılar istek başından ~300 sn sonra bağlantıyı kapatmadan veri göndermeyi bırakıyor (NVIDIA: `max_tokens` ile görüldü). Sınır sağlayıcı başına öğrenilir (oradaki tüm modeller için aynı), akış 90 yerine 12 sn sonra kesilir, o sağlayıcıda dosyalar sınıra sığan parçalarla yazılır.
+- **Uygulama kendi görevi tarafından kapatılamaz:** bir model port boşaltmak için `taskkill /f /im python.exe` çalıştırıp uygulamanın kendisini kapattı. python / node süreçlerini adla öldürmek (taskkill /im, Stop-Process -Name, pkill, killall...) her kipte reddedilir; tek PID ya da stop aracı çalışır. `python -m http.server 8080` portları da artık görülüyor.
+- **İnsan gibi tarayıcı testi:** tıklama önce yerini denetler; yanıp sönen buton beklemeden tıklanır, üstü örtülü butonda örten katman adıyla söylenir (tıklama başına 6 sn yerine 0,2 sn); oyunlar ve kaydırıcılar için basılı tutma, sürükleme ve tuşu basılı tutma; birden çok ifadeli JavaScript, `undefined` kendi adıyla, öğeler HTML olarak; yakalanmayan hatalar türü ve satırıyla (`ReferenceError ... (at index.html:3106:21)`); eksik favicon ya da önceki sayfanın hatası artık sayfa hatası sayılmaz; gizli (opaklığı 0) ekranlar okunmaz; "1.5s", "200px" gibi değerler adımı durdurmaz.
+- **Düzeltmeler:** başlatılan sunucu "tarayıcıda test et ve hataları düzelt" maddesini artık kapatmaz; `timeout /t` ve bozuk eski sunucular için net ipucu; browser_check hiç durulmayan sayfalarda çalışır ve tarayıcısını her zaman kapatır; indirmeler üst üste yazılmaz.
+
+## 🆕 v0.18.4 ile gelenler (MCP kütüphanesi, # araç kısayolu, arama kartları, hız göstergesi)
+
+- **MCP kütüphanesi:** Ayarlar > MCP'de kategorili (belgeler, geliştirme, verimlilik, yapay zekâ, araçlar) ve aramalı 16 hazır sunucu: DeepWiki, Context7, Microsoft Learn, Cloudflare Docs, Hugging Face, GitHub, Sentry, Notion, Linear, Git, Playwright, Fetch, Time, Memory, Sequential Thinking, Everything. **Kayıt defterinde bul** resmi MCP kayıt defteri, npm ve GitHub'da arar, sunucuyu tek tıkla ekler.
+- **MCP araçlarını kendiniz çağırın:** **Dene**, aracın argümanlarından oluşan bir formla aracı çalıştırıp sonucu gösterir; **Sohbette kullan** onu mesaj kutusuna gönderir. Mesaj kutusunda **#** yazın (/ ve @ gibi), çalışan bir aracı seçin: değişkenleri çipin altında alan olarak açılır (çipe tıklayıp değiştirebilirsiniz), değerler mesajla gider ve model tam olarak o aracı çağırır. Kopyalanan mesaj yapıştırınca araç ve değişken çiplerini korur. Seçilen aracın sunucusu kapalıysa önce başlatılır; kurulu olmayan hazır bir sunucuyu model kendisi bağlar (mcp_add), diğerlerini tek cümleyle söyler (tahmin ve tekrar yok). Modelin {"arguments": {...}} diye sardığı değişkenler açılıyor (sunucuya boş gidiyordu).
+- **Arama sonuçları kart olarak:** web aramalarında her kaynak site ikonu, başlık, adres ve iki satır özetle gösterilir (modelin açtığı sayfalarda "okundu"); adım satırında site ikonları, ham metin katlanmış alanda. Fotoğraf aramalarında da aynı kart: küçük fotoğraf, yanında site, başlık, yazar, lisans ve boyut.
+- **Hız göstergesi:** geçen sürenin yanında model yazarken canlı token/sn (saniyede bir küçük olay, akışın kendisinden ölçülür, modele ek çağrı yok), görev bitince ortalama (ör. 187.60 token/sn ort.); dışa aktarılan adımlarda her adımın süresi ve hızı. Mobil ve gece moduna uygun.
+- **Düzeltmeler:** kırmızı KaTeX sızıntıları (bir bloğun kapanış $$'ı sonrakinin açılışıyla eşleşiyordu); modelin "done" diye işaretlediği yapılacaklar açık kalıp döngüye giriyordu (durum kelimeleri artık anlaşılıyor); Openverse fotoğraf lisans filtresi bir yorum satırına kaymıştı, ticari olmayan fotoğraflar geliyordu; doğru Türkçe yanıtlar "çeviriye" gönderiliyordu (para / de / internet gibi kelimeler İspanyolca ya da Felemenkçe sayılıyordu) - ortak kelimeler artık sayılmıyor, araya kaçan yabancı alfabe sözcüğü yalnızca kendi satırında düzeltiliyor, yanıtın tamamı yeniden yazılmıyor; kod örneği sorusunda model artık dosya yazıp derlemeye zorlanmıyor.
+
+## 🆕 v0.18.3 ile gelenler (her yerde LaTeX, model hızı, daha sağlam akış)
+
+- **Her yerde LaTeX:** formüller ($...$, $$...$$, \(...\), \[...\]) nihai yanıtta, mesajınızda, canlı düşüncede ve "Düşündü"de KaTeX ile çiziliyor; mesaj kutusu yazdığınız formüllerin küçük bir önizlemesini gösteriyor. Para ifadeleri ("$5 ve $10") metin olarak kalıyor.
+- **Model hızı:** her görevin süre satırı çıkış hızını gösteriyor (token/sn; sağlayıcı kendi sayısını gönderirse o); canlı düşünce adımı model yazarken gösteriyor. Ölçülen: EVREN deepseek-v4.1-flash 3.479 tokenlık yanıtta ~17 token/sn.
+- **Yanıtta yanlış "akış durdu" yok:** Evren yanıtın ortasında 45 sn'den uzun duraklayıp devam edebiliyor; nihai yanıta artık en az 90 sn (kendi temposu x 6, en çok 150 sn), düşünceye 60 sn tanınıyor ve kesmeden hemen önce bağlantı yeniden denetleniyor; az önce yavaşlayan sağlayıcı kopmuş sayılmıyor. 3.479 tokenlık yanıt hiç kesilmeden bitti.
+- **Düşüncenin tamamı saklanıyor:** canlı kutu son 6.000 karakteri gösteriyor (hız için); biten "Düşündü" artık 30.000 karaktere kadar saklıyor (önce 6.000'di).
+- **WebSocket:** sunucu ping'ine yanıt için 60 sn (meşgul bir an veya arka plandaki sekme olay akışını düşürmüyor); sayfa kendiliğinden yeniden bağlanıyor, kısa kopma tam olarak yeniden oynatılıyor. Ölçüldü: 195 adımlı sohbet ~0,15 sn'de açılıyor (29 MB); 6 KB'lık 1.500 düşünce güncellemesi parti başına 4,8 ms'de, uzun görev olmadan uygulandı; düşünce ayrıştırıcısı güncelleme başına 0,13-1,1 ms.
+
+## 🆕 v0.18.2 ile gelenler (okunur düşünce, gerçekten farklı şablonlar, Tümünü gör'lü şablon galerisi)
+
+- **Okunur düşünce:** gerçek modellerde ölçüldü - deepseek-v4.1 ve gpt-oss düşünceyi hiç satır sonu olmayan tek blok gönderiyor, Nemotron satır ve liste, qwen3.8 kısa paragraflar kullanıyor. Düz blok artık paragraflara bölünüyor (cümle sonları, "Wait / But / Ama / Şimdi" gibi geçişler); model HTML ya da Markdown gönderirse render ediliyor, kod Monaco çerçevesinde. Başka hiçbir şey eklenmiyor; canlı kutu hızlı modellere yetişiyor.
+- **Excel şablonları gerçek tasarımlar:** pano (başlık bandı, canlı =SUM / =AVERAGE formüllü KPI kutuları, çizgi grafik), bütçe (özet kutuları, toplam satırı, sütun grafik), tablodaki tarihleri işaretlenmiş yıllık takvim sayfası, durum renkleri / ilerleme çubukları / haftalık Gantt'lı proje takibi, satış hunisi (KPI sayıları, aşama renkleri, çubuk grafik), performans karnesi (trafik ışıkları), stok (kritik satırlar kırmızı).
+- **Galeride her format farklı:** Excel küçük resimleri her düzenin ürettiği şey olarak çiziliyor; sunumlar kendi kapak slaytıyla (koyu, gradyan, split, minimal, köşe) deste görünümünde; PDF / Word sayfaları belge türüne uygun içerikle (memo kararları, fatura kalemleri ve toplam, özgeçmiş, makale, imzalı yazı).
+- **Galeri:** oklar iki uçta pasifleşiyor; "Tümünü gör" kartı formatın tüm şablonlarını, aşağı kaydırdıkça devamı yüklenen bir pencerede açıyor.
+- **Başlık ve antet içeriğe göre:** şablon yalnızca tasarımdır - make_doc şablonun kendi adını başlık, örnek bölümlerini bölüm başlığı yapan belgeyi reddediyor; antetli şablonlar bu belgenin kendi kurum satırlarını alıyor (make_doc header= / footer=), hazır antet asla yer tutucu satır basmıyor.
+- **Denetlendi:** internet kopması ve geri gelmesi (görev bekleyip aynı modelle sürüyor; arayüz çevrimdışı -> çevrimiçi gösteriyor), olay / WebSocket yolu (sınırlı kuyruklar, toplu gönderim, birleştirme).
+
+## 🆕 v0.18.1 ile gelenler (daha hızlı ve sakin akış, 34 şablon, okunur düşünce)
+
+- **Yanlış "akış koptu" kesmeleri bitti:** Evren / DeepSeek üzerinde ölçüldü: dosya yazan araç çağrısı 5-12 sn arayla parça parça geliyor (yoğunlukta daha uzun). Bağlantı denetimi bu sağlıklı akışları 30-48 sn'de kesiyor ve her yeniden denemede bütün istem yeniden okunuyordu - "modeller yavaşladı"nın asıl nedeni buydu. Kesme artık akışın kendi temposuna göre (en az 90 sn, dosya ortasında 150 sn), sunucu canlı tutma sinyali gönderirken hiç yapılmıyor; kısa normal duraklamalar "sağlayıcıdan veri gelmiyor" uyarısı vermiyor ve canlı düşünceyi cümle ortasında kapatmıyor.
+- **Düşünce düzgün görünüyor:** düşüncedeki temel HTML (`<p>`, `<br>`, `<b>`, listeler, başlıklar, bağlantılar) biçimli metne çevriliyor, Markdown render ediliyor, paragraflar boşluklu; modelin düşünürken yazdığı kodlar (Python, HTML sayfası, JS, CSS, SQL, PowerShell, Kotlin) hem canlı düşüncede hem "Düşündü"de Monaco kod çerçevesinde görünüyor.
+- **Şablonlar:** 34 hazır şablon (faaliyet raporu, vaka çalışması, teknik makale, fiyat teklifi, prosedür, iş planı, akademik makale, bülten, teknik şartname, pazarlama planı, resmi yazı, satış hunisi, stok takibi, performans karnesi, kişisel bütçe, ürün lansmanı, eğitim, proje başlangıcı, satış teklifi...); yeni kapak stilleri (split, editoryal, köşe), numaralı / alt çizgili / büyük harfli başlıklar, çizgili / yumuşak tablolar. Şablon Oluşturucu artık aracına gerçekten sahip: referans PDF / Word / PowerPoint / görseli tek adımda okuyor (palet, yazı tipleri, başlıklar, kapak) ve şablonu kaydediyor - 8+ dakika yerine yaklaşık 1 dakika.
+- **Gönderilen mesajda çipler:** mod ve şablon çipleri sohbette de çip olarak kalıyor (ham talimat metni yok); sohbet başlığı da bunları kullanıyor.
+- **Dosyalar:** cevaptaki dosya adı yalnızca dosya gerçekten varsa tıklanır çip oluyor (artık "HTTP 404" açan ".docx" çipleri yok); güncelleme sonrası yenilenme aynı sohbete ve açılmakta olan görüntüleyiciye dönüyor; tüm görüntüleyiciler önceden yükleniyor.
+- **Belgeler:** KPI kartları asla taşmıyor (uzun değer küçülüp satır kırıyor), yatay PDF gerçekten yatay, kısa tablolar başlık satırından ayrılmıyor.
+- **Tarih ve saat:** `system_info` bugünün tarihi, saati, günü ve saat dilimiyle başlıyor; sistem isteminde güncel saat var.
+- **Sağlayıcılar:** MiniMax, Moonshot (Kimi), Z.ai (GLM), Requesty, Vercel AI Gateway, Poe ve Baseten kendi OpenAI uyumlu adreslerini kullanıyor (yerel LiteLLM gerekmez). Canlı anahtarlarla gerçek denetim: Evren, Groq, Gemini (emekli model -> halefi), NVIDIA, Cloudflare, OpenRouter.
+- **Şablonlar artık gerçek tasarımlar:** 8 sayfa düzeni (kapaklı rapor, antetli resmî yazı - logo, sağda tarih, altbilgide adres -, not/memo, akademik, iki sütunlu dergi, fatura/teklif, özgeçmiş, minimal), her birinin kendi yazı tipi, kenar boşlukları, başlıkları ve tabloları var - PDF, Word, PowerPoint (kapak ve içerik slaytı görünümleri) ve Excel'de (başlık görünümleri). Galeri küçük resimleri belge motorunun kendisiyle çizilir: seçtiğiniz neyse çıktı odur.
+- **Şablon Oluşturucu referansınızı kopyalar:** referansın paletini, yazı tiplerini, her satırın mm cinsinden konumunu / hizasını / bölgesini, kenar boşluklarını okur ve logosunu kesip çıkarır (kılavuz çizgileri silinir); sonra düzeni, kenar boşluklarını, antet ve altbilgi satırlarını, logoyu ve kendi CSS'ini kaydeder; önizleme sayfası referansla karşılaştırılır. Antetli resmî yazı PDF'iyle test edildi.
+- **Yazı tipi haritası bozuk PDF'ler her dilde doğru okunur:** dışa aktarıcının yanlış koda bağladığı harfler ("M�llî Eğ�t�m" ya da başka bir yazı sisteminin harfi) OCR oylamasıyla geri kazanılır.
+- **Zayıf modeller:** şablon yalnızca tasarımı verir - örnek bölümleri asla başlık yapılmaz, aynı dolgu paragrafının birçok başlık altında tekrarı reddedilir; "söz verilen dosya diskte yok" ve "cevap kelimesi kelimesine tekrar" denetimleri artık yeteneklerin içinde de çalışır (bir qwen3 modeli önce PDF'i üretmeden bitiriyordu).
+- **Döngüler:** aynı birkaç öğeyi tekrar tekrar sayan liste ("browser_screenshot, browser_navigate, ..." ya da dakikalarca aynı ağ bağdaştırıcıları) ikinci turunun başında kesilir.
+- **Hızlı düşünce:** canlı ve kayıtlı düşünce hafif bir ayrıştırıcı kullanır (satır sonları, temel HTML, Markdown, tablolar, listeler), kod Monaco çerçevesinde; hızlı modellere yetişir (saniyede 10 güncelleme). Bir düşüncenin ortasında duran akış 90 yerine 45 sn sonra sürdürülür.
+- **Sohbet:** kopyalanıp yeniden gönderilen mod / şablon mesajı da çip olarak görünür; yapılacaklar listesi uygulamanın talimatlarını madde yapmaz; model seçiciler seçili modelde açılır.
+
+## 🆕 v0.18 ile gelenler (belge şablonları, mod çipleri, anlaşılır hatalar)
+
+- **Belge şablonları:** her formatın kendi galerisi var - PDF / Word (tasarım raporu, deney analizi, yatırım notu, teklif, toplantı notları, özgeçmiş), Excel (analitik panosu, bütçe, takvim, takip), PowerPoint (iş değerlendirmesi, pazar trendleri, haftalık operasyon, yatırımcı sunumu) - gerçek önizlemelerle. **Template Creator** referans dosyanızdan yeni şablon üretir.
+- **Mod çipleri:** "Görsel üret", "Tanıtım videosu", "AI klip", "Resimden video", Word / PDF / Excel / PowerPoint, mesaj kutusuna yazılan metin yerine renkli çiplerdir. Resimden video, sohbet klasöründeki resimleri ve eklerinizi gösteren bir seçici açar.
+- **Net adımlar:** "Fotoğraf aranıyor" yerine "Görsel üretiliyor", "AI video klip üretiliyor", "Video hazırlanıyor", "Seslendiriliyor"; biten düşünce "Düşündü" der. Düşünce satır sonlarını, kodu ve tabloları korur.
+- **Okunur hatalar:** sağlayıcı hataları sizin dilinizde açıklanır (çok yoğun, dakikalık sınır, günlük kota, GPU kotası, olmayan model...) - JSON yok; ham metin "teknik ayrıntı" altında. Gemini yalnızca gerçek sohbet modellerini gösterir.
+- **Medya:** sohbetteki video ve sesler tam oynatıcıyla gelir (sarma, hız, altyazı, dalga formu); seslendirme dosyasının sesi orada ayarlanabilir (hız, perde, duygu, stüdyo).
+
+## 🆕 v0.17 ile gelenler (yerel stüdyo sesleri, pro seçiciler)
+
+- **Yerel sesler, internetsiz:** Piper (her işlemcide hızlı, 50+ dil; Türkçe kadın Fettah, erkek Eren / Dfki / Fahrettin), Kokoro (çok doğal İngilizce + 5 dil) ve Chatterbox (en doğal ve duygulu, 23 dil, kendi sesiniz; istenince ayrı bir ortama kurulur). Microsoft'un çevrimiçi sesleri yedek olarak kalır.
+- **Ayarlar > Sesler:** her dil için varsayılan ses; dil / cinsiyet / motor / kaliteye göre filtre; tek tıkla dinleme ve indirme; ton (hız, perde, duygu, duraklama); stüdyo işlemesi (Doğal, Podcast, Yayın -23 LUFS, Video -14 LUFS, Sıcak, Ham) ile EQ, de-esser, sıkıştırma ve oda yankısı; açılıp kapatılabilen motor sırası.
+- **Ölçümle kadın / erkek:** cinsiyet bilgisi yayımlanmayan sesler kurulurken perdesinden etiketlenir.
+- **Uygulamanın konuştuğu her yerde:** sesli yanıtlar, yazıyı sese çevirme, `text_to_speech` (birden çok konuşmacılı diyalog, gerçek zamanlamalı .srt), video seslendirme (müzik sesin altında kısılır) ve Video Stüdyo. **Altyazı:** seslendirmedeki cümlelerin gerçek zamanlamalarıyla videoya yazılır.
+- **Kurulum:** ilk açılıştan itibaren internetsiz konuşabilmesi için bir Türkçe kadın + erkek ses ve Kokoro'yu (~245 MB) indirir.
+- **Sohbet başına taslak:** bir sohbette yazdığınız metin ve eklediğiniz dosyalar, başka sohbete geçince, sayfa yenilenince ya da elektrik kesilince yerinde kalır.
+- **Okunur düşünce:** modelin düşüncesindeki kod, HTML ve tablolar hem canlı hem sonradan renkli kod blokları ve tablolar olarak görünür.
+- **Pro seçiciler ve form öğeleri:** tüm seçiciler çoklu model ayarlarındaki aranabilir, gruplu seçici oldu (telefonda alttan açılan sayfa); kaydırıcı, onay kutusu, renk ve dosya alanları açık ve gece modunda tek tasarımda.
+
+## 🆕 v0.15 – v0.16 ile gelenler (internet kesintisi, bağlantı denetimi, ücretli AI video, canlı model listeleri, pro kurulum)
+
+- **İnternet kesintisi:** uygulama bağlantıyı izler. "Bağlantı kesildi" / "N sn sonra geri geldi" bildirimleri; çalışan bulut görevi duraklar (kota harcanmaz, model değişmez, hiçbir şey unutulmaz) ve aynı modelle kaldığı yerden sürer. Web araçları da bağlantıyı bekler.
+- **Susan akışlarda bağlantı denetimi:** 20 sn sessizlikten sonra küçük ayrı bir istekle sağlayıcının ayakta olup olmadığı sorulur. Sağlayıcı yanıt verip akış susuyorsa kopan akış 300 sn yerine ~30 sn'de kaldığı yerden sürdürülür; sağlayıcı yavaşsa model hâlâ çalışıyordur, beklenir.
+- **AI video (resimden video):** anahtarınızla Google Veo, fal.ai, Replicate ve Runway, ardından Hugging Face'te ücretsiz Wan 2.2 - sırayla denenir, her biri açılıp kapatılabilir. Yeni (+) > **Resimden video**. Her servis yalnızca video modellerini gösterir; varsayılanı kendisi seçer.
+- **Görsel üretimi:** sağlayıcılar ve görsel servisleri için tek anahtar (Cloudflare hesap kimliği de). Yalnızca görsel modelleri sunulur; canlı listeler (Gemini, Cloudflare) kaldırılan modelleri düşürür. Cloudflare'in 6 modelinin (FLUX.1 / FLUX.2 / Leonardo) hepsi denendi.
+- **Canlı ve dürüst model listeleri:** Gemini kendi API'sinden (pencere, düşünme, görsel, araç); gömme, ses, koruma ve yalnızca görsel üreten modeller tüm sağlayıcılarda gizlenir; sağlayıcının kapattığı model ("yeni kullanıcılara artık sunulmuyor") gizlenir ve istekler önerdiği yeni modele geçer.
+- **MCP:** hazır sunucular tek tıkla eklenir ve açılıp kapatılır; kendi eklediğiniz sunucular düzenleme ve silme ile ayrı sekmede.
+- **Kurulum:** proxy destekli bağlantı denetimi, otomatik yeniden deneme, Android kurulumunda da canlı ilerleme ve kalan süre; her Windows konsolunun gösterdiği işaretler.
+- **Modüler çekirdek:** orchestrator.py ve registry.py modüllere bölündü. 133 birim testi ve 54 uçtan uca denetim geçiyor.
 
 ## 🆕 v0.14.2 ile gelenler (devre kesici yok, gerçek tarayıcıda sayfa denetimi, tasarım denetimi, dürüst bitiş, tanıtım videosu)
 

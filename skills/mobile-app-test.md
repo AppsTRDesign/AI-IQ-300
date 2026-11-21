@@ -13,7 +13,17 @@ Goal: the app really runs and its main flows are proven with screenshots and tes
 a tool result that shows it.
 
 ## 1. Plan (todo) and the machine
-`mobile_env action=status` and `system_info` once. todo: build, environment, install, flows, screenshots, report.
+`mobile_env action=status` once (not system_info for this: status has everything). todo: build, environment,
+install, flows, screenshots, report. Read its answer and use it - do not search the disk again:
+- `paths`: ANDROID_HOME, JAVA_HOME, java, adb, emulator, gradle, sdkmanager, avdmanager, maestro (exact files).
+- `installed`: platforms (android-34 / android-36 / android-37.x...), build_tools, system_images, AVDs, devices.
+- `compat`: the version set per compileSdk. **compileSdk 36 = AGP 8.11.1 + Kotlin 2.1.21 + Gradle 8.13 + JDK 17/21
+  (verified here: BUILD SUCCESSFUL, installed, Maestro flows passed).** compileSdk 37 = AGP 9.5.0 + Gradle 9.6.0
+  (built-in Kotlin; not verified on this machine). Use these as given - no Maven metadata reading, no long weighing.
+- `rules`: how to run Gradle, take screenshots, run flows, and when the emulator stays open.
+Missing pieces: Gradle -> `mobile_env action=gradle` (once, shared); a platform / build-tools / image ->
+`mobile_env action=sdk args="platforms;android-36 build-tools;36.0.0"` (`args="--list"` shows exact names).
+Set `buildToolsVersion` to one listed in `installed.build_tools`: otherwise Gradle downloads another one silently.
 
 ## 2. Scaffold right (new projects)
 - Expo + TypeScript: `npx create-expo-app@latest <name> --template blank-typescript --yes` (with expo-router tabs:
@@ -54,7 +64,12 @@ install what is missing yourself - everything goes into the app's data folder, n
    AMD-V, Windows Hypervisor Platform) and fall back to the browser test.
 4. Build the debug APK (table above), `mobile_env action=install path=...apk`, `action=launch package=<applicationId>`
    (from build.gradle / app.json).
-5. `mobile_env action=screenshot path=shots/01-start.png`, then inspect_media on it to check what is on screen.
+5. `mobile_env action=screenshot path=shots/01-start.png`, then inspect_media on it to check what is on screen. OCR
+   is weak on dark screens: for the exact texts use the UI dump (`action=adb args="shell uiautomator dump
+   /sdcard/ui.xml"`, `action=adb args="pull /sdcard/ui.xml ui.xml"`, read_file ui.xml). Never `adb shell screencap
+   -p > x.png` in PowerShell (the redirection corrupts the PNG).
+6. The emulator stays running until the whole task is done (it is not closed by the app); close it only when the
+   user asks (`action=adb args="emu kill"`). Write files directly with their real names - no .tmp / tmp*.txt copies.
 
 ## 5. UI flows (Maestro)
 Write one .yaml per main flow (login, add an item, navigate, form errors) and run `mobile_env action=flow path=...`:
@@ -74,8 +89,10 @@ A failing step: read its output, fix the app or the flow (a different label, wai
 run again; the same failure twice means take another route (check the label in a screenshot first).
 
 ## 6. Fix loop
-Build errors: read the first error, not the last line. Gradle: JDK version (17), `ANDROID_HOME` (mobile_env sets it),
-missing SDK platform (`sdkmanager "platforms;android-34"` comes with setup). Metro / Expo: clear cache
+Build errors: read the first error, not the last line. Gradle: JDK version (17 / 21: `paths.JAVA_HOME`), `ANDROID_HOME`
+(`paths.ANDROID_HOME`, or sdk.dir in local.properties), missing SDK platform (`mobile_env action=sdk
+args="platforms;android-36"`). Kotlin syntax: a write of a .kt file reports a parse error at once - fix that line with
+edit_file (an early `}` closes the class). Metro / Expo: clear cache
 (`npx expo start -c`). Flutter: `flutter doctor -v` names what is missing.
 
 ## 7. Report

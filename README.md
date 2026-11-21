@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.14.3-2563eb" alt="version">
+  <img src="https://img.shields.io/badge/version-0.18.5-2563eb" alt="version">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -24,9 +24,9 @@ AI IQ 300 is a **software development and automation hub** that runs on your own
 
 ## 🎬 Promo video
 
-<p align="center"><a target="_blank" href="https://www.youtube.com/watch?v=Fcy0ib8GEA4"><img src="video/aiiq300-promo.en.poster.jpg" alt="AI IQ 300 promo video" width="100%"></a></p>
+<p align="center"><a href="video/aiiq300-promo.en.mp4"><img src="video/aiiq300-promo.en.poster.jpg" alt="AI IQ 300 promo video" width="100%"></a></p>
 
-<p align="center"><b>▶ <a target="_blank" href="https://www.youtube.com/shorts/cm_WbMM4lJk">Watch the promo (YouTube 16:9)</a></b> · 🇹🇷 <a target="_blank" href="https://www.youtube.com/watch?v=oiVHmz4ilxI">Türkçe</a></p>
+<p align="center"><b>▶ <a href="video/aiiq300-promo.en.mp4">Watch the promo (YouTube 16:9)</a></b> · 📱 <a href="video/aiiq300-promo.en.vertical.mp4">Vertical cut (Reels / Shorts / TikTok 9:16)</a> · 🇹🇷 <a href="video/aiiq300-promo.tr.mp4">Türkçe</a></p>
 
 From one sentence to a working app: the command is typed, the agent plans, writes every file in one turn, compiles with `tsc`, opens the app in a **real browser** to check console + network, fixes the error it catches on the spot and delivers a tested result. The video shows the real AI IQ 300 panel, every settings screen, hardware scan and system repair, web research, speech to text / text to speech, documents and the video studio.
 
@@ -345,6 +345,87 @@ languages/ tr.json · en.json
 chat/      One folder per chat: chat/<chat id>/ (its files) + .session/ (its record); chat/projects/ (projects without a chosen folder)
 tanitim/   Banners, screenshots and promo texts
 ```
+
+## 🆕 New in v0.18.5 (huge files without breaks, stronger browser testing, self-kill guard)
+
+- **Huge files, written live:** a file the model streams is saved to disk every 2 s while it is written, so you see it grow. If the stream breaks, the written part stays, the model continues from it, and a restart is never appended (one document, never two `<!DOCTYPE>`). Live: NVIDIA Nemotron 3 Ultra wrote a 152,690-character game in one call (660 s), tested it in the browser and fixed its one bug with a small edit.
+- **Provider time limits, measured:** some providers stop sending about 300 s into a request without closing the connection (NVIDIA: seen with `max_tokens`). The limit is learned per provider - the same for every model there - the stream is cut 12 s after it instead of 90, and files on that provider are written in parts that fit it.
+- **The app cannot be killed by its own task:** a model freed a port with `taskkill /f /im python.exe` and stopped the app itself. Killing python / node by name (taskkill /im, Stop-Process -Name, pkill, killall...) is refused in every mode; one PID or the stop tool still works. `python -m http.server 8080` ports are now seen too.
+- **Browser testing like a person:** clicks check the spot first - a pulsing button is clicked at once, a covered one names the layer over it (0.2 s instead of 6 s per click); press-and-hold, drag/swipe and key hold for games and sliders; JavaScript with several statements, `undefined` shown as such and elements as HTML; uncaught errors with their type and line (`ReferenceError ... (at index.html:3106:21)`); a missing favicon or the previous page's failure are no longer reported as page errors; hidden (opacity 0) screens are not read; values like "1.5s" or "200px" never stop a step.
+- **Fixes:** a started server no longer ticks "test in the browser and fix the errors"; `timeout /t` and broken old servers get a clear hint; browser_check works on pages that never go idle and always closes its browser; downloads never overwrite each other.
+
+## 🆕 New in v0.18.4 (MCP library, # tool shortcut, search result cards, speed meter)
+
+- **MCP library:** Settings > MCP has 16 ready servers by category (docs, development, productivity, AI, tools) with search: DeepWiki, Context7, Microsoft Learn, Cloudflare Docs, Hugging Face, GitHub, Sentry, Notion, Linear, Git, Playwright, Fetch, Time, Memory, Sequential Thinking, Everything. **Find in registry** searches the official MCP registry, npm and GitHub and adds a server with one click.
+- **Call MCP tools yourself:** **Try** runs a tool with a form built from its arguments and shows the result; **Use in chat** sends it to the message box. Type **#** in the message box (like / and @) to pick a running tool: its arguments open as fields under the chip (click the chip to change them), the values go with the message and the model calls exactly that tool. A copied message keeps its tool and argument chips when pasted. A picked tool whose server is off is started first; a ready server that is not installed is connected by the model itself (mcp_add), any other is reported in one sentence (no guessing, no repeating). Arguments a model wraps as {"arguments": {...}} are unwrapped (they reached the server empty).
+- **Search results as cards:** web searches show each source with its site icon, title, address and a two-line excerpt ("read" on the pages the model opened), a stack of site icons on the step row, and the raw text under a fold. Photo searches show the same kind of card: a small photo with the site, title, author, license and size.
+- **Speed meter:** next to the elapsed time, a live tokens/s meter while the model writes (one tiny event a second, measured from the stream itself, no extra model call) and the task's average (e.g. 187.60 tok/s avg) when it ends; exported steps carry each step's time and speed. Mobile and dark-mode ready.
+- **Fixes:** red KaTeX leaks (one block's closing $$ paired with the next block's opening one); a to-do list a model ticked with "done" stayed open and looped (status words are now understood); the Openverse photo license filter had slipped into a comment, so non-commercial photos came through; correct Turkish answers were sent to be "translated" (words like para / de / internet counted as Spanish or Dutch) - shared words no longer count, and a stray foreign-script word now fixes only its own line instead of rewriting the whole answer; a code-example question no longer makes the model write files and compile them.
+
+## 🆕 New in v0.18.3 (LaTeX everywhere, model speed, steadier streams)
+
+- **LaTeX everywhere:** formulas ($...$, $$...$$, \(...\), \[...\]) render with KaTeX in the final answer, in your message, in the live reasoning and in "Thought"; the message box shows a small preview of the formulas you type. Money ("$5 and $10") stays text.
+- **Model speed:** every task's timing row shows the output speed (tokens per second, the provider's own output count when it sends one); the live reasoning step shows it while the model writes. Measured: EVREN deepseek-v4.1-flash ~17 tok/s on a 3,479-token answer.
+- **No false "stream stopped" on answers:** EVREN pauses 45 s+ in the middle of an answer and goes on; the final answer now gets at least 90 s (its own pace x 6, up to 150 s), reasoning 60 s, and the connection is checked again right before a cut, so a provider that just became slow is not taken for a lost stream. A 3,479-token answer finished with no interruption.
+- **The whole reasoning is kept:** the live box shows the last 6,000 characters (speed); a finished "Thought" now keeps up to 30,000 (it was 6,000).
+- **WebSocket:** 60 s to answer the server's ping (a busy moment or a throttled tab no longer drops the event stream); the page reconnects by itself, a short break is replayed exactly. Measured: a 195-step chat opens in ~0.15 s (29 MB JS heap); 1,500 reasoning updates of 6 KB were applied at 4.8 ms a batch with no long task; the reasoning parser takes 0.13-1.1 ms per update.
+
+## 🆕 New in v0.18.2 (readable reasoning, templates that really differ, a template gallery with View all)
+
+- **Reasoning you can read:** measured on real models - deepseek-v4.1 and gpt-oss send their reasoning as one block with no line break, Nemotron uses lines and lists, qwen3.8 short paragraphs. A plain block is now split into paragraphs (sentence ends, turns like "Wait / But / Ama / Şimdi"); HTML and Markdown are rendered when a model sends them, code shows in the Monaco frame. Nothing else is added, so the live box keeps up with fast models.
+- **Spreadsheet templates are real designs:** a dashboard (title band, KPI boxes with live =SUM / =AVERAGE formulas, a line chart), a budget (summary boxes, a total row, a column chart), a year calendar sheet with the table's dates marked, a project tracker with status colours, progress bars and a weekly Gantt, a sales pipeline (KPI numbers, stage colours, a bar chart), a scorecard (traffic lights), an inventory (low-stock rows in red).
+- **Every format looks different in the gallery:** Excel thumbnails are drawn as what each layout makes; slides as their title slide (dark, gradient, split, minimal, corner) in a deck; PDF / Word pages carry content shaped like their document (a memo's decisions, an invoice's items and total, a résumé, a paper, a letter with a signature).
+- **Gallery:** the arrows grey out at both ends; a "View all" card opens every template of the format in a dialog that loads more while you scroll.
+- **Titles and letterheads follow the content:** a template is only the design - make_doc refuses the template's own name as the title and its sample sections as headings; letterhead templates take this document's own organisation lines (make_doc header= / footer=), so a built-in letterhead never prints placeholder lines.
+- **Checked:** internet drop and return (the task waits and continues on the same model; the UI shows offline -> online), the event / WebSocket path (bounded queues, batching, coalescing).
+
+## 🆕 New in v0.18.1 (faster, calmer streams, 34 templates, readable reasoning)
+
+- **No more false "stream lost" cuts:** measured on Evren / DeepSeek, a file's tool-call arguments arrive in batches 5-12 s apart (longer under load). The connection check cut such healthy streams after 30-48 s and every retry re-read the whole prompt - the main cause of "the models got slower". The cut now follows the stream's own pace (at least 90 s, 150 s mid-file), never while the server sends keep-alives, and short normal pauses no longer show "no data from the provider" or close the live reasoning mid-sentence.
+- **Reasoning rendered properly:** basic HTML in the reasoning (`<p>`, `<br>`, `<b>`, lists, headings, links) is turned into formatted text, Markdown renders, paragraphs get their spacing, and code the model drafts while thinking (Python, HTML pages, JS, CSS, SQL, PowerShell, Kotlin) shows in the Monaco code frame - in the live reasoning and in "Thought".
+- **Templates:** 34 built-in templates (annual report, case study, white paper, price quote, SOP, business plan, research paper, newsletter, technical spec, marketing plan, formal letter, sales pipeline, inventory, KPI scorecard, personal budget, product launch, training, project kickoff, sales proposal...) with new cover styles (split, editorial, corner), numbered / underlined / caps headings and line / soft tables. The Template Creator now really has its tool: it reads a reference PDF / Word / PowerPoint / image in one step (palette, fonts, headings, cover look) and saves the template - about 1 minute instead of 8+.
+- **Chips in the sent message:** the mode and template chips stay chips in the chat (no raw instruction text); the chat title uses them too.
+- **Files:** a file name in an answer is a clickable chip only when the file really exists (no more ".docx" chips that opened "HTTP 404"); a reload after an update returns to the same chat and the viewer that was opening; every viewer is preloaded.
+- **Documents:** KPI cards never overflow (long values shrink and wrap), landscape PDFs are really landscape, short tables are never split from their header.
+- **Date and time:** `system_info` starts with today's date, time, weekday and time zone, and the system prompt carries the current time.
+- **Providers:** MiniMax, Moonshot (Kimi), Z.ai (GLM), Requesty, Vercel AI Gateway, Poe and Baseten use their own OpenAI-compatible addresses (no local LiteLLM gateway needed). Real checks with live keys: Evren, Groq, Gemini (retired model -> successor), NVIDIA, Cloudflare, OpenRouter.
+- **Templates are real designs now:** 8 page layouts (report with cover, official letter with letterhead / logo / date on the right / footer address, memo, academic, magazine in two columns, invoice / quote, résumé, minimal), each with its own type, margins, headings and tables - in PDF, Word, PowerPoint (title and content slide looks) and Excel (header looks). Gallery thumbnails are rendered by the document engine itself, so what you pick is what you get.
+- **Template Creator reproduces your reference:** it reads the reference's palette, fonts, every line's position / alignment / zone in mm, margins and cuts out its logo (guide lines removed), then saves layout, margins, letterhead and footer lines, logo and its own CSS; a preview page is compared with the reference. Tested with an official letterhead PDF.
+- **PDFs with a broken font map read correctly in every language:** letters an exporter mapped to wrong codes ("M�llî Eğ�t�m", or another script's letter) are recovered with OCR voting.
+- **Weak models:** a template gives only the design - its sample sections are never used as headings, and the same filler paragraph under many headings is refused; the checks "the promised file is not on disk" and "answer repeated word for word" now also run inside skills (a qwen3 model ended without the PDF before).
+- **Loops:** a list that repeats the same few items ("browser_screenshot, browser_navigate, ..." or the same network adapters for minutes) is cut at its second round.
+- **Reasoning, fast:** the live and saved reasoning use a light parser (line breaks, basic HTML, Markdown, tables, lists) with code in the Monaco frame; it keeps up with fast models (10 updates a second). A stream that stops in the middle of a thought is continued after 45 s instead of 90.
+- **Chat:** a copied mode / template message sent again shows chips too; the to-do list never takes the app's instructions as items; model pickers open on the selected model.
+
+## 🆕 New in v0.18 (document templates, mode chips, clearer errors)
+
+- **Document templates:** every format has its own gallery - PDF / Word (design report, experiment analysis, investment memo, proposal, meeting notes, résumé), Excel (analytics dashboard, budget, calendar, tracker), PowerPoint (business review, market trends, operating review, pitch deck) - with real thumbnails. **Template Creator** makes a new template from your reference file.
+- **Mode chips:** "Make an image", "Promo video", "AI clip", "Image to video", Word / PDF / Excel / PowerPoint are coloured chips in the message box instead of text typed into it. Image to video opens a picker of the chat folder's pictures and your attachments.
+- **Clear steps:** "Generating image", "Making AI video clip", "Rendering video", "Making voice-over" instead of "Searching photo"; a finished reasoning says "Thought". Reasoning keeps its line breaks, code and tables.
+- **Readable errors:** provider errors are explained in your language (very busy, per-minute limit, daily quota, GPU quota, missing model...) - no JSON; the raw text sits under "technical detail". Gemini shows only real chat models.
+- **Media:** videos and audio in the chat use the full players (seek, speed, subtitles, waveform); the voice of a speech file can be tuned right there (speed, pitch, emotion, studio).
+
+## 🆕 New in v0.17 (local studio voices, pro selects)
+
+- **Local voices, offline:** Piper (fast on any CPU, 50+ languages; Turkish female Fettah and male Eren / Dfki / Fahrettin), Kokoro (very natural English + 5 languages) and Chatterbox (the most natural and expressive, 23 languages, your own voice, installed into its own environment on request). Microsoft's online voices stay as the fallback.
+- **Settings > Voices:** a default voice per language, filters by language / gender / engine / quality, listen and download in one click, tone (speed, pitch, emotion, pause), studio finish (Natural, Podcast, Broadcast -23 LUFS, Video -14 LUFS, Warm, Raw) with EQ, de-esser, compression and room echo, engine order with on/off switches.
+- **Female / male by measurement:** voices that publish no gender are labelled from their pitch when installed.
+- **Everywhere the app speaks:** spoken replies, text to speech, `text_to_speech` (dialogs with several speakers, .srt with real timings), video voice-overs (music ducked under the voice) and the Video Studio. **Subtitles:** burned into the video from the voice-over's real sentence timings.
+- **Installer:** downloads a Turkish female + male voice and Kokoro (~245 MB) so speech works offline from the first start.
+- **Drafts per chat:** what you typed and attached in a chat stays there when you open another chat, reload or lose power.
+- **Readable reasoning:** code, HTML and tables in the model's reasoning show as highlighted blocks and tables, live and afterwards.
+- **Pro selects and form controls:** every select is the searchable, grouped picker of the multi-model settings (a bottom sheet on phones); sliders, check boxes, colour and file fields share one look in light and dark mode.
+
+## 🆕 New in v0.15 – v0.16 (internet drops, connection check, paid AI video, live model lists, pro installer)
+
+- **Internet drops:** the app watches the connection. "Connection lost" / "back after N s" notices; a running cloud task pauses (no quota spent, no model switch, nothing forgotten) and continues on the same model where it stopped. Web tools wait too.
+- **Connection check of silent streams:** after 20 s of silence a tiny separate request asks the provider whether it is alive. Provider answers but the stream stays silent -> the lost stream is continued after ~30 s instead of waiting 300 s; provider slow -> the model is still working, it waits.
+- **AI video (image to video):** Google Veo, fal.ai, Replicate and Runway with your key, then free Wan 2.2 on Hugging Face - tried one by one, each one switchable. New (+) > **Image to video**. Each service shows only video models; a default is picked by itself.
+- **Image generation:** one key for providers and image services (Cloudflare account id too). Only image models are offered; live lists (Gemini, Cloudflare) drop retired models. All 6 Cloudflare models (FLUX.1 / FLUX.2 / Leonardo) tested.
+- **Live, honest model lists:** Gemini from its native API (window, thinking, vision, tools); embedding, speech, guard and image-only models are hidden for every provider; a model the provider retired ("no longer available to new users") is hidden and requests move to the successor it names.
+- **MCP:** ready-made servers with one-click add and on/off switches; your own servers in their own tab with edit and remove.
+- **Installer:** connection check with proxy support, automatic retries, live progress and ETA for the Android setup too; glyphs that every Windows console shows.
+- **Modular core:** orchestrator.py and registry.py split into modules. 133 unit tests and 54 end-to-end checks pass.
 
 ## 🆕 New in v0.14.2 (no circuit breaker, real-browser page checks, design check, honest finish, promo video)
 

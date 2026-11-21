@@ -6,10 +6,256 @@
 Otonom, çoklu ajan destekli, yerel ve bulut LLM'leri ile çalışan tam kapsamlı yazılım geliştirme ve komuta merkezi.
 
 ## Mevcut Durum (State)
-- **Tarih:** 2026-11-19
-- **Aktif Görev:** v0.12.0 tamamlandı (zayıf modeller: düz metin araç çağrıları çalıştırılır, istenen dosya diskte denetlenir, system_info, sohbet araması, model kaydı, LM Studio bellek koruması, test paketi, orkestratör bölündü); v0.11.0 tamamlandı (kapsamlı tarama: yalın istem, kopma ve model değişiminde süreklilik, modeli kapatmayan RAM / VRAM koruması, eksiksiz WebSocket yeniden bağlanma, yarış düzeltmeleri); v0.10.7 tamamlandı (toplu seçme/silme, ilk mesajda yetenekler, 14 dilde araç algılama, bölmeden yazım); v0.10.6 tamamlandı (web tasarımı + stock_photo, sayfa JS/kırık görsel testi, gerçek sayıya çapalı bağlam, yerel pencere büyütme, Markdown canlı yanıt); v0.10.5 tamamlandı (gerçek token verisi, görsel model, ayar denetimi); v0.10.4 tamamlandı (ayarlar, yerel GPU, MCP, araç zinciri, beceriler); v0.10.3 tamamlandı (canlı test: Evren auto, NVIDIA Nemotron 3 Ultra 550B, Groq)
+- **Tarih:** 2026-11-20
+- **Aktif Görev:** v0.16.0 tamamlandı (susan akışlarda bağlantı denetimi, ücretli + ücretsiz AI video, medya model seçiciler, gömme / kapatılmış modelsiz canlı listeler, MCP sekmeleri, kurulum ilerlemesi). v0.15.1 tamamlandı (internet kesintisi: algılanır, gösterilir, görev bekleyip aynı modelle kaldığı yerden sürer; kurulumda çevrimdışı / proxy desteği). v0.15.0 tamamlandı (adım kaydı düzeltmeleri, modüler orkestratör / registry, profesyonel kurulum). v0.12.0 tamamlandı (zayıf modeller: düz metin araç çağrıları çalıştırılır, istenen dosya diskte denetlenir, system_info, sohbet araması, model kaydı, LM Studio bellek koruması, test paketi, orkestratör bölündü); v0.11.0 tamamlandı (kapsamlı tarama: yalın istem, kopma ve model değişiminde süreklilik, modeli kapatmayan RAM / VRAM koruması, eksiksiz WebSocket yeniden bağlanma, yarış düzeltmeleri); v0.10.7 tamamlandı (toplu seçme/silme, ilk mesajda yetenekler, 14 dilde araç algılama, bölmeden yazım); v0.10.6 tamamlandı (web tasarımı + stock_photo, sayfa JS/kırık görsel testi, gerçek sayıya çapalı bağlam, yerel pencere büyütme, Markdown canlı yanıt); v0.10.5 tamamlandı (gerçek token verisi, görsel model, ayar denetimi); v0.10.4 tamamlandı (ayarlar, yerel GPU, MCP, araç zinciri, beceriler); v0.10.3 tamamlandı (canlı test: Evren auto, NVIDIA Nemotron 3 Ultra 550B, Groq)
 - **Son Başarılı İşlem:** v0.10.0 — profesyonel belge motoru (Chromium PDF/HTML + KaTeX, tasarımlı DOCX/PPTX/XLSX), ayarlanabilir akış zaman aşımları ve parçalı yazma, run_state.json ile kesinti sonrası devam, paralel araç yürütme, canlı todos, çok dilli niyet tablosu, zengin mesaj kutusu, mesaj sayfalama/kopyala/sil/alıntı, sağ tık menüleri, gruplu değişiklik kartı, medya oynatıcılar, servis kartları, kota/bakiye ekranı.
 - **Önceki:** v0.6 — kesintisiz orkestrasyon (devam ettirme, sessiz araç yazımında heartbeat, görev içi bağlam kırpma/özetleme, canlı bağlam sayımı, takılı adım temizliği, tekrar eden çağrı koruması, asılsız dosya iddiası koruması), todo aracı + canlı yapılacaklar listesi, otomatik yetenek algılama (use_skill), bilgi sorularında salt-okuma araçlar, arama alaka filtresi + Bing URL çözümü, canlı gruplu adımlar, model seçiciden bağlam düzenleme (ayarlarla senkron), aç/kapat popover'lar, çizim ekranı, klasör yükleme, hedef modu, belge kartları ve önizleme (xlsx/docx/pdf/pptx), kökteki gereksiz docs/ kaldırıldı.
+
+## Proje Durumu: v0.18.5
+Dev dosyalar ve sonrası (2026-11-21), model bazında değil tüm sağlayıcılar için. Canlı: NVIDIA Nemotron 3 Ultra
+152.690 karakterlik oyunu tek çağrıda yazdı (660 sn, kopmasız, tek doctype), tarayıcıda test etti, tek hatayı
+edit_file ile düzeltti. pytest 199.
+- **Diske canlı yazım:** akan write_file 2 sn'de bir gerçek dosyaya yazılır (tam satırlar); kopmada yazılan kısım
+  kalır, model oradan devam eder (append), baştan yazılan içerik sona eklenmez (tek belge, asla iki doctype). Kurtarma
+  işsiz işaretlenen todo maddelerini geri alır.
+- **İstek süre sınırı:** bazı sağlayıcılar istek başından ~300 sn sonra bağlantıyı kapatmadan veri göndermeyi
+  bırakıyor. NVIDIA Nemotron 3 Ultra'da uygulama mantığı olmadan ölçüldü: max_tokens=32000 ile veri 302 ve 308 sn'de
+  durdu (2/2); onsuz düz akış 360 sn'yi geçti, yerel araçlı akış 697 sn'de normal bitti, uygulamanın kendi görevi 660
+  sn aktı (0/3). Uygulama max_tokens'ı yalnızca yerel modellere gönderiyor; kullanıcının önceki kopmaları onsuz da
+  oldu, bu yüzden sınır modele değil sağlayıcıya ait davranış sayılır: sağlayıcı başına öğrenilir (request_caps.json),
+  akış 90 yerine 12 sn sonra kesilir, dosyalar sınıra sığan parçalarla yazılır.
+- **Yerel araç çağrısı yalnızca argümanları akıtan sağlayıcıda** (yoksa sessiz "hazırlanıyor"); diğerlerinde metin
+  protokolü. Kullanıcı notları arayüz dilinde.
+- **Kendini öldürme koruması:** bir model port boşaltmak için `taskkill /f /im python.exe` çalıştırıp uygulamanın
+  kendisini kapattı. python / node / uygulama yorumlayıcısını adla öldürmek ve uygulamanın kendi PID'i her kipte
+  reddedilir; tek PID ya da stop aracı serbest.
+- **Portlar:** `python -m http.server 8080` (çıplak port) artık görülüyor: eski sunucumuz değiştirilir, başka
+  programınki için boş port önerilir.
+- **Tarayıcı araçları (tam tarama):**
+  - tıklama önce bakar: yanıp sönen buton beklemeden tıklanır, üstü örtülü butonda örten katman adıyla söylenir
+    (`covered by <div#cover>`); tıklama başına 6 sn yerine 0,2-0,3 sn;
+  - basılı tutma (`hold=800`), sürükleme (`drag="120,0"`, `to:x,y`, bir ref'in üstüne; küçük adımlarla), tuşu basılı
+    tutma (`hold=1500`); batch'te drag / swipe / longpress;
+  - js birden çok ifade çalıştırır, `undefined`'ı öyle söyler (null değil), öğe / liste HTML olarak döner;
+  - yakalanmayan hatalar türü ve yeriyle gelir (`ReferenceError: ... (at index.html:3106:21)`);
+  - favicon / kaynak haritası / .well-known sayfa hatası sayılmaz; önceki başarısız açılış sonraki sayfada raporlanmaz;
+  - browser_batch çit, ham satır sonu ve sondaki virgülü kabul eder, JSON'un nerede bozulduğunu söyler;
+  - "3s", "200px", "1.5s" (= 1500 ms) gibi değerler adımı durdurmaz;
+  - opaklığı 0 olan ekranlar (başlık ekranının altındaki HUD) görünür sayılmaz;
+  - geçmişi olmayan sekmede back sayfayı korur (about:blank'e gidiyordu);
+  - ERR_EMPTY_RESPONSE / bağlantı sıfırlama / sertifika hataları açıklanır; eskimiş ref ile kaydırma / ekran görüntüsü
+    yeniden bulunur; wait görünür kopyayı bekler;
+  - browser_check hiç durulmayan sayfalarda (oyun) zaman aşımına düşmez ve Chromium'u her zaman kapatır; kullanıcının
+    kapattığı pencere Playwright sürücüsünü açık bırakmaz; kapanan sekmelerin kayıtları silinir; indirmeler üst üste
+    yazılmaz, başarısız olanlar bildirilir.
+- **Todo:** başlatılan sunucu "tarayıcıda test et ve hataları düzelt" maddesini artık kapatmaz; düzelt / tarayıcıda
+  denetle maddelerini yalnızca model kapatır.
+- **Hata rehberi:** `timeout /t` -> Start-Sleep; ERR_EMPTY_RESPONSE -> portu eski bozuk bir sunucu tutuyor.
+- Bu turun önceki düzeltmeleri: system_info clean_text, MCP _read_stderr çökmesi, MCP arama kutularının çizgiye
+  bitişmesi, 404 HEAD yerine /fs/exists.
+
+## Proje Durumu: v0.18.4
+MCP kütüphanesi (16 hazır sunucu, kategori ve arama), kayıt defterinde arama, Dene penceresi ve Sohbette kullan;
+mesaj kutusunda # ile MCP aracı seçme, yapıştırınca çipler korunuyor; seçilen araç modele ilk sırada, yoksa açıkça
+bildiriliyor. Web / fotoğraf araması kartları; geçen sürenin yanında canlı ve ortalama token/sn; dışa aktarılan
+adımlarda süre ve hız. Todo "done" düzeltmesi, Openverse lisans filtresi düzeltmesi.
+
+## Proje Durumu: v0.18.3
+Düşüncede ve mesaj kutusunda LaTeX; tur başına token/sn; yanıtta kesme en az 90 sn ve kesmeden önce yeniden
+denetim; biten düşünce 30.000 karakter; WebSocket ping zaman aşımı 60 sn.
+
+## Proje Durumu: v0.18.2
+Düşünce görünümü, şablon tasarımları, galeri (2026-11-21). Ham düşünce ölçüldü; düz bloklar paragraflara bölünüyor,
+HTML / Markdown / kod render ediliyor. Excel tasarımları (pano, bütçe, huni, Gantt'lı takip, takvim, karne, stok),
+format başına çizilen küçük resimler, belge türüne uygun örnek içerik. Galeride Tümünü gör modalı ve pasif oklar.
+make_doc şablon adını başlık yapmayı reddediyor; antet / altbilgi belgeye özel.
+
+## Proje Durumu: v0.18.1
+Akışlar, gerçek tasarımlı şablonlar, zayıf model korumaları (2026-11-21). pytest 173, mock e2e geçti; canlı: evren
+qwen3-vl / auto / deepseek-v4.1-flash / qwen3.8-flash, NVIDIA Nemotron 3.5 Super, Gemini, Groq, Cloudflare.
+- **Akış kesmeleri:** Evren dosya argümanlarını 5-12 sn'lik parçalarla gönderiyor; bağlantı denetimi sağlıklı
+  akışları 48 sn'de kesiyordu. Artık en az 90 sn (8 x boşluk), canlı tutma sinyali gelirken hiç; dosya ortasında 150 sn;
+  cümle ortasında duran düşünce 45 sn'de sürdürülür; "veri yok" uyarısı ve canlı düşüncenin kapanması akışın kendi
+  temposundan sonra.
+- **Düşünce görünümü (ThinkText):** hafif ayrıştırıcı (satır sonu, temel HTML, Markdown, tablo, liste) + kod Monaco'da;
+  saniyede 10 güncelleme.
+- **Şablonlar:** 35 hazır şablon, 8 düzen; yazı tipi, kenar boşluğu, antet / altbilgi, logo ve özel CSS; PDF, DOCX,
+  PPTX ve XLSX'te farklı görünümler; galeri önizlemesi belge motorunun kendisiyle. doc_template inspect / create /
+  preview ile referans birebir kopyalanır. Şablon yalnızca tasarımdır; dolgu ve örnek başlıklar reddedilir.
+- **Bozuk PDF yazı tipi haritası:** OCR oylamasıyla her dilde onarılır.
+- **Zayıf modeller:** yetenek araç listesine eşlikçiler, yetenek içinde de teslimat denetimi, kelimesi kelimesine tekrar
+  ve liste döngüsü yakalanır, yapılacaklara uygulama talimatı girmez.
+- **Arayüz:** gönderilen / kopyalanan mod mesajlarında çipler, yalnızca var olan dosyalar için dosya çipi, yenilemede aynı
+  sohbet ve görüntüleyici, model seçiciler seçili modelde açılır.
+- **Diğer:** system_info `now` (tarih, saat, gün, saat dilimi); MiniMax / Moonshot / Z.ai / Requesty / Vercel / Poe /
+  Baseten doğrudan adresler.
+
+## Proje Durumu — v0.18.0
+Belge şablonları, mod çipleri, üretim/arama adımları, okunur hatalar (2026-11-20). pytest 158, e2e 54/54.
+- **Belge şablonları** (tools/doc_templates.py): 14 hazır şablon (PDF / DOCX: tasarım raporu, deney analizi,
+  yatırım notu, proje teklifi, toplantı notları, özgeçmiş; XLSX: analitik panosu, finansal bütçe, çalışma takvimi,
+  proje takibi; PPTX: iş değerlendirmesi, pazar trendleri, haftalık operasyon, yatırımcı sunumu) + kullanıcının
+  kendi şablonları (data/doc_templates). Şablon kimliği aynı zamanda make_doc teması (renkler docs_gen.THEMES'e,
+  yazı tipi / kapak CSS'i TEMPLATE_CSS'e) ve bir bölüm taslağı. make_doc `template=`, `doc_template` aracı (list /
+  create / delete; Template Creator). API: GET /api/doc-templates, GET /api/doc-templates/{id}/preview (gerçek HTML
+  küçük resim), DELETE.
+- **Mod çipleri** (ComposerModes.jsx): (+) girdileri (görsel, tanıtım videosu, AI klip, resimden video, ekran
+  görüntüsü, Word / PDF / Excel / PowerPoint) renkli çiplerdir; talimat mesajla gider. Belge modları şablon galerisini
+  açar (iframe önizlemeler, Şablon oluştur = Template Creator çipi + açıklama). Resimden video, sohbet klasöründeki
+  resimleri, ekleri ve yüklemeyi gösteren bir seçici açar.
+- **Adım türleri**: generate_image = image_gen, generate_video / animate_image = video_gen, edit_video = video_edit,
+  inspect_media = inspect, text_to_speech = speech, speech_to_text = transcribe ("Fotoğraf aranıyor" / "Görsel test"
+  yerine); biten düşünce adımı "Düşündü" der.
+- **Düşünce gösterimi**: tek satır sonları korunur, <br> ve kaçışlı \n satır sonu olur.
+- **Hatalar**: `providers.message_of` her hata biçimini okur (Gemini'nin JSON dizisi, Python gösterimi, Cloudflare
+  hataları, iç içe) - arayüzde JSON yok; servisler de kullanır. Arayüz: nedene göre çevrilmiş açıklama (yoğunluk,
+  dakikalık sınır, günlük kota, GPU kotası, ödeme, olmayan / kapatılan model, zaman aşımı, güvenlik, yetki); ham metin
+  "teknik ayrıntı" altında.
+- **Model listeleri**: Gemini yalnızca sohbet adlandırmasıyla (gemini-4-hydrogen gibi kod adlı modeller gizli:
+  dakikalarca yanıt vermiyordu); `_chat_by_meta` listelerin kendi alanlarını kullanır (Together type, Mistral
+  capabilities.completion_chat, Groq active, kind); NOT_CHAT_EXTRA (davinci / babbage, moderation, sora, dall-e, tts,
+  whisper...).
+- **AI video yedeklemesi**: ücretli servisin bulunamayan modeli yerine servisin diğer modelleri denenir; zorunlu
+  argüman ekleyen Space'lere (last_image) boş değer gönderilir; klipler sırayla üretilir (paralel çağrılar ücretsiz
+  GPU kotası için yarışıyordu).
+- **Sohbette medya**: kartlar tam video oynatıcıyı ve dalga formlu ses oynatıcıyı kullanır (otomatik oynatma yok,
+  kısayollar yalnızca üzerindeyken); görüntüleyici parçaları önceden yüklenir (güncellemeden sonra açınca sayfa
+  yenilenmez); stüdyonun render sonucu birkaç saniyede bir baştan başlıyordu (src'de Date.now()) - düzeltildi.
+- **Dosyanın sesi**: "Bu sesi kullan" sonrası ton paneli açılır (hız, perde, duygu, stüdyo) ve dosya yeniden yazılır.
+- **Teslim kontrolü**: bir dosyanın oluşturulamadığını söyleyen satırlar iddia sayılmaz.
+
+## Proje Durumu — v0.17.1
+Gerçek kullanımdan düzeltmeler (2026-11-20). pytest 147, e2e 54/54.
+- **Sohbet başına taslak** (lib/drafts.js, Composer): her sohbetin yazı kutusundaki metin + ekler localStorage'da
+  tutulur; sohbet yeniden açılınca, sayfa yenilenince ya da elektrik kesilince geri gelir; resimler base64'ünü
+  GET /api/sessions/{sid}/upload/raw ile geri alır. İlk yüklemeyle oluşan yeni sohbet taslağını korur.
+- **Düşünce gösterimi** (lib/thinkfmt.js): düşüncede çitsiz HTML / kod dil etiketli kod bloğuna, ayraçsız tablo
+  |---| satırlı tabloya dönüşür; canlı kutu ve kayıtlı "Düşünüyor" adımı Markdown olarak çizilir (adım <pre> idi).
+- **edit_video**: nesne / metin / .mp3 olarak verilen `narration` tek seslendirmeye dönüşür (nesne KeyError 0 =
+  "Missing required argument: 0" ile çöküyor ve ses düşüyordu); seslendirme yoksa sonuç "NO voice-over" der.
+  KeyError mesajı artık bir değerin biçiminin yanlış olabileceğini söyler.
+- **speech_to_text**: ses ffmpeg ile çözülür (faster-whisper'ın PyAV okuyucusu PyAV 19'da metadata_errors ile bozuldu).
+- **Teslim kontrolü**: cevaptaki dosya adları Türkçe harf / büyük-küçük harf farkı gözetmeden eşleşir
+  (`checks.real_path`, `fold_name`); son cevaba yanlış "oluşturulmadı" notu yerine gerçek yol yazılır
+  (`fix_claimed_names`).
+- **Sesler**: önizleme düğmesi ikinci basışta durdurur; Chatterbox kurulum ilerlemesi paket ve model klasörü
+  boyutunu izler (3 GB model inerken %60'ta duruyordu).
+
+## Proje Durumu — v0.17.0
+Yerel stüdyo sesleri ve pro seçiciler (2026-11-20). pytest 144; gerçek testler: 4 Türkçe Piper sesi + Kokoro
+kuruldu ve ölçüldü, her motor API üzerinden çalıştı (önizleme Piper 0,7 sn, Kokoro 1,2 sn, Edge 6,7 sn), altyazısı
+yakılmış seslendirmeli video (-15,3 LUFS). Chatterbox (3 GB model) gerçek testi: Türkçe 10 sn konuşma işlemcide
+33-45 sn; kendi ses referansı izlendi (çıkış 97 Hz, referans 103 Hz; varsayılan ses kadın). resemble-perth
+Windows'ta PerthImplicitWatermarker'ı None bırakıyordu ("'NoneType' object is not callable"): işçi işlem yapmayan
+filigrana geçer.
+- **backend/app/voice/** (yeni): `catalog.py` (Piper dizini + ek Türkçe sesler fahrettin / fettah / 99eren99,
+  Kokoro v1.0 int8, Chatterbox dilleri, ilerlemeli kurma / kaldırma, perdeden cinsiyet: otokorelasyon F0, < 160 Hz
+  erkek; ölçülen dfki 97, fahrettin 108, 99eren99 83 = erkek, fettah 182 = kadın), `engines.py` (Piper, Kokoro,
+  Chatterbox KENDİ uv ortamında data/tts/chatterbox/venv tek kalıcı işçiyle - chatterbox-tts numpy<2 / torch 2.6
+  sabitler; Edge ffmpeg ile çözülür), `studio.py` (tek ffmpeg geçişi: none/natural/podcast/broadcast/video/warm,
+  tempo korunarak perde, oda yankısı, loudnorm), `render.py` (cümle bölme, kırpılmış duraklamalar, zamanlamalar ->
+  .srt, "İsim: satır" diyalogları, dil + cinsiyet + motor sırasına göre yedek zinciri; ayar `voice`).
+- **Bağlantılar:** `tts.synthesize` (sesli yanıt / önizleme) ve `speech.text_to_speech` render'dan geçer;
+  text_to_speech aracına pitch / emotion / pause / studio / speakers / srt eklendi; edit_video sesi "video" işlemesi
+  alır, `subtitles: true` seslendirme cümlelerini videoya yakar (`_burn_subs`, libass, yanına .srt).
+- **API:** GET /api/voices, POST /api/voices/install (arka planda, ilerleme), DELETE /api/voices/{id},
+  POST /api/voices/preview (ton), POST /api/voices/reference (kendi ses, onay zorunlu); /api/tts/voices birleşik.
+- **Kurulum:** "voices" adımı (backend/voice_setup.py: fettah + 99eren99 + Kokoro, PROGRESS satırları);
+  gereksinimler: piper-tts, kokoro-onnx (Chatterbox Ayarlar'dan kurulur, asla .venv'e değil).
+- **Arayüz:** Ayarlar > Sesler sekmesi (VoicesPane.jsx), yeni VoicePicker (filtreler, indirme, motor / kalite
+  rozetleri, ton kaydırıcıları), lib/voices.js; `Select`'e telefonda alttan sayfa, size="sm", nokta / ikon
+  seçenekleri eklendi; tüm yerel <select>'ler değiştirildi (görsel/video modeli, Video Stüdyo, Logo, STT); range /
+  checkbox / radio / color / file için ortak CSS, telefonda 16 px alanlar.
+
+## Proje Durumu — v0.16.1
+Ortak ayar senkronu ve komutlarda Android araç zinciri (2026-11-20). pytest 137.
+- **Cloudflare senkronu (arayüz):** görsel kartına yazılan Hesap Kimliği sağlayıcının model listesini hemen yeniler
+  (sağlayıcı kartında eski "Account ID is not set" hatası kalıyordu); bir anahtar ya da anahtar düğmesi herhangi bir
+  yerde değişince servis rozetleri yenilenir; görsel kartındaki alan kayıttan sonra kayıtlı değeri gösterir. Yeni hata
+  kodu `missing_account` (TR/EN).
+- **Komutlarda Android / Kotlin:** `mobile.add_to_run_env`, data/mobile içindeki Gradle, adb, emulator, sdkmanager,
+  Maestro ve JDK'yı her `run` komutunun PATH'ine ekler (kullanıcının kendi PATH'inden sonra; ANDROID_HOME/JAVA_HOME
+  tanımlı değilse). `system_info` araç zincirini listeler (`android_kotlin_toolchain`). Bir model "Gradle yok, Kotlin
+  yok" demişti.
+- **PowerShell 5.1 gürültüsü:** `tidy_ps_errors`, `2>&1` ile bir programın stderr satırlarına eklenen hata kaydı
+  satırlarını (At ...ps1, + CategoryInfo, NativeCommandError) siler; `java -version` artık hata gibi görünmez.
+
+## Proje Durumu — v0.16.0
+Medya servisleri, canlı model listeleri, bağlantı denetimi (2026-11-20). pytest 133, mock uçtan uca 54/54; kullanıcının
+anahtarlarıyla yalıtılmış geçici klasörde gerçek testler (8 bulut sağlayıcı, 6 Cloudflare görsel modeli, stok, ücretsiz
+Wan 2.2 klip).
+- **Bağlantı denetimi (streaming.py `_liveness`, router.ping):** 20 sn susan bulut akışına yeni bağlantıdan 1 token'lık
+  yoklama: yanıt var -> akış 30 sn'de (aracı bütün gönderen sağlayıcılarda 90 sn) kaldığı yerden sürer, yavaş ->
+  beklenir, hata -> sunucu hatası, ulaşılamıyor -> internet / sağlayıcı. Arayüz: hazırlanıyor adımında `probe_*` metinleri.
+- **Video servisleri (animate.py, services.CATALOG video türü):** Veo (Gemini anahtarı), fal.ai, Replicate, Runway, sonra
+  ücretsiz HF Space'leri; her biri açılıp kapatılır, aynı anda biri çalışır. `/api/video/test/{sid}` (ücretsiz anahtar
+  denetimi, `?real=true` klip üretir). (+) > Resimden video. Ayarlar > Web > AI video eski motor kartının yerini aldı.
+- **Medya modelleri (tools/mediamodels.py):** servis başına varsayılan + yalnızca o türden seçenekler (Gemini /
+  Cloudflare canlı); media.models / video.models ayarları; Cloudflare FLUX.2 multipart; Imagen predict.
+- **Ortak anahtarlar:** medya kartına girilen anahtar sağlayıcıyı da açar, tersi de; tek Cloudflare hesap kimliği.
+- **Model listeleri:** Gemini kendi API'sinden (pencere, düşünme, görsel, araç); `NOT_CHAT` gömme / ses / koruma /
+  yalnızca görsel modelleri her yerde gizler; `infer_caps` adlardan; kapatılan modeller (`model_retired`) gizlenir ve
+  istek önerilen yeni modele gider; OpenRouter "reasoning is mandatory" düşünme açık tekrar denenir.
+- **MCP:** hazır sunucular tek tıkla eklenir, açılıp kapatılır, silinir; kendi sunucular ayrı sekmede.
+- **Kurulum:** konsol uyumlu işaretler, Android kurulumunda canlı ilerleme (`Meter`, `PROGRESS` satırları), gerçek hıza
+  göre kalan süre.
+
+## Proje Durumu — v0.15.1
+İnternet kesintileri ve kurulum (2026-11-20).
+- **Ağ izleyici (`backend/app/netwatch.py`):** her 10 sn'de (çevrimdışıyken 3 sn) DNS + TCP (ya da sistem proxy'si)
+  denenir; iki başarısız denemede çevrimdışı, bir başarılıda çevrimiçi sayılır. Değişiklik arayüze gider
+  (`system`/`net` olayı, `hello` içinde de): kalıcı "bağlantı kesildi", sonra "geri geldi (N sn kesik kaldı)" bildirimi.
+- **Görevler:** bulut modelde ağ hatası `check_now()` ile denetlenir; bilgisayar çevrimdışıysa görev süre sınırı
+  olmadan (durdurulabilir) bekler, kotadan deneme harcamaz, model değiştirmez, "parçalı yaz" ipucu almaz; bağlantı
+  gelince aynı model ve konuşmayla sürer (`ai_note_back_online`). İzleyici çevrimdışı derken susan akış, takılma
+  sınırına kadar beklemek yerine 6 sn'de kesilir.
+- **Araçlar:** web araçları (arama, yerel olmayan adres okuma, görsel/video üretimi, seslendirme...) hata vermek yerine
+  bağlantıyı bekler; tekrar koruması kesintiden sonra aynı çağrıyı reddetmez (`tooling._run_tool`).
+- **Arayüz:** sohbette geçen süreyle "İnternet yok — bağlantı bekleniyor" kutusu; TR/EN metinler; rehber bölümü.
+- **Kurulum:** önce bağlantıyı denetler (3 deneme), Windows proxy'sini pip/npm/playwright'a geçirir, çevrimdışıyken
+  kurulu olanlarla sürer (`pip --no-index`) ve eksik paketin adını söyler; kayıtta boş satır yok.
+- **Temiz zip:** `chat/`, `data/`, `workspace/`, önbellek ve nokta klasörleri yok.
+- Testler: `tests/test_netwatch.py`; uçtan uca `NETCUT` senaryosu (`AIIQ_NET_SIM` ile benzetilen kesinti).
+
+## Proje Durumu — v0.15.0
+2026-11-20 turu: uzun gerçek çalışmaların adım kayıtlarındaki (PHP mağaza, Kotlin hesap makinesi, Android SDK
+güncelleme; `hatalar/`) her hata kök nedenine kadar izlendi ve düzeltildi, ayrıca kullanıcının bu turdaki istekleri
+yapıldı. pytest 120, mock uçtan uca 43/43.
+- **Etiket protokolü:** nitelik olarak gönderilen bütün dosya (`content="..."`, ayrıca `old=`/`new=`) gerçek sonuna
+  kadar okunur (`stream_parser.big_attr_call`); önceden her app.js yazımı `cart: '<svg viewBox=` noktasında (ilk tırnak)
+  kesiliyordu. DeepSeek `<｜DSML｜invoke>` çağrıları ayrıştırılır; `</parameter>`, `</tool>`, DSML artıkları notlara
+  sızmaz (parçalar arasında tutulur). `todo` sondaki virgülü, tek tırnağı, çitli JSON'u ve düz satırları kabul eder.
+- **edit_file:** SEARCH/REPLACE işaretleri kendi satırında olmalı - JS `===` ayırıcı sanılıp dosyalara `=======`
+  yazılıyordu. İşaret bırakacak düzenleme / yazma reddedilir.
+- **write_file:** boş yeni dosya, bozuk yol (`b u i l d . g r a d l e`), uygulama kayıt satırları (`[To-do ...]`)
+  reddedilir / çıkarılır; bozuk karakter (U+FFFD) ve geçici dosya adları bildirilir.
+- **Zorunlu 8K bölme yok:** "~8.000 karakter, bu sağlayıcı uzun çağrıları düşürüyor" notları Ayarlar > Ajan > bölerek
+  yazma ayarına uyar (kapalı = tek çağrı). 75 sn'lik "araç çağrısını ancak bitince gönderiyor" kesmesi kaldırıldı
+  (yazılmakta olan çağrıyı atıyordu); EVREN'in araç argümanlarını akıttığı bilinir.
+- **Döngüler:** tekrar, kelime salatası (`_salad_cut`) ya da eyleme geçmeden 48K karakter düşünme kesilir ve tur sağlam
+  kısımdan yeniden yapılır (taşınan düşünce, düşünmesiz istek, tekrar cezası); cevap orada bitirilmez.
+- **Görevin hafızası:** okunup sonra değişmeyen dosyalar geçmişte bütün kalır (pencerenin dörtte biri,
+  `_kept_reads`); todo listesi (`todo_board`) her model devrinde, devam ettirmede ve açık madde notunda gider; birden
+  çok dosya adlayan madde hepsi yazılınca işaretlenir; sunucu başlatma kendi maddesini işaretler; `dosya:satır`
+  bildiren başarısız komuta o satırlar diskten eklenir (`error_context`).
+- **Yönlendirme:** görev sürerken gelen mesajlar birlikte, kullanıcının sözü olarak çitlenmiş, todo listesi ve kısa bir
+  kuralla (düzeltme / yeni yön / soru) iletilir; eski taşınan plan düşürülür.
+- **Anahtar kelime değil seçim:** yetenekler tetikleyici kelimelerle yüklenmez; model tüm yetenek ve ajanları
+  amaçlarıyla görür ve seçer (takım üyeleri ajan rolü alabilir). "Soru" için salt-okuma sınırı yumuşaktır: model
+  need_tools ile kaldırır.
+- **Android:** `mobile_env status` tüm yolları, kurulu platform / build-tools / imajları, doğrulanmış sürüm setlerini
+  (compileSdk 36 = AGP 8.11.1 + Kotlin 2.1.21 + Gradle 8.13 + JDK 17/21) ve kuralları verir; yeni `gradle` ve `sdk`
+  eylemleri; Maestro çalışma klasöründe koşar; makinede zaten olan SDK / JDK (Android Studio) kullanılır, sadece
+  güncellenir.
+- **Kabuk UTF-8:** PowerShell çıktısı, `Get-Content` ve Java araçları (Maestro) UTF-8 okur ve yazar.
+- **Arayüz:** canlı düşünce sabit yükseklikte, sonu izleyen bir kutuda akar ve düşünme bitince kapanır; uzun kullanıcı
+  ve yönlendirici mesajları Markdown ve kodla katlanır (Daha fazla / az göster); Vite parça uyarıları yok.
+- **Kurulum / çalıştırma:** `installer.py` (install.bat çağırır): adımlar, ilerleme çubuğu, geçen / kalan süre, kayıt,
+  Türkçe Windows'ta Türkçe diğerlerinde İngilizce, mevcut olanı kullanan mobil kurulum. `run.bat` / başlatıcı: başlık
+  kutusu ve okunaklı renkli log (sık yoklamalar gizli, `--verbose` hepsini gösterir).
+- **Kod düzeni:** `orchestrator.py` 4.288 -> 1.988 satır (learning, runstate, guards, history, continuity, prompting,
+  streaming, tooling); `registry.py` 2.924 -> 459 satır (shell_tools, file_tools, web_tools, media_tools, doc_tools,
+  agent_tools). Her ad yeniden dışa aktarılır; TOOLS sırası korunur.
 
 ## Proje Durumu — v0.14.3
 Süreklilik turu; `evren:qwen3.8-flash-next` ile 4 sa 16 dk süren gerçek testle kanıtlandı (BakkalX Expo + Express +

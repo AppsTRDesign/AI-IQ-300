@@ -2,11 +2,17 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
+title AI IQ 300
 if not exist .venv\Scripts\python.exe (
-  echo Once install.bat calistirin.
+  powershell -NoProfile -Command "if ((Get-UICulture).TwoLetterISOLanguageName -eq 'tr') { Write-Host '  Once install.bat calistirin.' -ForegroundColor Yellow } else { Write-Host '  Run install.bat first.' -ForegroundColor Yellow }"
+  pause
   exit /b 1
 )
-set "AIIQ_PORT=%1"
-if "%AIIQ_PORT%"=="" set "AIIQ_PORT=8300"
-.venv\Scripts\python.exe launcher.py --port %AIIQ_PORT%
+rem run.bat [port] [--verbose]
+set "AIIQ_PORT=8300"
+set "EXTRA="
+for %%a in (%*) do (
+  if /i "%%~a"=="--verbose" (set "EXTRA=--verbose") else (set "AIIQ_PORT=%%~a")
+)
+.venv\Scripts\python.exe launcher.py --port %AIIQ_PORT% %EXTRA%
 endlocal

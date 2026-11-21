@@ -6,8 +6,8 @@
 A full-scale software development and command center: autonomous, multi-agent, working with local and cloud LLMs.
 
 ## Current State
-- **Date:** 2026-11-19
-- **Active task:** v0.12.0 done (weak models: plain-text tool calls run, requested files checked on disk, system_info, chat search, model record, LM Studio memory relief, test suite, orchestrator split). v0.11.0 done (full audit: lean prompt, continuity after drops and model switches, RAM / VRAM guard that keeps the model loaded, exact WebSocket reconnects, race fixes). v0.10.7 done (bulk select/delete, abilities from the first message, tool detection in 14 languages, no-split writing). v0.10.6 done (web design + stock_photo, page JS/broken-image testing, context anchored on real counts, local window growth, Markdown live answers). v0.10.5 done (real token data, vision model, settings audit). v0.10.4 done (settings, local GPU, MCP, toolchain, skills). v0.10.3 done (live tests: Evren auto, NVIDIA Nemotron 3 Ultra 550B, Groq).
+- **Date:** 2026-11-21
+- **Active task:** v0.16.0 done (connection check of silent streams, paid + free AI video, media model pickers, live model lists without embeddings / retired models, MCP tabs, installer progress). v0.15.1 done (internet drops: detected, shown, tasks wait and resume on the same model; installer offline / proxy handling). v0.15.0 done (step-log fixes, modular orchestrator / registry, pro installer). v0.12.0 done (weak models: plain-text tool calls run, requested files checked on disk, system_info, chat search, model record, LM Studio memory relief, test suite, orchestrator split). v0.11.0 done (full audit: lean prompt, continuity after drops and model switches, RAM / VRAM guard that keeps the model loaded, exact WebSocket reconnects, race fixes). v0.10.7 done (bulk select/delete, abilities from the first message, tool detection in 14 languages, no-split writing). v0.10.6 done (web design + stock_photo, page JS/broken-image testing, context anchored on real counts, local window growth, Markdown live answers). v0.10.5 done (real token data, vision model, settings audit). v0.10.4 done (settings, local GPU, MCP, toolchain, skills). v0.10.3 done (live tests: Evren auto, NVIDIA Nemotron 3 Ultra 550B, Groq).
 - **Last major release:** v0.10.0, which added:
   - a professional document engine (Chromium PDF/HTML + KaTeX, designed DOCX/PPTX/XLSX)
   - adjustable stream timeouts and chunked writing
@@ -28,6 +28,271 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - toggle popovers, a drawing pad, folder upload and goal mode
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
+
+## Project Status: v0.18.5
+Huge files and what comes after them (2026-11-21), for every provider, not per model. Live: NVIDIA Nemotron 3 Ultra
+wrote a 152,690-character game in one call (660 s, no break, one doctype), tested it in the browser, fixed its one bug
+with edit_file. pytest 199.
+- **Live disk write:** a streaming write_file is written into the real file every 2 s (whole lines); after a break
+  the written part stays, the model continues from it (append) and a restart is never appended (starts_over /
+  trim_overlap: one document, never two doctypes). Salvage undoes todo items ticked without work.
+- **Request time limit:** some providers stop sending at ~300 s from the request start without closing the
+  connection. Measured on NVIDIA Nemotron 3 Ultra with direct streams (no app logic): with max_tokens=32000 the data
+  stopped at 302 s and 308 s (2/2); without it a plain stream ran past 360 s, one with native tools finished normally
+  at 697 s, the app's own run streamed 660 s (0/3). The app sends max_tokens only to local models; the user's earlier
+  cuts happened without it, so the limit is treated as a provider behaviour, not a model's: learned per provider
+  (request_caps.json: one break at a round gateway limit, or two close breaks), the stream is cut 12 s after it (not
+  90), files are then written in parts that fit it.
+- **Native tool calls only where the provider streams their arguments** (otherwise silent "preparing" phases); text
+  protocol elsewhere. Notes to the user follow the UI language (_ui).
+- **Self-kill guard:** a model freed a port with `taskkill /f /im python.exe` and killed the app itself mid-task.
+  Killing python / node / the app's interpreter by name (taskkill /im, Stop-Process -Name, pkill, killall, wmic,
+  Get-Process | Stop-Process) or the app's own PID is refused in every mode; one PID or the stop tool stays possible.
+- **Ports:** `python -m http.server 8080` (bare port) is now seen: our old server is replaced, a foreign one gets a
+  free port (a second server had bound the same port on Windows and every request went to the broken old one).
+- **Browser tools (full audit):**
+  - clicks look first (elementFromPoint + getAnimations): a pulsing button is clicked at once, a covered one names
+    the layer over it (`covered by <div#cover>`) - 0.2-0.3 s instead of 6 s per click;
+  - hold (`hold=800`), drag (`drag="120,0"`, `to:x,y`, onto a ref, in small pointer moves) for click and batch
+    (drag / swipe / longpress), key hold (`hold=1500`);
+  - js runs several statements, returns `undefined` as such (was null), elements / NodeLists as HTML (were {}),
+    Maps / Sets / functions / errors / cyclic objects readably;
+  - uncaught errors carry their type and place (`ReferenceError: ... (at index.html:3106:21)`), also in the
+    write-time JS check, browser_check and web_screenshot;
+  - favicon / apple-touch-icon / source maps / .well-known are no page errors; a failed earlier navigation is not
+    reported on the next page; console listing filters them too;
+  - browser_batch accepts fences, raw newlines in js code and trailing commas, and says where the JSON broke;
+  - numbers as models send them ("3s", "200px", "1.5s" = 1500 ms) never stop a step;
+  - opacity-0 screens (a game HUD under its title) are not read as visible;
+  - back / forward with no history keeps the page (went to about:blank);
+  - ERR_EMPTY_RESPONSE / connection reset / certificate errors explained; scroll / screenshot by a stale ref found
+    again; wait text matches the visible copy;
+  - browser_check no longer fails on pages that never go network-idle and always closes its Chromium; the window
+    closed by the user no longer leaks the Playwright driver; closed tabs free their logs; downloads never overwrite
+    each other and failed ones are reported.
+- **Todo:** a started server no longer ticks "test in the browser and fix the errors"; items that ask to fix / debug
+  or check in the browser are closed only by the model.
+- **Playbook:** `timeout /t` (no console) -> Start-Sleep; ERR_EMPTY_RESPONSE / connection closed -> an old broken
+  server holds the port, use another one.
+- Earlier fixes in this round: system_info clean_text import fallback, MCP _read_stderr crash, MCP search inputs
+  touching the divider, /fs/exists instead of a 404 HEAD.
+
+## Project Status: v0.18.4
+MCP: backend catalog (mcp_catalog.py, 16 servers, auth "" / oauth / header), /api/mcp-catalog, /api/mcp-registry
+(search_servers), /api/mcp/{sid}/call (user runs a tool), tool input_schema in status; Settings MCP catalog with
+category + search, registry search, Try modal, Use in chat; composer # trigger (CatalogPicker "#", RichInput
+#server/tool chips recognised by shape, paste chipify, mode "mcp" chip, paste of a mode instruction restores chips);
+prompt_section(request) puts picked tools first and reports missing ones; orchestrator ensures the picked server.
+Search cards (SearchCards.jsx: favicon via icons.duckduckgo.com, lazy) from web_search / research data.results;
+stock_photo data.photos grid. SpeedMeter in the trace header (live "speed" event 1/s, avg timing.tps 2 decimals);
+steps get t0 / ms, export shows ms + tps. Todo status aliases ("done" -> completed), ticking a missing list ends.
+Openverse license_type / mature filter restored (was inside a comment).
+
+## Project Status: v0.18.3
+LaTeX in ThinkText (katex on math markers only) + composer MathPreview; tokens/s per turn (streaming gen counter,
+usage output when sent) in timing.tps and live step data.tps; stall cut: text max(PROBE_CUT, 6 x tgap, <=150),
+thinking max(min(60, PROBE_CUT), ...), re-probe before cutting when the alive answer is >15 s old; finished thinking
+keeps 30K characters; uvicorn ws_ping_timeout 60 s. Measured browser load / stress (see README).
+
+## Project Status: v0.18.2
+Reasoning view, template designs, gallery (2026-11-21). Raw reasoning measured (deepseek / gpt-oss one block, Nemotron
+lines + lists, qwen3.8 paragraphs): ThinkText.paragraphize splits plain blocks; HTML / Markdown / code rendered, no
+other decoration. xlsx_design.py (dashboard, budget, pipeline, tracker + Gantt, calendar sheet, scorecard, inventory)
+applied in docs_gen._xlsx; template_thumbs.py draws xlsx / pptx thumbnails per layout; doc_templates._sample_html per
+document layout. Gallery: STRIP 8 + View all modal (IntersectionObserver, 12 per page), arrows disabled at the ends.
+make_doc: refuses the built-in template's name as title; header= / footer= per document (doc_templates.with_lines);
+official_letter keeps only sample_header / sample_footer for its thumbnail.
+
+## Project Status: v0.18.1
+Streams, templates as real designs, weak-model guards (2026-11-21). pytest 173, mock e2e passed; live: evren qwen3-vl /
+auto / deepseek-v4.1-flash / qwen3.8-flash, NVIDIA Nemotron 3.5 Super, Gemini, Groq, Cloudflare.
+- **Stall cuts (streaming.py, router._heartbeat):** measured EVREN sends file arguments in 5-12 s batches; the probe
+  cut healthy streams at 4 x gap (48 s). Now: PROBE_CUT 90, cut = max(90, 8 x gap), never while SSE keep-alives
+  arrive (heartbeat idle events carry `keepalive`), MIDCALL_STALL 150; a thought stopped mid-sentence (token pace
+  `tgap`) is continued after max(45, 6 x tgap); phase `think_stalled`; "no data" / end of live reasoning only after
+  max(15, 2 x gap) s.
+- **Reasoning view (ThinkText.jsx, thinkfmt.thinkParts):** a light parser (line breaks, basic HTML -> Markdown,
+  headings, bold/italic, lists, tables, quotes, links) + code in CodeBlock (Monaco); open fences stay plain text;
+  thinking steps 10/s. Live box, note and saved "Thought" all use it.
+- **Templates (doc_templates.py):** 35 built-ins, 8 layouts (report, letter, memo, academic, magazine, invoice,
+  resume, minimal) with font_family, margins (@page + pdf), header / footer lines (`**bold**`), logo (data/
+  doc_templates/assets), own CSS (clean_css). docs_gen.TEMPLATE_SPEC drives PDF (`layout_body`, footer template),
+  DOCX (plain_cover, h2 / table styles, footer lines, logo), PPTX (look: dark / hero / split / minimal / corner /
+  band) and XLSX (header look solid / dark / band / soft / lines). Gallery thumbnails = `_real_page` (the engine).
+  doc_template: inspect (palette, fonts, `_page_facts` lines with zone / align / mm, `save_reference_images`: page
+  PNG + logo crops without guide lines), create (layout, margins, header, footer, logo, css, font_family), preview
+  (PNG). Template instruction = design only; make_doc refuses repeated filler and the sample outline as headings.
+- **Broken PDF font maps (docread):** `broken_chars` (U+FFFD, private use, a lone other-script letter in words) +
+  OCR of the page + `repair_glyphs` voting per code; language guessed from the text.
+- **Weak models:** skill tool lists bring companions (SKILL_COMPANIONS; /docs gets doc_template); delivery / promise
+  checks run in skill-limited tasks (`work_mode`); `_same_as_before` sends a word-for-word repeated answer back;
+  `_list_cut` ends comma-list loops; `request_core` keeps app instructions out of auto to-dos; old tool outputs keep
+  up to 16K characters on large windows.
+- **UI:** sent / copied mode messages show chips (meta.chips, chipsFromText); file chips only for files that exist
+  (HEAD); reload returns to the same chat and viewer (sessionStorage aiiq_tab); all viewers preloaded; model pickers
+  open on the selected model; landscape PDFs, KPI fit, short tables kept whole.
+- **Other:** system_info `now` (date, time, weekday, zone) and the time in the prompt; MiniMax / Moonshot / Z.ai /
+  Requesty / Vercel / Poe / Baseten direct URLs (DIRECT_NOW migration).
+
+## Project Status: v0.18.0
+Document templates, mode chips, made-vs-found steps, readable errors (2026-11-20). pytest 158, e2e 54/54.
+- **Document templates** (tools/doc_templates.py): 14 built-in (PDF / DOCX: design report, experiment analysis,
+  investment memo, project proposal, meeting notes, résumé; XLSX: analytics dashboard, financial budget, operating
+  calendar, project tracker; PPTX: business review, market trends, operating review, pitch deck) + the user's own in
+  data/doc_templates. A template id is a make_doc theme (colours in docs_gen.THEMES, type / cover CSS in
+  TEMPLATE_CSS) and an outline. make_doc `template=`, tool `doc_template` (list / create / delete; Template Creator).
+  API: GET /api/doc-templates, GET /api/doc-templates/{id}/preview (real HTML thumbnail), DELETE.
+- **Composer modes** (ComposerModes.jsx): the (+) entries (image, promo video, AI clip, image to video, web shot,
+  Word / PDF / Excel / PowerPoint) are coloured chips; the instruction goes with the message. Document modes open the
+  template gallery (iframe thumbnails, Create template = Template Creator chip + brief). Image to video opens a picker
+  of the chat folder's pictures, attachments and uploads.
+- **Step kinds**: generate_image = image_gen, generate_video / animate_image = video_gen, edit_video = video_edit,
+  inspect_media = inspect, text_to_speech = speech, speech_to_text = transcribe (was "Photo searched" / "Visual
+  test"); a finished reasoning step says "Thought".
+- **Reasoning rendering**: single line breaks kept (hard breaks), <br> and escaped \n become breaks.
+- **Errors**: `providers.message_of` reads every error shape (Gemini's JSON list, Python repr, Cloudflare errors,
+  nested) - no JSON in the UI; services use it too. UI: a translated hint per cause (high demand, per-minute, daily
+  quota, GPU quota, payment, missing / retired model, timeout, safety, auth); the raw text under "technical detail".
+- **Model lists**: Gemini only by its chat naming (code-named gemini-4-hydrogen etc. hidden: minutes without an
+  answer); `_chat_by_meta` uses the listings' own fields (Together type, Mistral capabilities.completion_chat, Groq
+  active, kind); NOT_CHAT_EXTRA (davinci / babbage, moderation, sora, dall-e, tts, whisper, ...).
+- **AI video fallback**: a paid service's model that is not found is replaced by its other models; Spaces that added
+  a required argument (last_image) get it empty; clips are made one at a time (a lock: parallel calls raced for the
+  free GPU quota).
+- **Media in chat**: the cards use the full video player and the waveform audio player (inline: no autoplay,
+  keys only when hovered); the viewers' chunks are preloaded (an update no longer reloads the page on open); the
+  studio's render result kept restarting every few seconds (Date.now() in the src) - fixed.
+- **Voice of a file**: after "use this voice" the tone panel opens (speed, pitch, emotion, studio) and writes again.
+- **Delivery check**: lines that say a file was NOT made are not counted as claims.
+
+## Project Status: v0.17.1
+Fixes from real runs (2026-11-20). pytest 147, e2e 54/54.
+- **Drafts per chat** (lib/drafts.js, Composer): text + attachments of each chat's composer kept in localStorage,
+  restored when the chat opens again, after a reload or a power cut; images get their base64 back from
+  GET /api/sessions/{sid}/upload/raw. A new chat created by its first upload keeps its draft.
+- **Reasoning rendering** (lib/thinkfmt.js): unfenced HTML / code in reasoning becomes fenced blocks with a language,
+  pipe tables get their |---| line; the live box and the saved "Thinking" step render Markdown (the step was a <pre>).
+- **edit_video**: `narration` as an object / text / .mp3 becomes one voiceover (an object crashed with KeyError 0 =
+  "Missing required argument: 0" and the voice was dropped); the result says "NO voice-over" when there is none.
+  The run's KeyError message now says a value may have the wrong shape.
+- **speech_to_text**: audio decoded with ffmpeg (faster-whisper's PyAV reader broke on PyAV 19: metadata_errors).
+- **Delivery check**: claimed file names are matched without Turkish letters / case (`checks.real_path`,
+  `fold_name`); the final answer gets the real path (`fix_claimed_names`) instead of a false "not created" note.
+- **Voices**: preview buttons pause when pressed again; Chatterbox install progress follows the package and model
+  folder sizes (it stood at 60 % during the 3 GB model download).
+
+## Project Status: v0.17.0
+Local studio voices and pro selects (2026-11-20). pytest 144; real tests: 4 Turkish Piper voices + Kokoro installed
+and measured, every engine through the API (Piper 0.7 s, Kokoro 1.2 s, Edge 6.7 s per preview), a narrated video
+with burned subtitles (-15.3 LUFS). Chatterbox (3 GB model) real test: Turkish 10 s of speech in 33-45 s on the CPU;
+own-voice reference followed (output 97 Hz vs reference 103 Hz; the default voice is female). resemble-perth left
+PerthImplicitWatermarker None on Windows ("'NoneType' object is not callable"): the worker falls back to a no-op one.
+- **backend/app/voice/** (new): `catalog.py` (Piper index + extra Turkish voices fahrettin / fettah / 99eren99,
+  Kokoro v1.0 int8, Chatterbox languages, install / remove with progress, gender from pitch: autocorrelation F0,
+  < 160 Hz male; measured dfki 97, fahrettin 108, 99eren99 83 = male, fettah 182 = female), `engines.py` (Piper
+  SynthesisConfig, Kokoro, Chatterbox through one long-lived worker in its OWN uv venv data/tts/chatterbox/venv
+  because chatterbox-tts pins numpy<2 / torch 2.6 / transformers, Edge decoded through ffmpeg), `studio.py`
+  (one ffmpeg pass: presets none/natural/podcast/broadcast/video/warm, pitch with tempo kept, room echo, loudnorm),
+  `render.py` (sentence split, trimmed pauses, timings -> .srt, "Name: line" dialogs, fallback chain by language +
+  gender + engine order; settings `voice`).
+- **Wiring:** `tts.synthesize` (spoken replies / previews) and `speech.text_to_speech` go through render; tool
+  text_to_speech gained pitch / emotion / pause / studio / speakers / srt; edit_video voice gets the "video" finish,
+  `subtitles: true` burns the voice-over sentences in (`_burn_subs`, libass, .srt next to the video).
+- **API:** GET /api/voices, POST /api/voices/install (background, progress), DELETE /api/voices/{id},
+  POST /api/voices/preview (tone), POST /api/voices/reference (own voice, consent required); /api/tts/voices merged.
+- **Installer:** step "voices" (backend/voice_setup.py: fettah + 99eren99 + Kokoro, PROGRESS lines);
+  requirements: piper-tts, kokoro-onnx (Chatterbox is installed from Settings, never into .venv).
+- **UI:** Settings > Voices tab (VoicesPane.jsx), new VoicePicker (filters, download, engine / quality badges,
+  tone sliders), lib/voices.js; `Select` gained a phone bottom sheet, size="sm", dot / icon options; every native
+  <select> replaced (media/video model, Video Studio, Logo maker, STT); global CSS for range / checkbox / radio /
+  color / file inputs, 16 px fields on phones.
+
+## Project Status: v0.16.1
+Shared-settings sync and the Android toolchain in commands (2026-11-20). pytest 137.
+- **Cloudflare sync (UI):** an Account ID typed in the image card re-reads the provider's models at once (the
+  provider card kept an old "Account ID is not set" error); service badges reload when a key or switch changes
+  anywhere; the image card's field shows the stored value after saving. New error code `missing_account` (TR/EN).
+- **Android / Kotlin in commands:** `mobile.add_to_run_env` puts data/mobile's Gradle, adb, emulator, sdkmanager,
+  Maestro and the JDK on every `run` command's PATH (after the user's own PATH; ANDROID_HOME/JAVA_HOME if unset);
+  `system_info` lists the toolchain (`android_kotlin_toolchain`). A model had reported "no Gradle, no Kotlin".
+- **PowerShell 5.1 noise:** `tidy_ps_errors` removes the error-record lines (At ...ps1, + CategoryInfo,
+  NativeCommandError) that `2>&1` wraps around a program's stderr; `java -version` no longer looks like a failure.
+
+## Project Status: v0.16.0
+Media services, live model lists, connection check (2026-11-20). pytest 133, mock e2e 54/54; real tests with the
+user's keys in an isolated temp folder (8 cloud providers, 6 Cloudflare image models, stock, a free Wan 2.2 clip).
+- **Connection check (streaming.py `_liveness`, router.ping):** a cloud stream silent for 20 s gets a 1-token probe on
+  a new connection: alive -> the stream is continued after 30 s (90 s for providers that send tool calls whole), slow ->
+  wait, sick -> server error, down -> netwatch / unreachable. UI: `probe_*` texts in the preparing step.
+- **Video services (animate.py, services.CATALOG kind video):** Veo (Gemini key), fal.ai, Replicate, Runway, then the
+  free HF Spaces as switchable services, one at a time. `/api/video/test/{sid}` (free key check, `?real=true` makes a
+  clip). (+) > Image to video. Settings > Web > AI video replaces the old engines card.
+- **Media models (tools/mediamodels.py):** per service default + only-that-kind choices (Gemini / Cloudflare live);
+  settings media.models / video.models; `/api/media/models/{kind}/{sid}`; Cloudflare FLUX.2 multipart; Imagen predict.
+- **Shared keys:** a key typed in a media card turns on the provider and the reverse; one Cloudflare account id
+  (`_sync_shared`, startup migration).
+- **Model lists:** Gemini native listing (window, thinking, vision, tools); `NOT_CHAT` hides embeddings / speech /
+  guards / image-only models everywhere (also OpenRouter output modalities, Cloudflare); `infer_caps` from names;
+  retired models (`model_retired`) hidden and requests moved to the named successor (router.stream_chat); OpenRouter
+  "reasoning is mandatory" retried with reasoning on; Gemini reasoning_effort incl. "none".
+- **MCP:** presets one-click add with on/off and remove; own servers in a separate tab.
+- **Installer:** console-safe glyphs, Android setup live progress (`Meter`, `PROGRESS` lines), ETA from real pace.
+
+## Project Status: v0.15.1
+Internet drops and the installer (2026-11-20).
+- **Net watcher (`backend/app/netwatch.py`):** probes DNS + TCP (or the system proxy) every 10 s, every 3 s while
+  offline; offline after two failed probes, online after one good one. Changes go to the UI (`system`/`net` event,
+  also in `hello`): a "connection lost" notice that stays, then "back (down N s)".
+- **Tasks:** a network error on a cloud model is checked with `check_now()`; when this computer is offline the task
+  waits with no time limit (stoppable), uses no retries against the quota, does not switch models and gets no
+  "write in parts" hint, then continues on the same model and conversation (`ai_note_back_online`). A stream that
+  goes silent while the watcher says offline is cut after 6 s instead of hanging to the stall limit.
+- **Tools:** web tools (search, fetch of non-local URLs, image/video generation, TTS...) wait for the connection
+  instead of failing; the repeat guard does not refuse the same call after the drop (`tooling._run_tool`).
+- **UI:** an "No internet — waiting" box with the time offline in the chat; TR/EN texts; guide section.
+- **Installer:** checks the connection first (3 tries), passes the Windows proxy to pip/npm/playwright, continues
+  offline with what is installed (`pip --no-index`) and names the missing package; the log has no blank lines.
+- **Clean zip:** no `chat/`, `data/`, `workspace/`, cache or dot folders.
+- Tests: `tests/test_netwatch.py`; e2e scenario `NETCUT` (simulated drop with `AIIQ_NET_SIM`).
+
+## Project Status: v0.15.0
+Round of 2026-11-20: every error in the step logs of long real runs (PHP shop, Kotlin calculator, Android SDK
+update; `hatalar/`) traced to its root and fixed, plus the user's requests of the round. pytest 120, mock e2e 43/43.
+- **Tag protocol:** a whole file sent as an attribute (`content="..."`, also `old=`/`new=`) is read to its real end
+  (`stream_parser.big_attr_call`); before, every app.js write stopped at `cart: '<svg viewBox=` (the first quote).
+  DeepSeek's `<｜DSML｜invoke>` calls are parsed; stray `</parameter>`, `</tool>`, DSML pieces never reach notes (held
+  across chunks). `todo` takes trailing commas, single quotes, fenced JSON and plain lines (`loose_json`).
+- **edit_file:** SEARCH/REPLACE markers must stand on their own line - JS `===` was taken for the divider and wrote
+  `=======` into files. An edit or write that would leave markers is refused.
+- **write_file:** empty new files, garbled paths (`b u i l d . g r a d l e`), app bookkeeping lines (`[To-do ...]`)
+  are refused / removed; broken characters (U+FFFD) and temporary names are reported.
+- **No forced 8K splitting:** the "~8,000 characters, this provider drops long calls" notes follow Settings > Agent >
+  split writing (off = one call). The 75 s "sends tool calls only at the end" cut is gone (it threw the call away);
+  EVREN is known to stream tool arguments.
+- **Loops:** a repetition, word salad (`_salad_cut`) or 48K characters of reasoning without an action is cut and the
+  turn redone from the sound part (carried reasoning, no-think, repeat penalty) instead of ending the answer.
+- **Memory of the task:** files read and not changed since stay whole in the history (a quarter of the window,
+  `_kept_reads`); the to-do list (`todo_board`) goes with every model handover, resume and open-items note; an item
+  naming several files is ticked only when all are written; a server start ticks its item; a failed command that
+  names `file:line` gets those lines from disk (`error_context`).
+- **Steering:** messages sent while a task runs arrive together, fenced as the user's words, with the to-do list and
+  a short rule (correction / new direction / question); the old carried plan is dropped.
+- **Choice, not keywords:** skills are no longer loaded by trigger words; the model sees every skill and agent with
+  its purpose and picks (team members can take an agent role). The read-only limit for "questions" is soft: the model
+  lifts it with need_tools.
+- **Android:** `mobile_env status` returns every path, the installed platforms / build-tools / images, verified
+  version sets (compileSdk 36 = AGP 8.11.1 + Kotlin 2.1.21 + Gradle 8.13 + JDK 17/21) and rules; new actions `gradle`
+  and `sdk`; Maestro runs in the working folder; an SDK / JDK already on the machine (Android Studio) is used and only
+  updated.
+- **Shell UTF-8:** PowerShell output, `Get-Content` and Java tools (Maestro) read and print UTF-8.
+- **UI:** live reasoning in a fixed-height box that follows the end and closes when thinking ends; long user and
+  steering messages fold (Show more / less) with Markdown and code; no Vite chunk warnings.
+- **Install / run:** `installer.py` (called by install.bat): steps, progress bar, elapsed / remaining time, log,
+  Turkish on a Turkish Windows else English, mobile setup that reuses what exists. `run.bat` / launcher: banner and a
+  readable coloured log (polling hidden, `--verbose` shows all).
+- **Code layout:** `orchestrator.py` 4,288 -> 1,988 lines (learning, runstate, guards, history, continuity,
+  prompting, streaming, tooling); `registry.py` 2,924 -> 459 lines (shell_tools, file_tools, web_tools, media_tools,
+  doc_tools, agent_tools). Every name is re-exported; TOOLS keeps its order.
 
 ## Project Status: v0.14.3
 Continuity round, proven by a 4 h 16 min real run on `evren:qwen3.8-flash-next` (the BakkalX Expo + Express +
