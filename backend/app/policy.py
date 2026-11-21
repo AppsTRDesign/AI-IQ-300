@@ -39,6 +39,38 @@ READ_ONLY = [
 ]
 
 
+# Killing processes BY NAME (every python.exe / node.exe on the machine) also kills this app (it runs on Python), its
+# MCP servers and dev servers (node), the user's other programs - and the task with it. A model that wanted to free a
+# port wrote "taskkill /f /im python.exe & python -m http.server 8080": the app died mid-task. Refused in every mode;
+# stopping one process by its id (or the stop tool for servers started here) stays possible.
+_RUNTIMES = r"(python[\d.]*w?|pythonw|py|pyw|node|nodejs|uvicorn|" + re.escape(Path(sys.executable).stem) + r")"
+KILLS_APP = [
+    rf"\btaskkill\b[^&|;\n]*/im\s+[\"']?{_RUNTIMES}(\.exe)?\b",
+    rf"\b(Stop-Process|spps|kill)\b[^&|;\n]*-(Name|n|ProcessName)\s+[\"']?{_RUNTIMES}\*?\b",
+    rf"\b(Get-Process|gps|ps)\s+(-Name\s+)?[\"']?{_RUNTIMES}\*?[\"']?[^|\n]*\|\s*(Stop-Process|spps|kill)\b",
+    rf"\b(pkill|killall)\b[^&|;\n]*\b{_RUNTIMES}\b",
+    rf"\bwmic\b[^&|;\n]*name\s*=\s*[\"']*{_RUNTIMES}(\.exe)?[\"']*[^&|;\n]*\b(delete|terminate)\b",
+    rf"\bWhere-Object\b[^|\n]*\b{_RUNTIMES}\b[^|\n]*\|\s*(Stop-Process|spps|kill)\b",
+]
+
+
+def _own_pids() -> set[str]:
+    """This app's process and its parents (the launcher): killing one of them by id ends the app too."""
+    pids = {str(os.getpid())}
+    try:
+        pids.add(str(os.getppid()))
+    except (AttributeError, OSError):
+        pass
+    return pids
+
+
+def kills_app(text: str) -> list[str]:
+    hits = _match(KILLS_APP, text)
+    if not hits and re.search(r"\b(taskkill|Stop-Process|spps|kill)\b", text, re.I):
+        hits = [f"pid {p}" for p in _own_pids() if re.search(rf"(?<![\d]){p}(?![\d])", text)]
+    return hits
+
+
 @dataclass
 class Decision:
     action: str  # allow | ask | deny
@@ -53,6 +85,8 @@ def _match(patterns: list[str], text: str) -> list[str]:
 def classify_command(text: str) -> tuple[str, list[str]]:
     if hits := _match(FORBIDDEN, text):
         return "forbidden", hits
+    if hits := kills_app(text):
+        return "kills_app", hits
     if hits := _match(DANGEROUS, text):
         return "dangerous", hits
     if hits := _match(NETWORK, text):
@@ -64,7 +98,7 @@ def classify_command(text: str) -> tuple[str, list[str]]:
 
 def decide_command(text: str, mode: str) -> Decision:
     cat, reasons = classify_command(text)
-    if cat == "forbidden":
+    if cat in ("forbidden", "kills_app"):
         return Decision("deny", cat, reasons)
     if cat == "dangerous":
         # 'full' (Tam erişim) means the user does not want to be asked. Only the system-breaking commands

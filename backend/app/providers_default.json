@@ -145,9 +145,9 @@
     "local": false
   },
   "baseten": {
-    "name": "Baseten · Gateway",
+    "name": "Baseten",
     "kind": "openai",
-    "base_url": "http://127.0.0.1:4000/v1",
+    "base_url": "https://inference.baseten.co/v1",
     "enabled": false,
     "local": false
   },
@@ -159,30 +159,30 @@
     "local": false
   },
   "minimax": {
-    "name": "MiniMax · Gateway",
+    "name": "MiniMax",
     "kind": "openai",
-    "base_url": "http://127.0.0.1:4000/v1",
+    "base_url": "https://api.minimax.io/v1",
     "enabled": false,
     "local": false
   },
   "moonshot": {
-    "name": "Moonshot · Gateway",
+    "name": "Moonshot AI (Kimi)",
     "kind": "openai",
-    "base_url": "http://127.0.0.1:4000/v1",
+    "base_url": "https://api.moonshot.ai/v1",
     "enabled": false,
     "local": false
   },
   "poe": {
-    "name": "Poe · Gateway",
+    "name": "Poe",
     "kind": "openai",
-    "base_url": "http://127.0.0.1:4000/v1",
+    "base_url": "https://api.poe.com/v1",
     "enabled": false,
     "local": false
   },
   "requesty": {
-    "name": "Requesty · Gateway",
+    "name": "Requesty",
     "kind": "openai",
-    "base_url": "http://127.0.0.1:4000/v1",
+    "base_url": "https://router.requesty.ai/v1",
     "enabled": false,
     "local": false
   },
@@ -194,16 +194,16 @@
     "local": false
   },
   "vercel": {
-    "name": "Vercel AI Gateway · Gateway",
+    "name": "Vercel AI Gateway",
     "kind": "openai",
-    "base_url": "http://127.0.0.1:4000/v1",
+    "base_url": "https://ai-gateway.vercel.sh/v1",
     "enabled": false,
     "local": false
   },
   "zai": {
-    "name": "Z.ai · Gateway",
+    "name": "Z.ai (GLM)",
     "kind": "openai",
-    "base_url": "http://127.0.0.1:4000/v1",
+    "base_url": "https://api.z.ai/api/paas/v4",
     "enabled": false,
     "local": false
   },

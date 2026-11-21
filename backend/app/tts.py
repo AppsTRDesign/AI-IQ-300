@@ -11,7 +11,7 @@ from collections import OrderedDict
 _VOICES: tuple[float, list[dict]] | None = None
 _AUDIO: OrderedDict[str, bytes] = OrderedDict()  # recent sentences, so "read again" is instant
 AUDIO_CACHE = 200
-SPEAKABLE = re.compile(r"\w", re.U)
+SPEAKABLE = re.compile(r"\w", re.UNICODE)
 
 
 class TTSError(Exception):
@@ -47,14 +47,50 @@ def rate_of(rate: float) -> str:
     return f"{round((max(0.5, min(2.0, rate)) - 1) * 100):+d}%"
 
 
-async def synthesize(text: str, voice: str, rate: float = 1.0) -> bytes:
-    """MP3 bytes for one piece of text (a sentence or a few)."""
+LOCAL_ID = re.compile(r"(piper|kokoro|chatterbox):[\w.@-]{1,80}")
+
+
+async def synthesize(text: str, voice: str, rate: float = 1.0, tone: dict | None = None) -> bytes:
+    """MP3 bytes for one piece of text (spoken replies, previews): any voice of the catalog, with the studio finish
+    and tone of Settings > Voices (or `tone`: pitch / emotion / preset / room for a preview)."""
+    text = text.strip()[:3000]
+    if not SPEAKABLE.search(text):
+        raise TTSError("nothing to read")
+    voice = (voice or "").removeprefix("edge:")
+    if not (LOCAL_ID.fullmatch(voice) or re.fullmatch(r"[a-z]{2,3}-[A-Za-z0-9-]+Neural", voice)):
+        raise TTSError("unknown voice")
+    tone = tone or {}
+    key = hashlib.sha1(f"{voice}|{rate}|{sorted(tone.items())}|{text}".encode()).hexdigest()
+    if key in _AUDIO:
+        _AUDIO.move_to_end(key)
+        return _AUDIO[key]
+    import tempfile
+    from pathlib import Path
+
+    from .voice import render
+    with tempfile.TemporaryDirectory() as d:
+        target = Path(d) / "s.mp3"
+        try:
+            await render.render(text, target, voice=voice, rate=rate, pitch=tone.get("pitch"),
+                                emotion=tone.get("emotion"), preset=tone.get("preset"), room=tone.get("room"),
+                                pause=tone.get("pause"))
+        except Exception as e:
+            raise TTSError(f"speech failed: {str(e)[:200]}") from e
+        data = target.read_bytes()
+    _AUDIO[key] = data
+    while len(_AUDIO) > AUDIO_CACHE:
+        _AUDIO.popitem(last=False)
+    return data
+
+
+async def edge_mp3(text: str, voice: str, rate: float = 1.0) -> bytes:
+    """Raw MP3 from Microsoft's online voices for one piece of text (the edge engine of voice/engines.py)."""
     text = text.strip()[:3000]
     if not SPEAKABLE.search(text):
         raise TTSError("nothing to read")
     if not re.fullmatch(r"[a-z]{2,3}-[A-Za-z0-9-]+Neural", voice or ""):
         raise TTSError("unknown voice")
-    key = hashlib.sha1(f"{voice}|{rate}|{text}".encode()).hexdigest()
+    key = "edge|" + hashlib.sha1(f"{voice}|{rate}|{text}".encode()).hexdigest()
     if key in _AUDIO:
         _AUDIO.move_to_end(key)
         return _AUDIO[key]
