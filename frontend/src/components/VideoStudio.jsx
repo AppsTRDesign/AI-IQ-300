@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
-  Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Film, Image as ImageIcon, Loader2, Mic, Music2, Pause, Play,
+  Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, FileAudio, Film, Image as ImageIcon, Loader2, Mic, Music2, Pause, Play,
   Plus, Redo2, RotateCcw, Send, SkipBack, Sparkles, Trash2, Type, Undo2, Upload, Wand2, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
 import { inputCls } from "./ui";
+import Select from "./Select";
+import VideoPlayer from "./VideoPlayer";
 import { VoicePicker } from "./VoiceLibrary";
 
 // Video Studio: a live, interactive editor over the same project file the edit_video tool renders
@@ -347,9 +349,8 @@ function NumIn({ value, onChange, step = 0.1, min = 0, max }) {
 }
 function Sel({ value, onChange, options, labels }) {
   return (
-    <select className={fieldCls} value={value ?? ""} onChange={(e) => onChange(e.target.value)}>
-      {options.map((o) => <option key={o} value={o}>{labels?.[o] ?? (o || "—")}</option>)}
-    </select>
+    <Select size="sm" value={value ?? ""} onChange={onChange}
+      options={options.map((o) => ({ value: o, label: labels?.[o] ?? (o || "—") }))} />
   );
 }
 function Range({ value, onChange, min, max, step }) {
@@ -1213,7 +1214,11 @@ function Inspector({ t, sel, item, tl, tm, media, upd, updText, labels, onDelete
         </label>
         <h4 className="pt-1 text-[12px] font-semibold">{t("vs_voice_title")}</h4>
         <VoicePicker value={tl.voice && typeof tl.voice === "object" ? tl.voice : tl.voice ? { voice: tl.voice } : {}}
-          onChange={(v) => upd("project", 0, { voice: v })} sample={(tl.scenes || []).map((s) => s.say).find(Boolean)} />
+          onChange={(v) => upd("project", 0, { voice: v })} sample={(tl.scenes || []).map((s) => s.say).find(Boolean)} tone />
+        <label className="flex items-start gap-2 rounded-xl bg-hover/60 p-2 text-[12px]">
+          <input type="checkbox" className="mt-0.5" checked={!!tl.subtitles} onChange={(e) => upd("project", 0, { subtitles: e.target.checked || undefined })} />
+          <span><b>{t("vs_subtitles")}</b><span className="block text-[11px] text-muted">{t("vs_subtitles_note")}</span></span>
+        </label>
         <p className="text-[11.5px] leading-snug text-subtle">{t("vs_select_hint")}</p>
         <div className="rounded-xl bg-hover/60 p-2.5 text-[11.5px] leading-snug text-muted">{t("vs_stats", { scenes: (tl.scenes || []).length, layers: (tl.clips || []).length, sec: tm.L.toFixed(1) })}</div>
       </div>
@@ -1251,10 +1256,9 @@ function Inspector({ t, sel, item, tl, tm, media, upd, updText, labels, onDelete
         {head(t("vs_music"))}
         <div className="grid grid-cols-2 gap-2">
           <Field label={t("vs_source")} wide>
-            <select className={fieldCls} value={item.src} onChange={(e) => u({ src: e.target.value })}>
-              {MUSIC.filter(Boolean).map((m) => <option key={m} value={m}>{t(`vs_music_${m}`)}</option>)}
-              {media.filter((m) => m.kind === "audio" || (m.kind === "video" && m.audio)).map((m) => <option key={m.path} value={m.path}>{m.path}</option>)}
-            </select>
+            <Select size="sm" value={item.src} onChange={(v) => u({ src: v })} ariaLabel={t("vs_source")}
+              options={[...MUSIC.filter(Boolean).map((m) => ({ value: m, label: t(`vs_music_${m}`), group: t("vs_music_generated"), icon: <Music2 size={13} /> })),
+                ...media.filter((m) => m.kind === "audio" || (m.kind === "video" && m.audio)).map((m) => ({ value: m.path, label: m.path.split("/").pop(), hint: m.path, group: t("vs_music_files"), icon: <FileAudio size={13} /> }))]} />
           </Field>
           <Field label={t("vs_volume")} wide><Range value={num(item.volume, 0.45)} min={0} max={1.5} step={0.05} onChange={(v) => u({ volume: v })} /></Field>
           <Field label={t("vs_in")}><NumIn value={item.in ?? 0} onChange={(v) => u({ in: v })} /></Field>
@@ -1416,6 +1420,9 @@ function RenderBusy({ started, animate, t }) {
 
 function RenderResult({ r, raw, t, onClose }) {
   const res = r.result;
+  // One cache-busting stamp per result: it was Date.now() in render, so every re-render of the studio (the project
+  // check every few seconds) gave the video a new address and it started again from 0 after ~5 s.
+  const [stamp] = useState(() => Date.now());
   return (
     <div className="absolute inset-0 z-[60] grid place-items-center bg-black/55 p-3 backdrop-blur-sm" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-elev shadow-2xl">
@@ -1426,7 +1433,7 @@ function RenderResult({ r, raw, t, onClose }) {
         </div>
         {res ? (
           <div className="space-y-2 p-3">
-            <video src={`${raw(res.path)}&v=${Date.now()}`} controls autoPlay className="max-h-[55vh] w-full rounded-xl bg-black" />
+            <div className="overflow-hidden rounded-xl"><VideoPlayer url={`${raw(res.path)}&v=${stamp}`} path={res.path} /></div>
             <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
               <span className="font-mono">{res.path}</span>
               <span>· {res.duration.toFixed(1)} s · {res.width}×{res.height} · {(res.size / 1048576).toFixed(1)} MB · {(res.ms / 1000).toFixed(1)} s</span>

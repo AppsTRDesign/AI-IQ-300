@@ -16,7 +16,9 @@ import { ConfirmDialog, Toaster } from "./components/Feedback";
 
 // Heavy parts load on first use, so the chat opens fast (Monaco alone is ~3 MB).
 const EditorPane = lazy(() => import("./components/EditorPane"));
-const DocPreviewDialog = lazy(() => import("./components/DocPreview"));
+// DocPreview is in the main bundle anyway (the chat and the file list show document cards), so it is imported
+// directly: a lazy import of it only made Vite warn on every build.
+import DocPreviewDialog from "./components/DocPreview";
 const ImageViewer = lazy(() => import("./components/MediaViewer").then((m) => ({ default: m.ImageViewer })));
 const MediaPlayer = lazy(() => import("./components/MediaPlayer"));
 const VideoStudio = lazy(() => import("./components/VideoStudio"));
@@ -24,6 +26,18 @@ const LogoMaker = lazy(() => import("./components/LogoMaker"));
 const TTSDialog = lazy(() => import("./components/VoiceLibrary").then((m) => ({ default: m.TTSDialog })));
 const STTDialog = lazy(() => import("./components/VoiceLibrary").then((m) => ({ default: m.STTDialog })));
 const BrowserDialog = lazy(() => import("./components/MediaViewer").then((m) => ({ default: m.BrowserDialog })));
+
+// The viewers' chunks are fetched once the app is idle: after an update replaced the build (old hashed chunks gone),
+// opening a video / image / the studio no longer fails to load and reloads the whole page.
+if (typeof window !== "undefined") {
+  const warm = () => {
+    // every viewer a click in the chat can open, plus the libraries they load themselves
+    for (const load of [() => import("./components/MediaPlayer"), () => import("./components/MediaViewer"), () => import("./components/VideoStudio"),
+      () => import("./components/EditorPane"), () => import("./components/VoiceLibrary"), () => import("./components/LogoMaker"),
+      () => import("docx-preview"), () => import("xlsx"), () => import("./lib/monaco")]) load().catch(() => {});
+  };
+  (window.requestIdleCallback || ((f) => setTimeout(f, 2500)))(warm);
+}
 
 const VIEWS = { chat: ChatView, home: ChatView, settings: SettingsView, skills: CatalogView, agents: CatalogView, files: FilesView,
   guide: GuideView, about: AboutView };

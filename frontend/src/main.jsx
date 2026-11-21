@@ -13,6 +13,12 @@ const staleReload = () => {
     const last = Number(sessionStorage.getItem("aiiq_stale_reload") || 0);
     if (Date.now() - last < 30000) return;
     sessionStorage.setItem("aiiq_stale_reload", String(Date.now()));
+    // Back to the same chat and the viewer that was being opened (it failed because its chunk was gone).
+    const st = useStore.getState();
+    if (st.sessionId) {
+      sessionStorage.setItem("aiiq_tab", JSON.stringify({ session: st.sessionId, at: Date.now(),
+        dialog: st.dialog && typeof st.dialog === "object" && st.dialog.path ? st.dialog : null }));
+    }
   } catch { /* no storage: still reload once per page */ }
   location.reload();
 };

@@ -1,11 +1,11 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { keepBreaks, prepareMath } from "../lib/mathText";
-import { Bot, Sparkles } from "lucide-react";
+import { Bot, Plug, Sparkles } from "lucide-react";
 import { useStore } from "../lib/store";
 import { docKind, fileType, isImage, isWebPage } from "../lib/fileTypes";
 import CodeBlock from "./CodeBlock";
@@ -21,11 +21,55 @@ export function looksLikeCode(text) {
 
 export function MentionChip({ token }) {
   const isAgent = token.startsWith("@");
-  const Icon = isAgent ? Bot : Sparkles;
+  const isMcp = token.startsWith("#");
+  const Icon = isAgent ? Bot : isMcp ? Plug : Sparkles;
   return (
-    <span className={`mx-0.5 inline-flex translate-y-[-1px] items-center gap-1 rounded-md px-1.5 py-px align-middle text-[0.86em] font-medium ${isAgent ? "bg-violet-500/12 text-violet-600 dark:text-violet-300" : "bg-accent-soft text-accent"}`}>
+    <span className={`mx-0.5 inline-flex translate-y-[-1px] items-center gap-1 rounded-md px-1.5 py-px align-middle text-[0.86em] font-medium ${isAgent ? "bg-violet-500/12 text-violet-600 dark:text-violet-300" : isMcp ? "bg-fuchsia-500/12 font-mono text-fuchsia-700 dark:text-fuchsia-300" : "bg-accent-soft text-accent"}`}>
       <Icon size={12} />{token}
     </span>
+  );
+}
+
+// A file path the model wrote (`docs/report.pdf`): a chip that opens the file, but only when the file really exists in
+// the chat folder (a bare ".docx" or a file the model only promised gave a chip that opened "HTTP 404"). Checked once
+// per path (fs/exists: a yes/no answer, not a 404 in the log for every name that is not a file); missing files stay
+// plain code.
+const EXISTS = new Map(); // fileApi url -> Promise<boolean>
+function fileExists(url) {
+  if (!EXISTS.has(url)) {
+    EXISTS.set(url, fetch(url.replace("/fs/raw?", "/fs/exists?")).then((r) => (r.ok ? r.json() : { exists: false }))
+      .then((d) => !!d.exists).catch(() => false));
+    setTimeout(() => EXISTS.delete(url), 15000); // a file written a moment later is found on the next render
+  }
+  return EXISTS.get(url);
+}
+
+function FileRef({ path, viewer, children }) {
+  const st = useStore.getState();
+  const sid = useStore((s) => s.sessionId);
+  const url = sid ? st.fileApi(`/fs/raw?path=${encodeURIComponent(path)}`) : "";
+  const [ok, setOk] = useState(null);
+  useEffect(() => {
+    let live = true;
+    if (!url) { setOk(false); return undefined; }
+    fileExists(url).then((v) => live && setOk(v));
+    return () => { live = false; };
+  }, [url]);
+  if (!ok) return <code>{children}</code>;
+  const ft = fileType(path);
+  const Icon = ft.icon;
+  const open = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (viewer === "image") st.viewImages([path]);
+    else if (viewer === "page") st.browse({ path });
+    else st.previewFile(path);
+  };
+  return (
+    <button type="button" onClick={open} title={path}
+      className="mx-0.5 inline-flex translate-y-[1px] items-center gap-1 rounded-md border border-line bg-elev px-1.5 py-px align-middle text-[0.88em] font-medium hover:border-accent hover:text-accent">
+      <Icon size={13} style={{ color: ft.color }} />{path}
+    </button>
   );
 }
 
@@ -40,20 +84,9 @@ const makeComponents = (chips) => ({
     if (!isBlock) {
       // A generated file's path (`docs/report.xlsx`, `logo.png`, `site/index.html`) opens its viewer.
       // "gorseller/01…05-*.png" names many files at once (or none): no viewer for wildcards or ellipses.
-      const viewer = !chips || /\s|:\/\/|[*?…{}<>|]|\.\.\./.test(content) ? null : docKind(content) ? "previewFile" : isImage(content) ? "image"
+      const viewer = !chips || /\s|:\/\/|[*?…{}<>|]|\.\.\./.test(content) || !/(^|[\\/])[^./\\\s][^/\\]*\.[a-z0-9]{1,5}$/i.test(content) ? null : docKind(content) ? "previewFile" : isImage(content) ? "image"
         : isWebPage(content) ? "page" : null;
-      if (viewer) {
-        const ft = fileType(content);
-        const Icon = ft.icon;
-        const st = useStore.getState();
-        const open = () => (viewer === "image" ? st.viewImages([content]) : viewer === "page" ? st.browse({ path: content }) : st.previewFile(content));
-        return (
-          <button onClick={open} title={content}
-            className="mx-0.5 inline-flex translate-y-[1px] items-center gap-1 rounded-md border border-line bg-elev px-1.5 py-px align-middle text-[0.88em] font-medium hover:border-accent hover:text-accent">
-            <Icon size={13} style={{ color: ft.color }} />{content}
-          </button>
-        );
-      }
+      if (viewer) return <FileRef path={content} viewer={viewer}>{children}</FileRef>;
       return <code>{children}</code>;
     }
     return <CodeBlock code={content} language={(className || "").replace("language-", "")} />;
@@ -134,8 +167,8 @@ function Markdown({ text, mentions = false, live = false }) {
     // A user's message: line breaks stay, and known @agent and /skill tokens become chip links (outside code).
     out = keepBreaks(out);
     return out.split(/(```[\s\S]*?```)/g).map((part) => (part.startsWith("```") ? part
-      : part.replace(/(^|\s)([@/])([\w-]+)/g, (m, sp, sig, name) =>
-        names[sig].has(name) ? `${sp}[${sig}${name}](#mention-${encodeURIComponent(sig + name)})` : m))).join("");
+      : part.replace(/(^|\s)([@/#])([\w./-]+)/g, (m, sp, sig, name) =>
+        (sig === "#" ? /^[a-z0-9_-]{1,32}\/[\w.-]{1,64}$/.test(name) : names[sig].has(name)) ? `${sp}[${sig}${name}](#mention-${encodeURIComponent(sig + name)})` : m))).join("");
   }, [text, mentions, names, live]);
   return (
     <div className="prose-chat break-words">

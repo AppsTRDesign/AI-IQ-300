@@ -1,7 +1,7 @@
 // Normalized provider/agent error codes (backend llm/providers.py classify_error) -> translated message.
 // The raw provider message stays available as detail.
 const KNOWN = new Set([
-  "missing_credentials", "auth", "forbidden", "terms", "payment", "quota", "rate_limit", "context_length", "no_tools",
+  "missing_credentials", "missing_account", "auth", "forbidden", "terms", "payment", "quota", "rate_limit", "context_length", "no_tools",
   "model_not_found", "not_found", "bad_request", "too_large", "timeout", "unavailable", "overloaded", "server",
   "bad_gateway", "moderation", "disabled", "unknown_provider", "bad_model", "empty", "internal", "load_failed",
   "provider", "http", "request", "network", "unknown_kind", "plan_required",
@@ -13,6 +13,7 @@ const SERVICE_RULES = [
   [/exceeded your current quota|quota|credit|billing|insufficient.?balance|limit reached|monthly limit/i, "quota"],
   [/\b429\b|rate.?limit|too many requests/i, "rate_limit"],
   [/blocked|bot check|captcha|anomaly|challenge/i, "svc_blocked"],
+  [/account id is not set|account.?id.*(missing|not set)/i, "missing_account"],
   [/no key saved|key missing|not configured|missing api key|missing.*key/i, "missing_credentials"],
   [/\b401\b|unauthori[sz]ed|invalid.*(key|token)|api key not valid/i, "auth"],
   [/\b402\b|payment required/i, "payment"],
@@ -23,6 +24,25 @@ const SERVICE_RULES = [
   [/connecterror|getaddrinfo|name or service|connection (refused|reset)|network/i, "unavailable"],
   [/no results|no photo|no picture|nothing found/i, "svc_empty"],
 ];
+
+// What a provider's own (English) message means, in the app's language: the specific cause behind a generic code
+// ("high demand" behind 503, a per-minute limit behind 429...). The raw text stays under "technical detail".
+const PROVIDER_HINTS = [
+  [/high demand|currently experiencing|spikes in demand|temporarily overloaded|server is busy|overloaded_error/i, "hint_high_demand"],
+  [/per.?minute|requests per min|rpm|tokens per min|tpm|too many requests|rate.?limit/i, "hint_rate_minute"],
+  [/per.?day|daily|requests per day|rpd|free tier.*(limit|quota)|exceeded your current quota|RESOURCE_EXHAUSTED/i, "hint_quota_daily"],
+  [/free GPU quota|ZeroGPU|gpu quota/i, "hint_gpu_quota"],
+  [/insufficient.?balance|payment required|credit|billing/i, "hint_payment"],
+  [/not found for API version|is not supported for (generateContent|predict)|model .*not found|no such model/i, "hint_model_missing"],
+  [/no longer available|deprecated|retired/i, "hint_model_retired"],
+  [/timed? ?out|timeout|deadline/i, "hint_timeout"],
+  [/safety|blocked|moderation|content policy/i, "hint_safety"],
+  [/api key not valid|invalid api key|unauthori[sz]ed|permission denied/i, "hint_auth"],
+];
+export function providerHint(t, message) {
+  const hit = PROVIDER_HINTS.find(([re]) => re.test(String(message || "")));
+  return hit ? t(hit[1]) : "";
+}
 
 export function serviceError(t, message) {
   const raw = String(message || "");

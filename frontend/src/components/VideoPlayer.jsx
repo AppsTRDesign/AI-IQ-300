@@ -52,9 +52,12 @@ function useSubtitles(path) {
   return subs;
 }
 
-export default function VideoPlayer({ url, path }) {
+// inline: the player inside a chat card - no autoplay, keyboard shortcuts only while the pointer is over it or it
+// has focus (several players on one page must not all react to the space bar), a lower height.
+export default function VideoPlayer({ url, path, inline = false }) {
   const t = useT();
   const box = useRef(null);
+  const over = useRef(false);
   const el = useRef(null);
   const bar = useRef(null);
   const hideTimer = useRef(0);
@@ -156,6 +159,7 @@ export default function VideoPlayer({ url, path }) {
   useEffect(() => {
     const k = (e) => {
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (inline && !over.current && !box.current?.contains(document.activeElement) && !document.fullscreenElement) return;
       const m = v();
       if (!m) return;
       const key = e.key;
@@ -204,10 +208,11 @@ export default function VideoPlayer({ url, path }) {
   const btn = "grid h-9 w-9 place-items-center rounded-full text-white/90 transition hover:bg-white/15 hover:text-white";
 
   return (
-    <div ref={box} onMouseMove={poke} onMouseLeave={() => playing && setShow(false)}
-      className={`group relative w-full select-none overflow-hidden bg-black ${full ? "h-full" : ""} ${visible ? "video-ui-on" : "cursor-none"}`}>
-      <video ref={el} src={url} autoPlay playsInline loop={loop} preload="metadata" crossOrigin="anonymous"
-        className={`mx-auto block w-full bg-black ${full ? "h-full object-contain" : "max-h-[74vh]"}`}
+    <div ref={box} onMouseMove={poke} onMouseEnter={() => { over.current = true; }}
+      onMouseLeave={() => { over.current = false; if (playing) setShow(false); }} tabIndex={inline ? 0 : undefined}
+      className={`group relative w-full select-none overflow-hidden bg-black outline-none ${inline && !full ? "rounded-xl" : ""} ${full ? "h-full" : ""} ${visible ? "video-ui-on" : "cursor-none"}`}>
+      <video ref={el} src={url} autoPlay={!inline} playsInline loop={loop} preload="metadata" crossOrigin="anonymous"
+        className={`mx-auto block w-full bg-black ${full ? "h-full object-contain" : inline ? "max-h-80" : "max-h-[74vh]"}`}
         onClick={() => { toggle(); poke(); }} onDoubleClick={fullscreen}
         onPlay={() => { setPlaying(true); poke(); }} onPause={() => { setPlaying(false); setShow(true); }}
         onEnded={() => { setPlaying(false); setShow(true); }}

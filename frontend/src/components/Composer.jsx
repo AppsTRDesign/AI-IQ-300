@@ -2,11 +2,15 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Film, Palette, Volume2, FileAudio, Image as ImageIcon, Clapperboard,
   ArrowUp, Bot, Camera, Check, ChevronDown, Chrome, Cpu, Cloud, FileSpreadsheet, FileText, FileType2, FolderGit2, FolderUp, ListTodo, Loader2, Mic,
   Paperclip, PenTool, Plus, Presentation, RefreshCw, Search, Settings2, Shield, ShieldCheck, ShieldAlert, SlidersHorizontal, Sparkles, Square, Target, Gauge, AudioLines,
-  MessageSquareQuote, Pencil, Trash2, X, Brain,
+  MessageSquareQuote, Pencil, Trash2, X, Brain, LayoutTemplate, Plug,
 } from "lucide-react";
 import { loc, useStore, useT } from "../lib/store";
+import * as speech from "../lib/speech";
 import { api } from "../lib/api";
 import { formatTokens } from "../lib/fileTypes";
+import { draftKey, getDraft, moveDraft, restoreImages, saveDraft } from "../lib/drafts";
+import { ImagePicker, McpToolPicker, MODES, ModeChips, TemplateGallery, chipsFromText, modeChips, modeInstruction } from "./ComposerModes";
+import { McpArgFields, argsFromVals, valsFromArgs } from "./McpArgs";
 import { FileChip, MenuItem, MenuSep, Popover, useOutside } from "./ui";
 import RichInput from "./RichInput";
 import CatalogPicker from "./CatalogPicker";
@@ -196,7 +200,8 @@ const ModelPicker = memo(function ModelPicker() {
             <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("search_models")} className="min-w-0 flex-1 bg-transparent text-[13px] outline-none" />
             <button onClick={refresh} title={t("refresh")} className="rounded-md p-1 text-subtle hover:bg-hover"><RefreshCw size={13} className={loading ? "animate-spin" : ""} /></button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
+          <div ref={(el) => { if (el && !el.dataset.jumped) { el.dataset.jumped = "1"; requestAnimationFrame(() => el.querySelector("[data-active]")?.scrollIntoView({ block: "center" })); } }}
+            className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
             {groups.length === 0 && <div className="px-3 py-6 text-center text-xs text-subtle">{t("no_model")}</div>}
             {groups.map((g, gi) => (
               <div key={g.pid} className={gi ? "mt-2 border-t border-line pt-2" : ""}>
@@ -215,6 +220,7 @@ const ModelPicker = memo(function ModelPicker() {
                     return (
                       <div key={id}>
                         <div onClick={() => { useStore.getState().selectModel(id); setOpen(false); setEdit(null); }} role="button"
+                          data-active={active ? "" : undefined}
                           className={`group flex cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-2 text-[13px] transition ${active ? "border-accent/40 bg-accent-soft" : "border-transparent hover:bg-hover"}`}>
                           <span className={`min-w-0 flex-1 truncate ${active ? "font-medium" : ""}`} title={`${prefixOf(g.pid)}:${m.id}`}>
                             <span className="font-normal text-subtle">{prefixOf(g.pid)}:</span>{m.id}</span>
@@ -314,6 +320,7 @@ export default function Composer() {
   const [sel, setSel] = useState(0);
   const [editing, setEditing] = useState(null); // index of the attached image open in the editor
   const fileInput = useRef(null);
+  const imageVideoInput = useRef(null); // (+) > Image to video: pick a photo, attach it, ask for animate_image
   const ta = useRef(null); // the rich editor's handle
   const st = useStore.getState();
   const names = useMemo(() => ({ "@": new Set(catalog.agents.map((x) => x.name)), "/": new Set(catalog.skills.map((x) => x.name)) }), [catalog]);
@@ -323,7 +330,45 @@ export default function Composer() {
     if (!next) ta.current?.clear(); else ta.current?.setText(next);
   };
 
-  useEffect(() => { ta.current?.focus(); }, [sessionId]);
+  // Per-chat drafts (lib/drafts): leaving a chat keeps what was typed and attached; coming back brings it back,
+  // also after a reload or a power cut. A new chat that gets created by an upload keeps its draft (it moves along).
+  const shownKey = useRef(null);
+  const latest = useRef(null); // {key, text, att}: what the composer of the shown chat holds right now
+  const draftTimer = useRef(null);
+  useEffect(() => {
+    const key = draftKey(sessionId);
+    const prev = shownKey.current;
+    // the chat being left: its draft is saved at once (newChat already emptied the store's attachments)
+    clearTimeout(draftTimer.current);
+    if (prev && latest.current?.key === prev) saveDraft(prev, latest.current.text, latest.current.att);
+    shownKey.current = key;
+    const s = useStore.getState();
+    if (prev === "new" && key !== "new" && !s.loadingMessages && !s.messages.length && !getDraft(key)) {
+      moveDraft("new", key); // the new chat was just created (first upload / send): same draft
+      ta.current?.focus();
+      return;
+    }
+    const d = getDraft(key);
+    if (d?.text) ta.current?.setText(d.text); else ta.current?.clear();
+    useStore.setState({ attachments: d?.attachments || [] });
+    if (d?.attachments?.some((a) => a.kind === "image")) {
+      restoreImages(sessionId, d.attachments).then((att) => { if (shownKey.current === key) useStore.setState({ attachments: att }); });
+    }
+    ta.current?.focus();
+  }, [sessionId]);
+  useEffect(() => { // save while typing / attaching (debounced), and at once when the page closes
+    if (shownKey.current == null) return;
+    clearTimeout(draftTimer.current);
+    const key = shownKey.current;
+    latest.current = { key, text: ta.current?.getMarkdown() ?? text, att: attachments };
+    draftTimer.current = setTimeout(() => saveDraft(key, latest.current.text, latest.current.att), 400);
+  }, [text, attachments]);
+  useEffect(() => {
+    const flush = () => latest.current && saveDraft(latest.current.key, ta.current?.getMarkdown() ?? latest.current.text, useStore.getState().attachments);
+    addEventListener("beforeunload", flush);
+    addEventListener("pagehide", flush);
+    return () => { removeEventListener("beforeunload", flush); removeEventListener("pagehide", flush); };
+  }, []);
   useEffect(() => {
     const f = () => ta.current?.focus();
     addEventListener("aiiq:focus-composer", f);
@@ -331,21 +376,74 @@ export default function Composer() {
   }, []);
 
   const mention = useMemo(() => {
-    const m = before.match(/(?:^|[\s\u00a0])([@/])([\w-]*)$/);
+    const m = before.match(/(?:^|[\s\u00a0])([@/#])([\w./-]*)$/);
     if (!m) return null;
+    if (m[1] === "#") return { trigger: "#", query: m[2] }; // MCP tools (the picker loads them; empty: how to add)
     const list = m[1] === "/" ? catalog.skills : catalog.agents;
     return list.length ? { trigger: m[1], query: m[2] } : null;
   }, [before, catalog]);
   const pickItems = useRef([]);
   useEffect(() => setSel(0), [mention?.query, mention?.trigger]);
 
-  const submit = (override) => {
-    const value = (override ?? ta.current?.getMarkdown() ?? text).trim();
-    if (!value) return; // while a task runs the message steers it (store.send)
-    st.send(value, { planMode, goalMode });
-    if (override == null) ta.current?.clear();
+  // (+) menu modes: a coloured chip (make an image / a video / a document...) instead of an instruction typed into
+  // the box; document modes show their template gallery; image-to-video asks for the picture first.
+  const [mode, setMode] = useState(null); // {id}
+  const [tpl, setTpl] = useState(null); // a template of the gallery, or {creator: true}
+  const [image, setImage] = useState(""); // image to video: the picture (folder path or attachment name)
+  const [gallery, setGallery] = useState(false);
+  const [imgPicker, setImgPicker] = useState(false);
+  const [mcpPicker, setMcpPicker] = useState(false);
+  const [argsOpen, setArgsOpen] = useState(false); // the MCP tool's argument fields under its chip
+  const mcpTools = useStore((s) => s.mcpTools);
+  const mcpSchema = (tool) => mcpTools.find((x) => x.name === tool)?.schema || {};
+  // An MCP tool picked (# list, + menu, Settings > Try): its chip, and its arguments as fields to fill in
+  const pickMcp = (tool, vals = {}) => {
+    setMode({ id: "mcp", tool, vals, args: argsFromVals(mcpSchema(tool), vals) }); setTpl(null); setImage(""); setGallery(false);
+    setArgsOpen(Object.keys(mcpSchema(tool).properties || {}).length > 0 || !mcpTools.length);
+    ta.current?.focus();
   };
-  const insert = (name, sig = mention?.trigger) => { ta.current?.insertMention(sig, name); setPicker(null); };
+  const setMcpVals = (vals) => setMode((m) => ({ ...m, vals, args: argsFromVals(mcpSchema(m.tool), vals) }));
+  useEffect(() => { useStore.getState().loadMcpTools(); }, []);
+  // Settings > MCP > Try > "Use in chat": that tool arrives here as an MCP chip
+  const mcpTool = useStore((s) => s.mcpTool);
+  useEffect(() => {
+    if (!mcpTool) return;
+    pickMcp(typeof mcpTool === "string" ? mcpTool : mcpTool.tool, typeof mcpTool === "string" ? {} : mcpTool.vals);
+    useStore.setState({ mcpTool: null });
+    ta.current?.focus();
+  }, [mcpTool]);
+  const chooseMode = (id) => {
+    setMenu(false);
+    setMode({ id }); setTpl(null); setImage("");
+    setGallery(!!MODES[id].doc);
+    if (id === "img2video") setImgPicker(true);
+    if (id === "mcp") setMcpPicker(true);
+    ta.current?.focus();
+  };
+  const clearMode = () => { setMode(null); setTpl(null); setImage(""); setGallery(false); };
+  const pickTemplate = (tp) => {
+    setTpl(tp); setGallery(false);
+    if (!ta.current?.getMarkdown()?.trim()) ta.current?.setText(t("tpl_use_text"));
+    ta.current?.focus();
+  };
+  const startCreator = () => {
+    setTpl({ creator: true }); setGallery(false);
+    ta.current?.setText(t("tpl_creator_text"));
+    ta.current?.focus();
+  };
+  const submit = (override) => {
+    const typed = (override ?? ta.current?.getMarkdown() ?? text).trim();
+    if (!typed && !(mode && (tpl || image || mode.tool))) return; // while a task runs the message steers it (store.send)
+    const prefix = modeInstruction(t, mode, tpl, image);
+    const value = (prefix + typed).trim();
+    st.send(value, { planMode, goalMode, chips: modeChips(t, mode, tpl, image, prefix) });
+    if (override == null) ta.current?.clear();
+    clearMode();
+  };
+  const insert = (name, sig = mention?.trigger) => {
+    if (sig === "#") { ta.current?.dropTrigger(); setPicker(null); pickMcp(name); return; } // the tool chip + its fields
+    ta.current?.insertMention(sig, name); setPicker(null);
+  };
   const addFiles = (files) => st.addAttachments(files);
   // A whole folder goes into the chat's working folder with its structure; the message mentions where it is.
   const addFolder = async (files) => {
@@ -373,6 +471,12 @@ export default function Composer() {
     return () => removeEventListener("aiiq:drop", on);
   }, []);
   const onKeyDown = (e) => {
+    // Backspace in an empty box takes the template chip off, then the mode chip
+    if (e.key === "Backspace" && mode && !ta.current?.getMarkdown()) {
+      e.preventDefault();
+      if (tpl) setTpl(null); else clearMode();
+      return;
+    }
     const n = pickItems.current.length;
     if (mention && n) {
       if (e.key === "ArrowDown") { e.preventDefault(); return setSel((sel + 1) % n); }
@@ -428,10 +532,10 @@ export default function Composer() {
     if (cmd === "clear") return setText("");
     if (cmd === "read") {
       const m = [...(s.messages || [])].reverse().find((x) => x.role === "assistant" && x.content);
-      if (m) import("../lib/speech").then((sp) => sp.speak(m.id, m.content, sp.speechOpts(s.prefs)));
+      if (m) speech.speak(m.id, m.content, speech.speechOpts(s.prefs));
       return;
     }
-    if (cmd === "quiet") return import("../lib/speech").then((sp) => sp.stopSpeech());
+    if (cmd === "quiet") return Promise.resolve(speech.stopSpeech());
     if (cmd === "off") vc.current?.disable();
   };
   useEffect(() => () => vc.current?.dispose(), []);
@@ -483,34 +587,83 @@ export default function Composer() {
             <MenuItem icon={ListTodo} color="bg-teal-500/15 text-teal-500" label={t("plan_mode")} desc={t("plan_mode_desc")} onClick={() => { setPlanMode(!planMode); setMenu(false); ta.current?.focus(); }} right={planMode && <Check size={14} className="mt-0.5 text-accent" />} />
             <MenuItem icon={PenTool} color="bg-fuchsia-500/15 text-fuchsia-500" label={t("drawing")} desc={t("drawing_desc")} onClick={() => { setDrawing(true); setMenu(false); }} />
             <div className="min-[420px]:hidden"><MenuItem icon={AudioLines} color="bg-emerald-500/15 text-emerald-500" label={t(voice === "on" ? "voice_mode_off" : "voice_mode_on")} onClick={() => { setMenu(false); toggleVoice(); }} /></div>
-            <MenuItem icon={Camera} color="bg-cyan-500/15 text-cyan-500" label={t("web_shot")} desc={t("web_shot_desc")} onClick={() => prefix(t("web_shot_prefix"))} />
+            <MenuItem icon={Camera} color="bg-cyan-500/15 text-cyan-500" label={t("web_shot")} desc={t("web_shot_desc")} onClick={() => chooseMode("web_shot")} />
+            <MenuItem icon={Plug} color="bg-violet-500/15 text-violet-500" label={t("mcp_tool")} desc={t("mcp_tool_desc")} shortcut="#" onClick={() => { setMenu(false); setPicker("#"); }} />
             <MenuSep />
             <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("create_menu")}</div>
             <MenuItem icon={Clapperboard} color="bg-violet-500/15 text-violet-500" label={t("vs_title")} desc={t("vs_menu_desc")} onClick={() => { useStore.getState().openStudio(""); setMenu(false); }} />
-            <MenuItem icon={Film} color="bg-pink-500/15 text-pink-500" label={t("make_video")} desc={t("make_video_desc")} onClick={() => prefix(t("make_video_prefix"))} />
-            <MenuItem icon={Sparkles} color="bg-rose-500/15 text-rose-500" label={t("make_aiclip")} desc={t("make_aiclip_desc")} onClick={() => prefix(t("make_aiclip_prefix"))} />
+            <MenuItem icon={Film} color="bg-pink-500/15 text-pink-500" label={t("make_video")} desc={t("make_video_desc")} onClick={() => chooseMode("make_video")} />
+            <MenuItem icon={Sparkles} color="bg-rose-500/15 text-rose-500" label={t("make_aiclip")} desc={t("make_aiclip_desc")} onClick={() => chooseMode("make_aiclip")} />
+            <MenuItem icon={ImageIcon} color="bg-pink-500/15 text-pink-600" label={t("img2video")} desc={t("img2video_desc")} onClick={() => chooseMode("img2video")} />
             <MenuItem icon={Palette} color="bg-amber-500/15 text-amber-500" label={t("lm_title")} desc={t("lm_menu_desc")} onClick={() => { useStore.setState({ dialog: { type: "logo" } }); setMenu(false); }} />
-            <MenuItem icon={ImageIcon} color="bg-orange-500/15 text-orange-500" label={t("make_image")} desc={t("make_image_desc")} onClick={() => prefix(t("make_image_prefix"))} />
+            <MenuItem icon={ImageIcon} color="bg-orange-500/15 text-orange-500" label={t("make_image")} desc={t("make_image_desc")} onClick={() => chooseMode("make_image")} />
             <MenuItem icon={Volume2} color="bg-emerald-500/15 text-emerald-500" label={t("vl_tts_title")} desc={t("vl_tts_menu_desc")} onClick={() => { useStore.setState({ dialog: { type: "tts" } }); setMenu(false); }} />
             <MenuItem icon={FileAudio} color="bg-sky-500/15 text-sky-500" label={t("vl_stt_title")} desc={t("vl_stt_menu_desc")} onClick={() => { useStore.setState({ dialog: { type: "stt" } }); setMenu(false); }} />
             <MenuSep />
             <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-subtle">{t("plugins")}</div>
-            <MenuItem icon={FileText} color="bg-blue-600/15 text-blue-600" label={t("documents")} desc={t("documents_desc")} onClick={() => prefix("/docs Word: ")} />
-            <MenuItem icon={FileType2} color="bg-red-500/15 text-red-500" label={t("pdf")} desc={t("pdf_desc")} onClick={() => prefix("/docs PDF: ")} />
-            <MenuItem icon={FileSpreadsheet} color="bg-green-600/15 text-green-600" label={t("spreadsheets")} desc={t("spreadsheets_desc")} onClick={() => prefix("/docs Excel: ")} />
-            <MenuItem icon={Presentation} color="bg-orange-600/15 text-orange-600" label={t("presentations")} desc={t("presentations_desc")} onClick={() => prefix("/docs PowerPoint: ")} />
+            <MenuItem icon={FileText} color="bg-blue-600/15 text-blue-600" label={t("documents")} desc={t("documents_desc")} onClick={() => chooseMode("docx")} />
+            <MenuItem icon={FileType2} color="bg-red-500/15 text-red-500" label={t("pdf")} desc={t("pdf_desc")} onClick={() => chooseMode("pdf")} />
+            <MenuItem icon={FileSpreadsheet} color="bg-green-600/15 text-green-600" label={t("spreadsheets")} desc={t("spreadsheets_desc")} onClick={() => chooseMode("xlsx")} />
+            <MenuItem icon={Presentation} color="bg-orange-600/15 text-orange-600" label={t("presentations")} desc={t("presentations_desc")} onClick={() => chooseMode("pptx")} />
           </div>
         )}
 
-        <RichInput ref={ta} names={names} placeholder={t("placeholder")} onKeyDown={onKeyDown} onSubmit={() => submit()}
+        {gallery && mode && MODES[mode.id].doc && (
+          <div className="absolute bottom-full left-0 right-0 z-30">
+            <TemplateGallery kind={MODES[mode.id].doc} selected={tpl?.id} onPick={pickTemplate} onCreate={startCreator} onClose={() => setGallery(false)} />
+          </div>
+        )}
+        {imgPicker && <ImagePicker onClose={() => setImgPicker(false)} onPick={(p) => { setImage(p.path || p.name); setImgPicker(false); ta.current?.focus(); }} />}
+        <ModeChips mode={mode} tpl={tpl} image={image} onClear={clearMode} onClearTpl={() => { setTpl(null); if (mode && MODES[mode.id].doc) setGallery(true); }}
+          onPickImage={() => (mode?.id === "mcp" ? setMcpPicker(true) : setImgPicker(true))}
+          argsOpen={argsOpen} onToggleArgs={() => setArgsOpen((o) => !o)} />
+        {mode?.id === "mcp" && mode.tool && argsOpen && (
+          <div className="fade-in mx-3 mt-2 rounded-xl border border-violet-500/25 bg-violet-500/[0.04] px-3 py-2.5">
+            <div className="mb-2 flex items-start gap-2">
+              <span className="min-w-0 flex-1 text-[11.5px] leading-snug text-muted line-clamp-2">{mcpTools.find((x) => x.name === mode.tool)?.description || t("mcp_args_hint")}</span>
+              <button onClick={() => setMcpPicker(true)} className="shrink-0 text-[11.5px] text-accent hover:underline">{t("mcp_change_tool")}</button>
+            </div>
+            <McpArgFields compact schema={mcpSchema(mode.tool)} vals={mode.vals || {}} onChange={setMcpVals} />
+          </div>
+        )}
+        {mcpPicker && <McpToolPicker onClose={() => { setMcpPicker(false); if (mode?.id === "mcp" && !mode.tool) clearMode(); }}
+          onPick={(tool) => { setMcpPicker(false); pickMcp(tool); }} />}
+        {mode && MODES[mode.id].doc && !gallery && !tpl && (
+          <button onClick={() => setGallery(true)} className="mx-3 mt-1 inline-flex items-center gap-1 text-[11.5px] text-accent hover:underline"><LayoutTemplate size={12} />{t("tpl_show")}</button>
+        )}
+        <RichInput ref={ta} names={names} placeholder={mode ? t(`mode_ph_${mode.id}`) : t("placeholder")} onKeyDown={onKeyDown} onSubmit={() => submit()}
           onChange={(md, b) => { setTextState(md); setBefore(b); }}
-          onPaste={(e) => { const f = [...e.clipboardData.files]; if (f.length) { e.preventDefault(); addFiles(f); } }} />
+          onPaste={(e) => {
+            const f = [...e.clipboardData.files];
+            if (f.length) { e.preventDefault(); addFiles(f); return; }
+            // A copied message that starts with a mode's instruction (MCP tool, make an image...): the chip comes back
+            // instead of the raw instruction text (a template's instruction stays text: it cannot be rebuilt here)
+            const pasted = e.clipboardData.getData("text/plain") || "";
+            const chips = mode ? [] : chipsFromText(t, pasted);
+            if (chips.length && MODES[chips[0].id] && !chips.some((c) => c.kind === "tpl")) {
+              e.preventDefault();
+              const tool = chips.find((c) => c.kind === "tool")?.label;
+              const args = chips.find((c) => c.kind === "args")?.args;
+              if (tool) { pickMcp(tool, valsFromArgs(mcpSchema(tool), args)); setArgsOpen(false); }
+              else { setMode({ id: chips[0].id }); setTpl(null); setImage(""); }
+              const rest = pasted.slice((chips[0].strip || "").length).trim();
+              if (rest) ta.current?.insertText(rest, false);
+            }
+          }} />
+        <MathPreview text={text} />
 
         <div className="flex items-center gap-0.5 px-2 pb-2">
           <div className="relative">
             <button ref={plusRef} onClick={() => setMenu(!menu)} className={`grid h-8 w-8 place-items-center rounded-full hover:bg-hover ${menu ? "bg-hover text-fg" : "text-muted"}`} title={t("add")}><Plus size={18} className={`transition ${menu ? "rotate-45" : ""}`} /></button>
           </div>
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => { addFiles([...e.target.files]); e.target.value = ""; }} />
+          <input ref={imageVideoInput} type="file" accept="image/*" hidden onChange={(e) => {
+            const files = [...e.target.files]; e.target.value = "";
+            if (!files.length) return;
+            addFiles(files);
+            setText((x) => t("img2video_prefix", { name: files[0].name }) + x);
+            ta.current?.focus();
+          }} />
           <input ref={folderInput} type="file" multiple hidden webkitdirectory="" directory="" onChange={(e) => { addFolder([...e.target.files]); e.target.value = ""; }} />
           {drawing && <DrawingDialog onClose={() => setDrawing(false)} onSend={(f) => addFiles([f])} />}
           {editing != null && attachments[editing] && (
@@ -535,10 +688,40 @@ export default function Composer() {
               <button onClick={st.cancelRun} title={t("stop")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-fg text-bg"><Square size={11} fill="currentColor" /></button>
             </>
           ) : (
-            <button onClick={() => submit()} disabled={!text.trim()} title={t("send")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition disabled:opacity-35"><ArrowUp size={17} /></button>
+            <button onClick={() => submit()} disabled={!text.trim() && !(mode && (tpl || image))} title={t("send")} className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition disabled:opacity-35"><ArrowUp size={17} /></button>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// LaTeX typed in the message box ($...$, $$...$$, \(...\), \[...\]): a small preview of the formulas under it, so the
+// user sees they are recognised. Debounced; nothing is drawn for text without a math marker.
+function MathPreview({ text }) {
+  const [html, setHtml] = useState("");
+  useEffect(() => {
+    if (!/\$|\\\(|\\\[/.test(text || "")) { setHtml(""); return undefined; }
+    const id = setTimeout(() => {
+      import("katex").then(({ default: katex }) => {
+        const found = [];
+        const re = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|(?<![\\$\w])\$(?!\s)([^$\n]{1,200}?[^\s$\\])\$(?!\w)/g;
+        let m;
+        while ((m = re.exec(text)) && found.length < 6) {
+          const f = m[1] || m[2] || m[3] || m[4];
+          if (!f || /^\d[\d.,]*$/.test(f) || /^[\s.…]*$/.test(f)) continue;
+          try { found.push(katex.renderToString(f.trim(), { throwOnError: false, strict: "ignore", displayMode: false })); } catch { /* skip */ }
+        }
+        setHtml(found.join('<span class="mx-2 text-subtle">·</span>'));
+      }).catch(() => setHtml(""));
+    }, 250);
+    return () => clearTimeout(id);
+  }, [text]);
+  if (!html) return null;
+  return (
+    <div className="mx-3 mb-1 flex items-center gap-2 overflow-x-auto rounded-lg bg-hover/60 px-2 py-1 text-[13px] [scrollbar-width:thin]">
+      <span className="shrink-0 font-mono text-[10.5px] uppercase tracking-wide text-subtle">LaTeX</span>
+      <span className="whitespace-nowrap" dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   );
 }

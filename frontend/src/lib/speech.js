@@ -4,6 +4,7 @@
 // - any other value: the browser's own speech synthesis (offline voices of the OS; nothing leaves the computer).
 // An empty choice uses the active language's first female neural voice, or the browser voice when offline.
 import { api } from "./api";
+import { defaultVoiceOf, isLocalVoice, loadVoices } from "./voices";
 
 const synth = typeof window !== "undefined" ? window.speechSynthesis : null;
 const listeners = new Set();
@@ -61,8 +62,15 @@ export function edgeVoices(lang) {
   return edgeCache[lang];
 }
 const MAIN_LOCALE = { en: "en-US", tr: "tr-TR", de: "de-DE", fr: "fr-FR", es: "es-ES", pt: "pt-BR", ar: "ar-SA", zh: "zh-CN" };
+// The voice used when none is chosen: the default of Settings > Voices (a local, offline voice when one is installed),
+// else the language's main online female voice.
 export async function defaultEdgeVoice(lang) {
-  const list = await edgeVoices(lang);
+  try {
+    const d = await loadVoices();
+    const v = defaultVoiceOf(d.voices || [], lang, d.settings);
+    if (v) return v;
+  } catch { /* the online list below */ }
+  const list = (await edgeVoices(lang)).filter((v) => !v.engine || v.engine === "edge");
   const main = list.filter((v) => v.locale === MAIN_LOCALE[lang]);
   const pool = main.length ? main : list;
   return (pool.find((v) => v.gender === "female") || pool[0])?.id || "";
@@ -155,11 +163,11 @@ export function speak(id, md, { lang = "tr", voice = "", rate = 1 } = {}) {
   current = id;
   notify();
   (async () => {
-    let neural = voice.startsWith("edge:") ? voice.slice(5) : voice ? "" : await defaultEdgeVoice(lang);
+    let neural = voice.startsWith("edge:") ? voice.slice(5) : isLocalVoice(voice) ? voice : voice ? "" : await defaultEdgeVoice(lang);
     if (my !== token) return;
     if (neural) {
       try { return await speakEdge(id, text, neural, rate, my); } catch { neural = ""; } // service down: browser voice
     }
-    if (my === token) speakBrowser(id, text, { lang, voice: voice.startsWith("edge:") ? "" : voice, rate }, my);
+    if (my === token) speakBrowser(id, text, { lang, voice: voice.startsWith("edge:") || isLocalVoice(voice) ? "" : voice, rate }, my);
   })();
 }

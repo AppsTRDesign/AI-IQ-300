@@ -337,6 +337,11 @@ function Toolbar({ root, onChange }) {
   );
 }
 
+// #server/tool: an MCP tool, recognised by its shape (the tool list may not be loaded yet when text is pasted)
+export const MCP_TOKEN = /^[a-z0-9_-]{1,32}\/[\w.-]{1,64}$/;
+const known = (names, sig, name) => (sig === "#" ? MCP_TOKEN.test(name) : !!names?.[sig]?.has(name));
+const chipClass = (sig) => (sig === "@" ? "mention-agent" : sig === "#" ? "mention-mcp" : "mention-skill");
+
 const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDown, onPaste, onSubmit, names }, ref) {
   const root = useRef(null);
   const namesRef = useRef(names);
@@ -354,7 +359,7 @@ const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDo
 
   const chipFor = (token) => {
     const chip = document.createElement("span");
-    chip.className = `mention ${token[0] === "@" ? "mention-agent" : "mention-skill"}`;
+    chip.className = `mention ${chipClass(token[0])}`;
     chip.contentEditable = "false";
     chip.textContent = token;
     return chip;
@@ -366,8 +371,8 @@ const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDo
     if (!r || !r.collapsed || r.startContainer.nodeType !== 3) return;
     const node = r.startContainer, off = r.startOffset;
     const before = node.data.slice(0, off);
-    const m = before.match(/(^|\s)([@/])([\w-]+)\s$/);
-    if (m && namesRef.current?.[m[2]]?.has(m[3])) {
+    const m = before.match(/(^|\s)([@/#])([\w./-]+)\s$/);
+    if (m && known(namesRef.current, m[2], m[3])) {
       const start = off - m[0].length + m[1].length;
       const range = document.createRange();
       range.setStart(node, start);
@@ -410,8 +415,8 @@ const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDo
     setText: (text) => {
       const el = root.current;
       if (!el) return;
-      el.innerHTML = esc(text).replace(/(^|\s)([@/])([\w-]+)/g, (m, sp, sig, name) =>
-        namesRef.current?.[sig]?.has(name) ? `${sp}<span class="mention ${sig === "@" ? "mention-agent" : "mention-skill"}" contenteditable="false">${sig}${name}</span>` : m)
+      el.innerHTML = esc(text).replace(/(^|\s)([@/#])([\w./-]+)/g, (m, sp, sig, name) =>
+        known(namesRef.current, sig, name) ? `${sp}<span class="mention ${chipClass(sig)}" contenteditable="false">${sig}${name}</span>` : m)
         .replace(/\n/g, "<br>");
       el.focus();
       const s = getSelection(); s.selectAllChildren(el); s.collapseToEnd();
@@ -425,6 +430,19 @@ const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDo
       document.execCommand("insertText", false, text);
       emit();
     },
+    // The typed "#que" before the caret is removed (an MCP tool picked from the # list becomes the tool chip above).
+    dropTrigger: () => {
+      const el = root.current;
+      el.focus();
+      const r = caretRange(el);
+      if (!r || r.startContainer.nodeType !== 3) return;
+      const node = r.startContainer, off = r.startOffset;
+      const m = node.data.slice(0, off).match(/([@/#])([\w./-]*)$/);
+      if (!m) return;
+      node.deleteData(off - m[0].length, m[0].length);
+      placeAfter(node, off - m[0].length);
+      emit();
+    },
     // Autocomplete picked an agent/skill: the typed "@na" before the caret becomes the chip.
     insertMention: (sig, name) => {
       const el = root.current;
@@ -432,7 +450,7 @@ const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDo
       const r = caretRange(el);
       if (r && r.startContainer.nodeType === 3) {
         const node = r.startContainer, off = r.startOffset;
-        const m = node.data.slice(0, off).match(/([@/])([\w-]*)$/);
+        const m = node.data.slice(0, off).match(/([@/#])([\w./-]*)$/);
         if (m) {
           const range = document.createRange();
           range.setStart(node, off - m[0].length);
@@ -542,8 +560,50 @@ const RichInput = forwardRef(function RichInput({ placeholder, onChange, onKeyDo
     e.preventDefault();
     // Plain text keeps line breaks; formulas and Markdown are sent as written and render in the chat.
     const text = e.clipboardData.getData("text/plain");
-    if (text) document.execCommand("insertText", false, text);
+    if (text) {
+      document.execCommand("insertText", false, text);
+      if (/(^|\s)[@/#][\w./-]/.test(text)) chipify();
+    }
     emit();
+  };
+
+  // Pasted @agent, /skill and #server/tool tokens become chips as if they were typed (a copied message keeps its
+  // chips). A marker keeps the caret where the paste ended; code blocks and existing chips are left alone.
+  const chipify = () => {
+    const el = root.current;
+    const r = caretRange(el);
+    const mark = document.createElement("span");
+    if (r) { r.collapse(false); r.insertNode(mark); }
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) {
+      const n = walker.currentNode;
+      if (!n.parentElement?.closest("pre, code, .mention")) nodes.push(n);
+    }
+    const rx = /(^|\s)([@/#])([\w./-]+)/g;
+    for (const n of nodes) {
+      const s = n.data;
+      if (!rx.test(s)) continue;
+      rx.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      for (const m of s.matchAll(rx)) {
+        if (!known(namesRef.current, m[2], m[3])) continue;
+        const start = m.index + m[1].length;
+        frag.append(s.slice(at, start), chipFor(m[2] + m[3]));
+        at = start + 1 + m[3].length;
+      }
+      if (!at) continue;
+      frag.append(s.slice(at));
+      n.replaceWith(frag);
+    }
+    if (mark.parentNode) {
+      const range = document.createRange();
+      range.setStartBefore(mark);
+      range.collapse(true);
+      mark.remove();
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }
   };
 
   return (

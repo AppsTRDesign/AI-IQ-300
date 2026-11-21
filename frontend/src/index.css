@@ -74,6 +74,33 @@ body { margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothin
 .fade-in { animation: fadein .18s ease-out; }
 @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
+/* Form controls: one look everywhere, light and dark (the theme variables), large enough for a finger on a phone */
+input[type="range"] { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; background: var(--active); outline: none; cursor: pointer; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); box-shadow: 0 1px 4px rgb(0 0 0 / .3); cursor: pointer; transition: transform .12s; }
+input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 3px solid var(--elev); cursor: pointer; }
+input[type="range"]::-moz-range-progress { height: 6px; border-radius: 999px; background: var(--accent); }
+input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus-visible::-webkit-slider-thumb { transform: scale(1.12); }
+input[type="range"]:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
+input[type="range"]:disabled { opacity: .45; cursor: not-allowed; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; vertical-align: -3px; }
+input[type="color"] { -webkit-appearance: none; appearance: none; padding: 3px; cursor: pointer; }
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 7px; }
+input[type="color"]::-moz-color-swatch { border: 0; border-radius: 7px; }
+input[type="file"]::file-selector-button { margin-right: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--elev); color: var(--fg); padding: 5px 12px; font: inherit; font-size: 12.5px; cursor: pointer; transition: background .12s; }
+input[type="file"]::file-selector-button:hover { background: var(--hover); }
+input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { opacity: .5; }
+input:disabled, textarea:disabled { cursor: not-allowed; opacity: .6; }
+textarea { resize: vertical; }
+select { color-scheme: inherit; }
+select option { background: var(--elev); color: var(--fg); }
+@media (max-width: 639px) {
+  /* iOS zooms into any field under 16px: phones get 16px text in fields */
+  input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="color"]), textarea { font-size: 16px !important; }
+  input[type="range"]::-webkit-slider-thumb { width: 22px; height: 22px; }
+  input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; }
+}
+
 /* Range slider */
 input[type="range"].slider { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; background: var(--active); outline: none; }
 input[type="range"].slider.range-fill { background: linear-gradient(to right, var(--accent) 0 var(--pct, 0%), var(--active) var(--pct, 0%) 100%); }
@@ -101,12 +128,23 @@ input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border
 .note-md { font-size: 13px; color: var(--muted); }
 .note-md .prose-chat { line-height: 1.55; }
 .note-md .prose-chat h1, .note-md .prose-chat h2, .note-md .prose-chat h3 { font-size: 13.5px; margin: 0.5rem 0 0.2rem; color: var(--fg); opacity: 0.85; }
-.note-md .prose-chat p { margin: 0.25rem 0; }
+.note-md .prose-chat p { margin: 0.4rem 0; }
 .note-md .prose-chat ul, .note-md .prose-chat ol { margin: 0.2rem 0; }
 /* One line of the reasoning being written: quieter, italic, never more than two lines. */
 .note-thought .prose-chat { font-style: italic; opacity: 0.85; display: -webkit-box; -webkit-line-clamp: 3;
   -webkit-box-orient: vertical; overflow: hidden; }
 .note-thought .prose-chat p { margin: 0; display: inline; }
+/* The live reasoning stream: the whole text flows into a box of fixed height that follows the end (it scrolls by itself
+   unless the user scrolled up to read); code in it shows as code blocks. Shown only while the model is thinking. */
+.think-live { max-height: 18rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  border-radius: 0.6rem; background: color-mix(in srgb, var(--hover) 55%, transparent); padding: 0.35rem 0.6rem; }
+.think-live .prose-chat { font-size: 13.5px; line-height: 1.6; opacity: 0.92; }
+.think-live .prose-chat p { margin: 0.55rem 0; }
+.think-live .prose-chat li, .think-saved .prose-chat li { margin: 0.1rem 0; }
+.think-live .prose-chat pre { max-height: 9rem; }
+.think-saved .prose-chat { font-size: 13.5px; line-height: 1.6; }
+.think-saved .prose-chat p { margin: 0.5rem 0; }
+.think-live .prose-chat table, .think-saved .prose-chat table { font-size: 12px; }
 .note-tail { display: flex; flex-direction: column; justify-content: flex-end; max-height: 11rem; overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem); mask-image: linear-gradient(to bottom, transparent 0, #000 2.2rem); }
 
@@ -157,6 +195,8 @@ input[type="range"].slider::-moz-range-thumb { width: 14px; height: 14px; border
 .rich-input .mention-agent { background: rgb(139 92 246 / .15); color: rgb(124 58 237); }
 .dark .rich-input .mention-agent { color: rgb(196 181 253); }
 .rich-input .mention-skill { background: var(--accent-soft); color: var(--accent); }
+.rich-input .mention-mcp { background: rgb(217 70 239 / .13); color: rgb(162 28 175); font-family: var(--font-mono, ui-monospace, monospace); font-size: .92em; }
+.dark .rich-input .mention-mcp { color: rgb(240 171 252); }
 
 /* A long chat title scrolls to its end and back while hovered. */
 @keyframes titlescroll { from { transform: translateX(0); } to { transform: translateX(var(--shift, 0)); } }
@@ -172,3 +212,14 @@ input[type="range"].video-range::-moz-range-thumb { width: 12px; height: 12px; b
 video::cue { background: rgb(0 0 0 / .72); color: #fff; font-size: 1.05em; line-height: 1.35; }
 .video-ui-on video::-webkit-media-text-track-container { transform: translateY(-3.4rem); transition: transform .2s; }
 video::-webkit-media-text-track-container { transition: transform .2s; }
+/* reasoning (ThinkText): code still being written, tables and lists of the light parser */
+.think-pre { margin: 0.4rem 0; padding: 0.5rem 0.7rem; border-radius: 0.6rem; background: var(--code, #0f172a0d);
+  font: 12px/1.5 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; overflow-x: auto; }
+.think-text table { border-collapse: collapse; margin: 0.4rem 0; }
+.think-text th, .think-text td { border: 1px solid var(--line); padding: 2px 8px; text-align: left; }
+.think-text ul, .think-text ol { padding-left: 1.3rem; margin: 0.3rem 0; }
+.think-text ul { list-style: disc; } .think-text ol { list-style: decimal; }
+.think-text h3, .think-text h4, .think-text h5, .think-text h6 { font-weight: 600; margin: 0.5rem 0 0.2rem; color: var(--fg); }
+.think-text blockquote { border-left: 3px solid var(--line); padding-left: 0.6rem; margin: 0.3rem 0; }
+.think-text code { font-size: 0.92em; padding: 0 4px; border-radius: 4px; background: var(--hover); }
+.think-math { overflow-x: auto; margin: 0.45rem 0; }

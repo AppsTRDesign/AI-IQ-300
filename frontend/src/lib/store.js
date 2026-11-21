@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { api, setErrorTranslator } from "./api";
 import { docKind, isAudio, isImage, isTextFile, isVideo, isWebPage } from "./fileTypes";
+// Static: the chat, settings and voice library import speech.js directly, so a dynamic import here split nothing off
+// and only made Vite warn on every build.
+import * as speech from "./speech";
 
 // The device's position for map searches (the browser asks the user's permission once; Wi-Fi/GPS through the OS).
 function answerLocation(id) {
@@ -58,6 +61,8 @@ export const useStore = create((set, get) => ({
   models: {},
   modelStatus: null, // { model, state, message } for local model switching
   catalog: { skills: [], agents: [] },
+  mcpTools: [], // [{name: "server/tool", description}] of the running MCP servers (the composer's # picker)
+  mcpTool: null, // a tool sent from Settings > MCP > Try to the composer
   projects: [],
   sessions: [],
   expanded: {},
@@ -73,6 +78,8 @@ export const useStore = create((set, get) => ({
   editor: { tabs: [], active: null },
   dialog: null, // { type, ... }
   toasts: [], // stacked, auto-dismissing system notifications
+  net: { online: true }, // this computer's internet (backend netwatch.py): a drop pauses cloud tasks until it is back
+  netToast: null,
   confirmState: null, // { title, message, confirmLabel, danger, resolve }
   saveState: { state: "idle", at: null, error: null }, // settings persistence indicator
   lastSeq: 0,
@@ -89,6 +96,17 @@ export const useStore = create((set, get) => ({
     return id;
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) })),
+  // Internet dropped / came back: one notice that stays while offline, replaced by a short "back" notice.
+  applyNet(n) {
+    const { net, netToast, t } = get();
+    const online = n.online !== false;
+    if (online === net.online && !(n.quiet === false)) { set({ net: { ...net, ...n, online } }); return; }
+    if (netToast) get().dismiss(netToast);
+    let id = null;
+    if (!online) id = get().notify(t("net_down"), "busy");
+    else if (!n.quiet) get().notify(n.down_secs ? t("net_up_after", { s: n.down_secs }) : t("net_up"), "ok");
+    set({ net: { ...n, online }, netToast: id });
+  },
   // Promise-based replacement for window.confirm(), rendered as a styled modal.
   confirm: (opts) => new Promise((resolve) => set({ confirmState: { ...opts, resolve } })),
   closeConfirm(result) {
@@ -146,8 +164,14 @@ export const useStore = create((set, get) => ({
     api.get("/api/processes").then((list) => set({ processes: Object.fromEntries(list.map((p) => [p.id, p])) }));
     if (projects[0]) set({ projectId: projects[0].id });
     // "Open in new window": ?session=<id> opens that chat in this window.
-    const want = new URLSearchParams(location.search).get("session");
-    if (want && sessions.some((x) => x.id === want)) get().openSession(want);
+    // A reload (an update replaced the build, F5) returns to the chat this tab had open, with its open viewer.
+    let tab = {};
+    try { tab = JSON.parse(sessionStorage.getItem("aiiq_tab") || "{}"); } catch { /* none */ }
+    const want = new URLSearchParams(location.search).get("session") || tab.session;
+    if (want && sessions.some((x) => x.id === want)) {
+      await get().openSession(want);
+      if (tab.dialog && tab.session === want && Date.now() - (tab.at || 0) < 60000) set({ dialog: tab.dialog });
+    }
   },
   // Each provider's models load in parallel and appear as soon as they arrive (no waiting for the slowest one).
   // refresh: ask every provider again instead of the server's 5-minute cache (the refresh button).
@@ -240,12 +264,17 @@ export const useStore = create((set, get) => ({
     if (r?.error) get().notify(t("provider_models_error", { name: r.name }), "error", r.error);
     else if (r) get().notify(t("provider_models_found", { name: r.name, n: r.models.length }), "ok");
   },
+  loadMcpTools: () => api.get("/api/mcp").then((all) => set({ mcpTools: Object.entries(all || {}).filter(([, s]) => s.running)
+    .flatMap(([sid, s]) => (s.tools || []).map((tl) => ({ name: `${sid}/${tl.name}`, description: tl.description || "", schema: tl.input_schema || {} }))) }))
+    .catch(() => {}),
   loadCatalog: () => Promise.all([api.get("/api/skills"), api.get("/api/agents")])
     .then(([skills, agents]) => set({ catalog: { skills, agents } })).catch(() => {}),
 
   async updateSettings(patch) {
     const settings = await get().persist(() => api.patch("/api/settings", patch));
     set((s) => ({ settings: { ...settings, secrets: s.settings?.secrets } }));
+    // The Cloudflare account id is shared with the image card: typed there, the provider re-reads its models too
+    if (patch?.media && "cloudflare_account" in patch.media && settings?.providers?.cloudflare) get().refreshProvider("cloudflare");
   },
   async setSecret(name, value) {
     await get().persist(() => api.put("/api/secrets", { name, value }));
@@ -321,12 +350,14 @@ export const useStore = create((set, get) => ({
     if (get().sessionId === id) get().newChat();
   },
   newChat(projectId) {
+    try { sessionStorage.removeItem("aiiq_tab"); } catch { /* no storage */ }
     set((s) => ({ sessionId: null, messages: [], hasMore: false, loadingMessages: false, quotes: [], attachments: [], msgSel: null, view: "chat", sidebarOpen: false,
       ...(projectId ? { projectId, scope: "project" } : {}) }));
     get().loadContext();
   },
   selectProject(id) { set((s) => ({ projectId: id, scope: "project", expanded: { ...s.expanded, [id]: true } })); get().newChat(); },
   async openSession(id) {
+    try { sessionStorage.setItem("aiiq_tab", JSON.stringify({ session: id })); } catch { /* no storage */ }
     const s = get().sessions.find((x) => x.id === id);
     // The chat opens with its latest page (a long chat no longer loads every message at once); a loading state
     // shows until it arrives, older pages load while scrolling up (loadOlder).
@@ -542,7 +573,7 @@ export const useStore = create((set, get) => ({
     // The chat is working: the message is guidance for the running task (nothing stops, nothing restarts).
     const busy = !!get().runs[sid] && get().runs[sid].status !== "error";
     set((s) => ({
-      messages: [...s.messages, { id: `local-${Date.now()}`, role: "user", content: text, meta: { attachments: meta, steer: busy } }],
+      messages: [...s.messages, { id: `local-${Date.now()}`, role: "user", content: text, meta: { attachments: meta, steer: busy, ...(opts.chips?.length ? { chips: opts.chips } : {}) } }],
       runs: busy ? s.runs : { ...s.runs, [sid]: emptyRun() },
       attachments: [],
     }));
@@ -550,6 +581,7 @@ export const useStore = create((set, get) => ({
       const { run_id, steered } = await api.post(`/api/sessions/${sid}/chat`, {
         text, model: get().currentModel(), permission_mode: settings?.permission_mode,
         plan_mode: !!opts.planMode, goal_mode: !!opts.goalMode, images, attachments: meta, ui_lang: get().prefs.lang,
+        chips: opts.chips || [],
       });
       if (steered) { get().notify(get().t("steer_sent"), "ok"); return; }
       set((s) => ({ runs: { ...s.runs, [sid]: { ...(s.runs[sid] || emptyRun()), id: run_id, status: "running" } } }));
@@ -665,12 +697,14 @@ export const useStore = create((set, get) => ({
       runs[sid] = { ...(runs[sid] || emptyRun({ status: "running" })) };
       return runs[sid];
     };
-    let boot = s.boot, resync = false;
+    let boot = s.boot, resync = false, netEvt = null;
     const logCopied = new Set(); // a process's log array is copied once per batch, not once per line
     for (const e of events) {
       const p = e.payload || {};
       if (e.topic === "system") {
+        if (e.type === "net") netEvt = p;
         if (e.type === "hello") {
+          if (p.net) netEvt = { ...p.net, quiet: p.net.online }; // a (re)connect: say nothing when all is fine
           boot = p.boot;
           if (p.reset) {
             // The full state follows (a new page, the app restarted, or this client was away longer than the replay
@@ -755,10 +789,18 @@ export const useStore = create((set, get) => ({
           api.patch(`/api/sessions/${sid}`, { unread: false }).catch(() => {}); // seen: the answer is on screen
           const pr = s.prefs;  // spoken replies: only answers of a run seen live here (not history replays)
           if (pr.voiceReply && s.runs[sid] && p.status === "ok" && p.text) {
-            import("./speech").then((sp) => sp.speak(`run-${p.run_id}`, p.text, sp.speechOpts(pr)));
+            speech.speak(`run-${p.run_id}`, p.text, speech.speechOpts(pr));
           }
         }
         refresh = true;
+        continue;
+      }
+      if (e.type === "speed") { // live output speed of the running task (tokens per second, one event a second)
+        if (runs[sid]) {
+          const run = touchRun(sid);
+          run.tps = p.tps;
+          run.tpsAt = Date.now();
+        }
         continue;
       }
       if (e.type === "context") { // live context use while the task runs (each model turn)
@@ -807,6 +849,7 @@ export const useStore = create((set, get) => ({
       ...(context != null && s.context ? { context: { ...s.context, used: context } } : {}) });
     if (refresh) get().refreshSessions();
     if (resync && s.boot) get().resync(); // not on the first connection of a page (bootstrap loads everything)
+    if (netEvt) get().applyNet(netEvt);
   },
 }));
 

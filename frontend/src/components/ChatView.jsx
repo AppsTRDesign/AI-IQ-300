@@ -1,17 +1,20 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { liveFiles } from "../lib/changes";
-import { stripActionEcho } from "../lib/errors";
-import { ArrowDown, Brain, Check, ListChecks, Copy, CornerDownRight, FileUp, Folder, Laptop, Loader2, MessageSquarePlus, MessageSquareText, RotateCw, ShieldAlert, Square, Trash2, Volume2 } from "lucide-react";
+import { providerHint, stripActionEcho } from "../lib/errors";
+import { ArrowDown, Brain, Check, ListChecks, Copy, CornerDownRight, FileUp, Folder, Laptop, Loader2, MessageSquarePlus, MessageSquareText, RotateCw, ShieldAlert, Square, Trash2, Volume2, WifiOff } from "lucide-react";
 import TaskBoard from "./TaskBoard";
 import ChangesCard from "./ChangesCard";
 import { onSpeech, speak, speakingId, speechOpts, speechSupported, stopSpeech } from "../lib/speech";
 import { useStore, useT } from "../lib/store";
 import Markdown from "./Markdown";
-import ActivityTrace, { DiffView, shotsOf } from "./ActivityTrace";
+import ThinkText from "./ThinkText";
+import Collapsible from "./Collapsible";
+import ActivityTrace, { DiffView, fmtDur, shotsOf } from "./ActivityTrace";
 import Composer from "./Composer";
 import { Thinking, Logo } from "./Brand";
 import { FileChip } from "./ui";
+import { SentChips, chipsFromText } from "./ComposerModes";
 import { ErrorNote } from "./Feedback";
 import TodoList from "./TodoList";
 import { DocCard } from "./DocPreview";
@@ -126,7 +129,7 @@ function SteerMessage({ m }) {
             {applied ? <><Check size={10} />{t("steer_state_applied")}</> : <><Loader2 size={10} className="animate-spin" />{t("steer_state_waiting")}</>}
           </span>
         </div>
-        <div className="msg-body px-3.5 py-2"><Markdown text={m.content} mentions /></div>
+        <Collapsible className="msg-body px-3.5 py-2"><Markdown text={m.content} mentions /></Collapsible>
       </div>
       <MessageActions m={m} align="end" />
     </div>
@@ -141,12 +144,18 @@ const Message = memo(function Message({ m, last }) {
   if (m.role === "user" && m.meta?.steer) return <SteerMessage m={m} />;
   if (m.role === "user") {
     const atts = m.meta?.attachments || [];
+    const chips = m.meta?.chips?.length ? m.meta.chips : chipsFromText(t, m.content);
+    const strip = chips.find((c) => c.strip)?.strip;
+    const body = strip && m.content?.startsWith(strip) ? m.content.slice(strip.length).trim() : m.content;
     return (
       <div className="msg flex flex-col items-end gap-1.5" data-mid={m.id}>
         {atts.length > 0 && <div className="flex max-w-[90%] flex-wrap justify-end gap-1.5">{atts.map((a, i) => <FileChip key={i} file={a} compact />)}</div>}
-        <div className="msg-body max-w-[90%] rounded-3xl rounded-br-lg bg-hover px-4 py-2.5 sm:max-w-[80%]">
-          <Markdown text={m.content} mentions />
-        </div>
+        <SentChips chips={chips} />
+        {body && (
+          <Collapsible className="msg-body max-w-[90%] rounded-3xl rounded-br-lg bg-hover px-4 py-2.5 sm:max-w-[80%]">
+            <Markdown text={body} mentions />
+          </Collapsible>
+        )}
         <MessageActions m={m} align="end" />
       </div>
     );
@@ -343,7 +352,33 @@ function LiveNote({ text, thought = false }) {
     <div className="-mt-0.5 mb-1 ml-[7px] flex gap-2 border-l border-line py-1 pl-[17px]">
       <Icon size={13} className={`mt-[5px] shrink-0 ${thought ? "text-accent/70" : "text-subtle"}`} />
       <div className={`note-md min-w-0 flex-1 ${thought ? "note-thought" : ""} ${long ? "note-tail" : ""}`}>
-        <Markdown text={text.trim()} live />
+        {thought ? <ThinkText text={text.trim()} live /> : <Markdown text={text.trim()} live />}
+      </div>
+    </div>
+  );
+}
+
+// The reasoning while the model thinks: the whole stream, not one sentence that was replaced again and again (it could
+// not be followed). A box of fixed height that stays at the end as text arrives, unless the user scrolled up to read.
+// It exists only while a thinking step is running: when thinking ends (an answer, a tool call, a timeout, an error)
+// it goes, and the finished reasoning is in the "Thinking" step of the list.
+function LiveThinking({ text }) {
+  const box = useRef(null);
+  const stick = useRef(true);
+  const shown = useThrottled(text, text.length > 12000 ? 120 : 0); // the light parser keeps up with fast models
+  useEffect(() => {
+    const el = box.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [shown]);
+  const onScroll = () => {
+    const el = box.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 28;
+  };
+  return (
+    <div className="-mt-0.5 mb-1 ml-[7px] flex gap-2 border-l border-line py-1 pl-[17px]">
+      <Brain size={13} className="mt-[7px] shrink-0 animate-pulse text-accent/70" />
+      <div ref={box} onScroll={onScroll} className="think-live note-md min-w-0 flex-1">
+        <ThinkText text={shown.trim()} live />
       </div>
     </div>
   );
@@ -361,6 +396,20 @@ function RetryNotice({ step }) {
   const left = Math.max(0, Math.ceil((end.current - Date.now()) / 1000));
   const k = `cd_${step.title}`;
   const label = t(k) === k ? step.title : t(k);
+  if (d.until_online) {
+    // This computer is offline: no countdown (it waits as long as it takes), the time without internet counts up.
+    const gone = Math.max(0, Math.floor((Date.now() - (step.ts ? step.ts * 1000 : end.current)) / 1000));
+    return (
+      <div className="fade-in my-2 rounded-2xl border border-warn/40 bg-warn/10 px-3.5 py-2.5 text-[13px]">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-medium text-warn">
+          <WifiOff size={14} className="animate-pulse" />
+          <span>{t("step_retry_offline")}</span>
+          <span className="font-normal text-muted">{fmtDur(t, gone * 1000)} · {label}</span>
+        </div>
+        <div className="mt-1 text-[12px] leading-snug text-muted">{t("err_offline")}</div>
+      </div>
+    );
+  }
   return (
     <div className="fade-in my-2 rounded-2xl border border-warn/40 bg-warn/10 px-3.5 py-2.5 text-[13px]">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-medium text-warn">
@@ -368,7 +417,14 @@ function RetryNotice({ step }) {
         <span>{label}</span>
         <span className="font-normal text-muted">{t("retry_notice", { s: left, n: d.attempt || 1 })}</span>
       </div>
-      {step.detail && <div className="mt-1 line-clamp-3 break-words font-mono text-[11.5px] leading-snug text-muted">{step.detail}</div>}
+      {/* what it means in the user's language; the provider's own text only under "technical detail" */}
+      <div className="mt-1 text-[12.5px] leading-snug text-muted">{providerHint(t, step.detail) || (t(`err_${step.title}`) !== `err_${step.title}` ? t(`err_${step.title}`) : t("err_generic"))}</div>
+      {step.detail && (
+        <details className="mt-1 text-[11px] text-subtle">
+          <summary className="cursor-pointer select-none">{t("tech_detail")}</summary>
+          <div className="mt-0.5 break-words font-mono">{step.detail}</div>
+        </details>
+      )}
     </div>
   );
 }
@@ -381,28 +437,6 @@ function LiveChanges({ steps }) {
   const changes = useMemo(() => ({ files: list }), [list]);
   if (!list.length) return null;
   return <div className="fade-in"><ChangesCard changes={changes} steps={steps} live /></div>;
-}
-
-// One readable line of progress from the reasoning being written: the last COMPLETE sentence (a sliding window of
-// characters started mid-word and read like nonsense). The sentence still being written is not shown.
-function lastSentence(text) {
-  const clean = (s) => {
-    // A sentence cut out of "(*... text.)*" keeps stray wrappers: dropped (the Markdown view closes real ones).
-    s = s.replace(/^[-*#>\d.)\s(_]+/, "").replace(/[*_\s]+$/, "").trim();
-    if ((s.match(/\(/g) || []).length < (s.match(/\)/g) || []).length) s = s.replace(/\)+$/, "");
-    return s;
-  };
-  const tail = (text.match(/[^.!?\n]*$/) || [""])[0]; // the sentence being written now
-  const done = text.slice(0, text.length - tail.length);
-  const parts = done.split(/(?<=[.!?])\s+|\n+/).map(clean).filter((s) => s.length > 3);
-  // Enough of the end to read: the last finished sentences up to ~160 characters (one short line like "Better:"
-  // alone said nothing), then the start of the sentence being written, so it reads like a live stream.
-  const picked = [];
-  for (let i = parts.length - 1; i >= 0 && picked.join(" ").length < 160 && picked.length < 3; i--) picked.unshift(parts[i]);
-  let s = picked.join(" ");
-  const now = clean(tail);
-  if (now.length > 20) s = (s ? s + " " : "") + now + "…";
-  return s.length > 360 ? "…" + s.slice(-357) : s;
 }
 
 // Only this component re-renders while a run streams.
@@ -433,22 +467,26 @@ function LiveRun({ sid }) {
   const lastNoteAt = run.steps.findLastIndex((x) => x.kind === "note" && x.detail);
   const workAfter = lastNoteAt >= 0 && run.steps.slice(lastNoteAt + 1).some((x) => !["prepare", "retry", "thinking"].includes(x.kind));
   const lastNote = lastNoteAt >= 0 && !workAfter ? run.steps[lastNoteAt] : null;
-  // The slot shows the streaming text, else the latest note, else ONE line of progress: the last sentence of the
-  // reasoning being written now. (The whole tail repeated here drew the same growing text twice.)
-  const thinking = [...run.steps].reverse().find((x) => x.kind === "thinking" && x.status === "running" && x.detail);
-  const progress = thinking ? lastSentence(thinking.detail) : "";
+  // The slot shows the streaming text, else the latest note. While the model reasons, the live reasoning box shows the
+  // whole stream instead - only while that thinking step is really running and is the latest activity (a retry, a
+  // tool or an error after it means thinking is over: the box closed after a timeout only when the task ended).
+  const lastIdx = run.steps.findLastIndex((x) => x.kind !== "prepare");
+  const thinking = lastIdx >= 0 && run.steps[lastIdx].kind === "thinking" && run.steps[lastIdx].status === "running"
+    && run.steps[lastIdx].detail ? run.steps[lastIdx] : null;
   const text = stripActionEcho(run.text);
   // A conversation reply (small talk, a plain question) streams straight into the chat as the answer, as long as no
   // tool ran; tool work keeps everything in the slot under the steps.
   const tooled = run.steps.some((x) => !["thinking", "prepare", "retry", "fallback", "compress", "note"].includes(x.kind));
   const asAnswer = run.chat && !tooled && text;
-  const slot = asAnswer ? "" : text || progress || lastNote?.detail || "";
-  const thought = !asAnswer && !text && !!progress;
+  const thinkLive = !!thinking && !text && !run.error;
+  const slot = asAnswer || thinkLive ? "" : text || lastNote?.detail || "";
+  const thought = false;
   return (
     <div>
-      <ActivityTrace steps={run.steps} live started={run.started} />
+      <ActivityTrace steps={run.steps} live started={run.started} tps={run.tps} tpsAt={run.tpsAt} />
       <TaskBoard steps={run.steps} />
       {run.approvals.map((a) => <Approval key={a.approval_id} sid={sid} a={a} />)}
+      {thinkLive && <LiveThinking text={thinking.detail} />}
       {slot && <LiveNote text={slot} thought={thought} />}
       {asAnswer && <Markdown text={text} live />}
       <TodoList todos={run.todos} live />
@@ -456,7 +494,7 @@ function LiveRun({ sid }) {
       {waiting && !run.error && <RetryNotice key={waiting.id} step={waiting} />}
       {/* Before the first step: show that the task started (later the live step line shows the activity; toggling
           this indicator between steps made the chat blink). */}
-      {!run.error && !running && !run.steps.length && !slot && !asAnswer && run.approvals.length === 0 && <Thinking role={run.role} compact={false} />}
+      {!run.error && !running && !run.steps.length && !slot && !thinkLive && !asAnswer && run.approvals.length === 0 && <Thinking role={run.role} compact={false} />}
       {run.error && <ErrorNote code={run.errorCode} message={run.error} />}
     </div>
   );

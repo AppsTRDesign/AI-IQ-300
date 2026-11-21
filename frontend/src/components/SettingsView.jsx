@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle, AlertTriangle, Bot, Check, CheckCircle2, ChevronDown, Cloud, Cpu, Eye, EyeOff, FileText, Gauge, Globe,
   Info, KeyRound, Languages, Loader2, Monitor, Moon, Palette, Plus, RefreshCw, Save, Search, Server, ShieldCheck, Sun,
-  Trash2, X, Zap, Network, Plug, Volume2, Pencil, HardDrive, Power, LogIn, LogOut, Film,
+  Trash2, X, Zap, Network, Plug, Volume2, Pencil, HardDrive, Power, LogIn, LogOut, Film, AudioLines, MessageSquarePlus, Play,
 } from "lucide-react";
+import VoicesPane from "./VoicesPane";
+import { GenderIcon } from "./VoiceLibrary";
 import { edgeVoices, speak, speechOpts, speechSupported, voicesFor } from "../lib/speech";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
@@ -14,6 +16,7 @@ import Select from "./Select";
 import Markdown from "./Markdown";
 import { CapBadges, CapIcons, capsHint } from "./Caps";
 import RangeField from "./RangeField";
+import { McpArgFields, argsFromVals, missingArgs } from "./McpArgs";
 
 const TABS = [
   { id: "general", icon: Palette, key: "set_general" },
@@ -22,6 +25,7 @@ const TABS = [
   { id: "providers", icon: Server, key: "providers" },
   { id: "context", icon: Gauge, key: "context" },
   { id: "web", icon: Globe, key: "set_web" },
+  { id: "voices", icon: AudioLines, key: "set_voices" },
   { id: "mcp", icon: Plug, key: "set_mcp" },
   { id: "security", icon: ShieldCheck, key: "set_security" },
   { id: "languages", icon: Languages, key: "set_languages" },
@@ -166,11 +170,16 @@ function VoiceCard() {
   const st = useStore.getState();
   if (!speechSupported()) return <Card title={t("voice_title")} desc={t("voice_unsupported")} />;
   const many = new Set((neural || []).map((v) => v.locale)).size > 1;
+  const local = (neural || []).filter((v) => v.engine && v.engine !== "edge" && v.installed !== false && (gender === "all" || v.gender === gender));
+  const online = (neural || []).filter((v) => (!v.engine || v.engine === "edge") && (gender === "all" || v.gender === gender));
   const options = [
     { value: "", label: t("voice_default"), hint: t("voice_default_hint") },
-    ...(neural || []).filter((v) => gender === "all" || v.gender === gender).map((v) => ({
+    ...local.map((v) => ({ value: v.id, label: many ? `${v.name} · ${v.locale}` : v.name, group: t("voice_group_local"),
+      hint: `${v.engine.replace(/^./, (c) => c.toUpperCase())} · ${t(`vl_q_${v.quality || "standard"}`)}`,
+      icon: <GenderIcon g={v.gender} />, badge: t("voice_offline") })),
+    ...online.map((v) => ({
       value: `edge:${v.id}`, label: many ? `${v.name} · ${v.locale}` : v.name, group: t("voice_group_neural"),
-      badge: t(v.gender === "female" ? "voice_female" : "voice_male") })),
+      icon: <GenderIcon g={v.gender} />, badge: t(v.gender === "female" ? "voice_female" : "voice_male") })),
     ...(gender === "all" ? voices.map((v) => ({ value: v.voiceURI, label: v.name, group: t("voice_group_browser"), badge: t("voice_offline") })) : []),
   ];
   const offline = neural && !neural.length;
@@ -184,7 +193,7 @@ function VoiceCard() {
       </Row>
       <Row label={t("voice_voice")} desc={neural === null ? t("voice_loading") : !neural.length && !voices.length ? t("voice_none") : t("voice_per_lang", { lang: lang.toUpperCase() })}>
         <Select value={prefs.voiceBy?.[lang] || ""} onChange={(v) => { st.setPref("voiceBy", { ...prefs.voiceBy, [lang]: v }); speak("test", t("voice_sample"), { ...speechOpts(prefs), voice: v }); }}
-          options={options} />
+          options={options} searchable ariaLabel={t("voice_voice")} />
       </Row>
       <SliderRow label={t("voice_rate")} value={prefs.voiceRate || 1} min={0.6} max={1.6} step={0.1} format={(v) => v.toFixed(1)} unit="×"
         onCommit={(v) => st.setPref("voiceRate", v)} />
@@ -951,6 +960,46 @@ const MEDIA_SERVICES = [
   { id: "pollinations", name: "Pollinations (FLUX)", secret: "pollinations_token", ph: "token…", desc: "pollinations_desc",
     doc: "https://auth.pollinations.ai", free: true, system: true },
 ];
+// AI video (image-to-video) services in the order they are tried: paid ones with a key first, then the free Hugging
+// Face Spaces. Each can be switched off; one at a time is used (the next only when it fails), so they never race.
+const VIDEO_SERVICES = [
+  { id: "veo", name: "Google Veo (Gemini API)", secret: "gemini_api_key", ph: "AIza…", desc: "veo_desc", doc: "https://ai.google.dev/gemini-api/docs/video" },
+  { id: "fal", name: "fal.ai (Wan · Kling · Hailuo · Seedance · Veo)", secret: "fal_api_key", ph: "key_id:secret", desc: "fal_desc", doc: "https://fal.ai/models" },
+  { id: "replicate", name: "Replicate (Wan · Kling · Hailuo · Seedance)", secret: "replicate_api_key", ph: "r8_…", desc: "replicate_desc", doc: "https://replicate.com/collections/image-to-video" },
+  { id: "runway", name: "Runway (Gen-4 Turbo)", secret: "runway_api_key", ph: "key_…", desc: "runway_desc", doc: "https://docs.dev.runwayml.com" },
+  { id: "hf_wan", name: "Wan 2.2 · Hugging Face", desc: "ve_free_desc", free: true, doc: "https://huggingface.co/spaces/zerogpu-aoti/wan2-2-fp8da-aoti-faster" },
+  { id: "hf_wan2", name: "Wan 2.2 Lightning · Hugging Face", desc: "ve_free_desc", free: true, doc: "https://huggingface.co/spaces/Saravutw/WAN2.2_I2V_LIGHTNING_4-8step_custom" },
+  { id: "hf_svd", name: "AnimateLCM-SVD · Hugging Face", desc: "ve_free_svd_desc", free: true, doc: "https://huggingface.co/spaces/wangfuyun/AnimateLCM-SVD" },
+];
+// Services whose model the user may pick (only models of that kind: image models for images, video models for video)
+const PICKS_MODEL = { media: new Set(["gemini", "cloudflare", "huggingface", "together", "openai", "stability"]), video: new Set(["veo", "fal", "replicate", "runway"]) };
+
+function ModelPick({ kind, section, sid }) {
+  const t = useT();
+  const [d, setD] = useState(null);
+  const chosen = useStore((x) => x.settings?.[section]?.models?.[sid]) || "";
+  useEffect(() => { api.get(`/api/media/models/${kind}/${sid}`).then(setD).catch(() => setD({ choices: [] })); }, [kind, sid, chosen]);
+  if (!d) return null;
+  const list = d.choices || [];
+  const cur = chosen || d.current || d.default;
+  const opts = list.includes(cur) || !cur ? list : [cur, ...list];
+  return (
+    <div className="text-xs text-muted">{t(kind === "video" ? "media_model_video" : "media_model_image")}
+      <span className="text-subtle"> · {t("media_model_desc", { d: d.default || "-" })}</span>
+      <div className="mt-1">
+        <Select value={cur || ""} mono searchable={opts.length > 6} ariaLabel={t(kind === "video" ? "media_model_video" : "media_model_image")}
+          onChange={(v) => useStore.getState().updateSettings({ [section]: { models: { [sid]: v === d.default ? "" : v } } })}
+          options={opts.map((m) => {
+            const preview = /preview|exp|beta/i.test(m);
+            return { value: m, label: m, group: m === d.default ? t("default") : preview ? t("mp_preview") : t("mp_stable"),
+              badge: m === d.default ? t("default") : preview ? "preview" : undefined,
+              dot: m === d.default ? "var(--ok)" : preview ? "var(--warn)" : "var(--accent)" };
+          }).sort((a, b) => (a.value === d.default ? -1 : b.value === d.default ? 1 : (a.badge === "preview") - (b.badge === "preview")))} />
+      </div>
+    </div>
+  );
+}
+
 // Stock photo services: searched first when keyed and switched on; then the free Openverse / Wikimedia Commons.
 const STOCK_SERVICES = [
   { id: "pexels", name: "Pexels", secret: "pexels_api_key", ph: "API key", desc: "pexels_desc", doc: "https://www.pexels.com/api/" },
@@ -980,15 +1029,16 @@ function ServiceCard({ svc, section, kind, status, onTested }) {
   const fieldsSet = (svc.fields || []).filter((f) => !f.optional).every((f) => conf[f.field]);
   const ready = svc.free || (has && fieldsSet && (svc.secret || (svc.fields || []).length));
   const dirty = Object.entries(vals).some(([k, v]) => v !== (conf[k] || ""));
-  const saveFields = async () => { if (dirty) await st.updateSettings({ [section]: Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, v.trim()])) }); };
+  // after saving, the field shows the stored value again (it may later change from the provider card)
+  const saveFields = async () => { if (dirty) { await st.updateSettings({ [section]: Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, v.trim()])) }); setVals({}); } };
   const saveKey = async () => { if (!key) return; await st.setSecret(svc.secret, key); setKey(""); onTested?.(); };
   const toggle = (v) => st.updateSettings({ [section]: { disabled: v ? (conf.disabled || []).filter((x) => x !== svc.id) : [...(conf.disabled || []), svc.id] } });
-  const runTest = async () => {
+  const runTest = async (real = false) => {
     setBusy(true); setTest(null); setOpen(true);
     try {
       await saveKey(); await saveFields();
-      const path = kind === "maps" ? "maps" : kind === "media" ? "media" : kind === "stock" ? "stock" : "web";
-      setTest(await api.post(`/api/${path}/test/${svc.test || svc.id}`, { q: "" }));
+      const path = kind === "maps" ? "maps" : kind === "media" ? "media" : kind === "stock" ? "stock" : kind === "video" ? "video" : "web";
+      setTest(await api.post(`/api/${path}/test/${svc.test || svc.id}${real === true ? "?real=true" : ""}`, { q: "" }));
     } catch (e) { setTest({ ok: false, error: e.message }); }
     setBusy(false);
     onTested?.();
@@ -1041,6 +1091,13 @@ function ServiceCard({ svc, section, kind, status, onTested }) {
               </div>
             </label>
           )}
+          {PICKS_MODEL[section]?.has(svc.id) && has && <ModelPick kind={section === "video" ? "video" : "image"} section={section} sid={svc.id} />}
+          {kind === "video" && ready && (
+            <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-subtle">
+              <Button onClick={() => runTest(true)} disabled={busy} className="!px-2.5 !py-1"><Film size={13} />{t("video_real_test")}</Button>
+              <span>{t(svc.free ? "video_real_test_free" : "video_real_test_paid")}</span>
+            </div>
+          )}
           {(svc.fields || []).map((f) => (
             <label key={f.field} className="text-xs text-muted">{t(f.label)}{f.desc && <span className="text-subtle"> · {t(f.desc)}</span>}
               <div className="mt-1 flex gap-2">
@@ -1075,7 +1132,10 @@ function Web() {
   const [busy, setBusy] = useState(false);
   const [svcs, setSvcs] = useState([]);
   const loadSvcs = () => api.get("/api/services").then((r) => setSvcs(r.services || [])).catch(() => {});
-  useEffect(() => { loadSvcs(); }, []);
+  // keys and switches can change elsewhere (a provider card shares the Cloudflare/Gemini/HF key): the badges follow
+  const sig = useStore((x) => JSON.stringify([x.settings?.secrets, x.settings?.media, x.settings?.video, x.settings?.stock,
+    x.settings?.providers?.cloudflare?.account_id]));
+  useEffect(() => { loadSvcs(); }, [sig]);
   const statusOf = (id) => svcs.find((s) => s.id === id);
   const test = async () => {
     setBusy(true);
@@ -1096,7 +1156,9 @@ function Web() {
       <Card title={<span className="flex items-center gap-2"><Globe size={15} />{t("stock_services")} <span className="text-xs font-normal text-subtle">{STOCK_SERVICES.length}</span></span>} desc={t("stock_services_desc")}>
         {STOCK_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="stock" kind="stock" status={statusOf(svc.id)} onTested={loadSvcs} />)}
       </Card>
-      <VideoEnginesCard />
+      <Card title={<span className="flex items-center gap-2"><Film size={15} />{t("video_services")} <span className="text-xs font-normal text-subtle">{VIDEO_SERVICES.length}</span></span>} desc={t("video_services_desc")}>
+        {VIDEO_SERVICES.map((svc) => <ServiceCard key={svc.id} svc={svc} section="video" kind="video" status={statusOf(svc.id)} onTested={loadSvcs} />)}
+      </Card>
       <BrowserAgentCard />
       <Card title={t("web_test")} desc={t("web_policy")}>
         <div className="flex gap-2 px-5 py-4">
@@ -1513,15 +1575,111 @@ const lines = (obj) => Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).jo
 const parseLines = (text) => Object.fromEntries(text.split("\n").map((l) => l.trim()).filter((l) => l.includes("="))
   .map((l) => [l.slice(0, l.indexOf("=")).trim(), l.slice(l.indexOf("=") + 1).trim()]));
 const splitArgs = (s) => (s.match(/"[^"]*"|\S+/g) || []).map((a) => a.replace(/^"|"$/g, ""));
-// Ready-made servers: public ones work at once; "auth" ones open the service's own sign-in after they are added.
-const MCP_PRESETS = [
-  { name: "deepwiki", label: "DeepWiki", transport: "http", url: "https://mcp.deepwiki.com/mcp", note: "mcp_p_deepwiki" },
-  { name: "context7", label: "Context7", transport: "http", url: "https://mcp.context7.com/mcp", note: "mcp_p_context7" },
-  { name: "sequential-thinking", label: "Sequential Thinking", transport: "stdio", command: "npx", args: "-y @modelcontextprotocol/server-sequential-thinking", note: "mcp_p_thinking" },
-  { name: "fetch", label: "Fetch", transport: "stdio", command: "uvx", args: "mcp-server-fetch", note: "mcp_p_fetch" },
-  { name: "everything", label: "Everything (test)", transport: "stdio", command: "npx", args: "-y @modelcontextprotocol/server-everything", note: "mcp_p_everything" },
-  { name: "memory", label: "Memory", transport: "stdio", command: "npx", args: "-y @modelcontextprotocol/server-memory", note: "mcp_p_memory" },
-];
+// Ready-made servers come from the backend catalog (/api/mcp-catalog): public ones work at once, "oauth" ones show
+// their sign-in button after they are added, "header" ones open the form with the token line to fill in.
+
+// a JSON result indented (most MCP tools answer with one JSON line), other text as it is
+const pretty = (text) => {
+  const s = String(text || "").trim();
+  if (!/^[[{]/.test(s) || s.length > 400000) return s;
+  try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
+};
+
+// Run an MCP tool by hand: a field per argument of its input schema (objects / arrays as JSON), the raw result below.
+// The same call the model makes with the mcp tool; "Use in chat" puts the tool as a chip into the composer.
+function McpTry({ sid, server, init, onClose }) {
+  const t = useT();
+  const tools = server.tools || [];
+  const [name, setName] = useState(init || tools[0]?.name || "");
+  const tool = tools.find((x) => x.name === name) || {};
+  const schema = tool.input_schema || {};
+  const [vals, setVals] = useState({});
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setVals({}); setRes(null); }, [name]);
+  const run = async () => {
+    setBusy(true); setRes(null);
+    try { setRes(await api.post(`/api/mcp/${sid}/call`, { tool: name, arguments: argsFromVals(schema, vals) })); }
+    catch (e) { setRes({ ok: false, text: e.message }); }
+    finally { setBusy(false); }
+  };
+  const toChat = () => { // the composer takes it as an MCP tool chip, with the values filled in here
+    useStore.setState({ mcpTool: { tool: `${sid}/${name}`, vals } });
+    useStore.getState().setView("chat");
+    onClose();
+  };
+  const missing = missingArgs(schema, vals).length > 0;
+  return (
+    <Modal title={t("mcp_try_title", { name: server.name || sid })} onClose={onClose} width="max-w-2xl"
+      footer={<>
+        <Button onClick={toChat}><MessageSquarePlus size={14} /> {t("mcp_use_in_chat")}</Button>
+        <Button variant="primary" disabled={busy || !name || missing} onClick={run}>
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} {t("mcp_run")}</Button></>}>
+      <div className="space-y-3 text-[13px]">
+        <Select value={name} onChange={setName} options={tools.map((x) => ({ id: x.name, label: x.name }))} />
+        {tool.description && <p className="text-xs leading-snug text-muted">{tool.description}</p>}
+        <McpArgFields schema={schema} vals={vals} onChange={setVals} />
+        {res && (
+          <div className={`rounded-xl border px-3 py-2 ${res.ok ? "border-line" : "border-danger/40 bg-danger/5"}`}>
+            <div className={`mb-1 text-[11.5px] ${res.ok ? "text-ok" : "text-danger"}`}>{res.ok ? t("mcp_result_ok") : t("mcp_result_err")}{res.ms != null ? ` · ${(res.ms / 1000).toFixed(1)} ${t("unit_s")}` : ""}</div>
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed">{pretty(res.text)}</pre>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// Find a server in the official MCP registry (+ npm, GitHub): the same search the model's mcp_search tool makes.
+function McpFind({ installed, onInstall }) {
+  const t = useT();
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const search = async (e) => {
+    e?.preventDefault();
+    if (!q.trim()) return;
+    setBusy(true);
+    try { setRows((await api.get(`/api/mcp-registry?q=${encodeURIComponent(q.trim())}`)).results || []); }
+    catch (err) { setRows([]); useStore.getState().notify(t("mcp_find_failed"), "error", err.message); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Card title={t("mcp_find")} desc={t("mcp_find_desc")}>
+      <form onSubmit={search} className="flex gap-2 px-4 py-3.5 @md:px-5">
+        <div className="relative flex-1">
+          <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-subtle" />
+          <input className={`${inputCls} pl-8`} value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("mcp_find_ph")} />
+        </div>
+        <Button variant="primary" disabled={busy || !q.trim()}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />} {t("mcp_find_btn")}</Button>
+      </form>
+      {rows && <div className="space-y-2 px-4 py-3.5 @md:px-5">
+        {rows.length === 0 && <div className="py-4 text-center text-[13px] text-muted">{t("mcp_find_none")}</div>}
+        {(rows || []).map((r, i) => {
+          const runnable = !!(r.command || r.url);
+          return (
+            <div key={i} className="flex items-start gap-2.5 rounded-xl border border-line px-3 py-2.5">
+              <Plug size={15} className="mt-0.5 shrink-0 text-muted" />
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-medium"><span className="break-all">{r.name}</span>
+                  <span className="rounded bg-hover px-1 font-mono text-[10px] font-normal text-muted">{r.source}</span>
+                  {r.stars ? <span className="text-[10.5px] font-normal text-subtle">★ {r.stars}</span> : null}</span>
+                {r.description && <span className="mt-0.5 block text-xs leading-snug text-muted">{r.description}</span>}
+                <span className="mt-0.5 block truncate font-mono text-[11px] text-subtle">{r.url || [r.command, ...(r.args || [])].join(" ") || r.homepage}</span>
+                {(r.env?.length > 0 || r.auth) && <span className="mt-0.5 block text-[11px] text-warn">{[r.env?.length ? `env: ${r.env.join(", ")}` : "", r.auth].filter(Boolean).join(" · ")}</span>}
+              </span>
+              {runnable ? (
+                <button title={t("add")} disabled={installed.has(r.name)} onClick={() => onInstall(r)} className="rounded-lg p-1 text-subtle hover:bg-hover hover:text-accent disabled:opacity-40"><Plus size={14} /></button>
+              ) : r.homepage ? (
+                <a href={r.homepage} target="_blank" rel="noreferrer" className="rounded-lg p-1 text-subtle hover:bg-hover hover:text-accent"><Globe size={14} /></a>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>}
+    </Card>
+  );
+}
 
 function McpForm({ init, onClose, onSaved }) {
   const t = useT();
@@ -1613,14 +1771,101 @@ function McpServers() {
     finally { setBusy(""); }
   };
   const signOut = async (id) => { setBusy(id); try { await api.del(`/api/mcp/${id}/oauth`); } finally { setBusy(""); load(); } };
-  const preset = (p) => setForm({ ...MCP_EMPTY, name: p.name, transport: p.transport, command: p.command || "", args: p.args || "", url: p.url || "" });
-  const list = Object.entries(servers || {});
+  // One click adds a ready-made server switched on (public ones need nothing else; sign-in ones show their button)
+  const [cat, setCat] = useState({ categories: [], servers: [] });
+  useEffect(() => { api.get("/api/mcp-catalog").then(setCat).catch(() => {}); }, []);
+  const [catQ, setCatQ] = useState("");
+  const [catSel, setCatSel] = useState("");
+  const [trying, setTrying] = useState(null); // {sid, tool}
+  // a ready-made server: added at once, or (token header) the form opens with the line to fill in
+  const addPreset = async (p) => {
+    if (p.auth === "header") {
+      setForm({ ...MCP_EMPTY, name: p.id, transport: p.transport, url: p.url || "", command: p.command || "", args: p.args || "", headers: p.hint || "" });
+      return;
+    }
+    setBusy(p.id);
+    try {
+      await api.put(`/api/mcp/${p.id}`, { name: p.label, transport: p.transport, command: p.command || "", url: p.url || "",
+        args: splitArgs(p.args || ""), env: {}, headers: {}, enabled: true });
+    } catch (e) { useStore.getState().notify(t("mcp_save_failed"), "error", e.message); }
+    finally { setBusy(""); load(); }
+  };
+  // a registry / npm result: added at once when it needs no keys, else the form opens with its env names to fill in
+  const addFound = async (r) => {
+    const id = r.name.toLowerCase().split("/").pop().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "mcp";
+    const env = (r.env || []).map((e) => `${e.split(" ")[0]}=`).join("\n");
+    const init = { ...MCP_EMPTY, name: id, transport: r.url ? "http" : "stdio", url: r.url || "", command: r.command || "", args: (r.args || []).join(" "), env };
+    if (env || (r.auth && !/^sign-in|none/.test(r.auth) && r.url)) { setForm(init); return; }
+    setBusy(id);
+    try {
+      await api.put(`/api/mcp/${id}`, { name: r.name.slice(0, 60), transport: init.transport, command: init.command, url: init.url,
+        args: r.args || [], env: {}, headers: {}, enabled: true });
+      setView("mine");
+    } catch (e) { useStore.getState().notify(t("mcp_save_failed"), "error", e.message); }
+    finally { setBusy(""); load(); }
+  };
+  const presetIds = new Set(cat.servers.map((p) => p.id));
+  const [view, setView] = useState("presets");
+  const all = Object.entries(servers || {});
+  const mine = all.filter(([id]) => !presetIds.has(id));
+  const list = view === "presets" ? all.filter(([id]) => presetIds.has(id)) : view === "mine" ? mine : [];
+  const ql = catQ.trim().toLowerCase();
+  const shown = cat.servers.filter((p) => (!catSel || p.category === catSel)
+    && (!ql || `${p.label} ${p.id} ${t(p.note)}`.toLowerCase().includes(ql)));
   return (
     <div className="space-y-4">
-      <Card title={t("mcp_title")} desc={t("mcp_desc")}
-        action={<Button className="text-xs" onClick={() => setForm({ ...MCP_EMPTY })}><Plus size={14} /> {t("add")}</Button>}>
+      <Segmented value={view} onChange={setView}
+        options={[{ id: "presets", label: `${t("mcp_presets")} · ${cat.servers.length}` }, { id: "mine", label: `${t("mcp_mine")} · ${mine.length}` },
+          { id: "find", label: t("mcp_find") }]} />
+      {view === "find" && <McpFind installed={new Set(all.map(([id, s]) => s.name || id))} onInstall={addFound} />}
+      {view === "presets" && (
+        <Card title={t("mcp_presets")} desc={t("mcp_presets_desc")}>
+          <div className="flex flex-wrap items-center gap-1.5 px-4 py-3.5 @md:px-5">
+            <div className="relative w-full @md:w-56">
+              <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-subtle" />
+              <input className={`${inputCls} !py-1.5 pl-8`} value={catQ} onChange={(e) => setCatQ(e.target.value)} placeholder={t("mcp_cat_search")} />
+            </div>
+            {["", ...cat.categories].map((c) => (
+              <button key={c || "all"} onClick={() => setCatSel(c)}
+                className={`rounded-lg px-2 py-1 text-xs ${catSel === c ? "bg-accent-soft font-medium text-accent" : "text-muted hover:bg-hover"}`}>
+                {t(c ? `mcp_cat_${c}` : "mcp_cat_all")}</button>
+            ))}
+          </div>
+          <div className="grid gap-2 px-4 py-3.5 @md:grid-cols-2 @md:px-5">
+            {shown.length === 0 && <div className="py-3 text-center text-[13px] text-muted @md:col-span-2">{t("mcp_find_none")}</div>}
+            {shown.map((p) => {
+              const s = servers?.[p.id];
+              return (
+                <div key={p.id} className="flex items-start gap-2.5 rounded-xl border border-line px-3 py-2.5">
+                  <Plug size={15} className={`mt-0.5 shrink-0 ${s?.running ? "text-ok" : s?.error ? "text-danger" : "text-muted"}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5 text-[13px] font-medium">{p.label}
+                      <span className="rounded bg-hover px-1 font-mono text-[10px] font-normal text-muted">{p.transport}</span>
+                      {p.auth ? <span className="rounded bg-warn/10 px-1 text-[10px] font-normal text-warn">{t(p.auth === "header" ? "mcp_p_token" : "mcp_p_auth")}</span>
+                        : <span className="rounded bg-ok/10 px-1 text-[10px] font-normal text-ok">{t("mcp_p_public")}</span>}</span>
+                    <span className="mt-0.5 block text-xs leading-snug text-muted">{t(p.note)}</span>
+                    {s && <span className={`mt-0.5 block text-[11px] ${s.running ? "text-ok" : s.error ? "text-danger" : "text-subtle"}`}>
+                      {busy === p.id ? t("mcp_starting") : s.running ? t("mcp_running", { n: s.tools.length }) : s.enabled === false ? t("mcp_disabled") : s.error ? t("mcp_failed") : t("mcp_stopped")}</span>}
+                  </span>
+                  {s ? (
+                    <span className="flex shrink-0 items-center gap-1">
+                      <Toggle checked={s.enabled !== false} onChange={(v) => toggle(p.id, s, v)} />
+                      <button title={t("mcp_remove")} onClick={() => remove(p.id)} className="rounded-lg p-1 text-muted hover:bg-hover hover:text-danger"><Trash2 size={13} /></button>
+                    </span>
+                  ) : (
+                    <button title={t("add")} disabled={busy === p.id} onClick={() => addPreset(p)} className="rounded-lg p-1 text-subtle hover:bg-hover hover:text-accent">
+                      {busy === p.id ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+      {(view === "mine" || list.length > 0) && <Card title={view === "presets" ? t("mcp_title") : t("mcp_mine")} desc={view === "presets" ? t("mcp_desc") : t("mcp_mine_desc")}
+        action={view === "mine" && <Button className="text-xs" onClick={() => setForm({ ...MCP_EMPTY })}><Plus size={14} /> {t("add")}</Button>}>
         {servers == null && <div className="grid h-20 place-items-center"><Loader2 size={16} className="animate-spin text-accent" /></div>}
-        {servers && list.length === 0 && <div className="px-5 py-6 text-center text-[13px] text-muted">{t("mcp_empty")}</div>}
+        {servers && list.length === 0 && <div className="px-5 py-6 text-center text-[13px] text-muted">{t(view === "presets" ? "mcp_empty" : "mcp_mine_empty")}</div>}
         {list.map(([id, s]) => (
           <div key={id} className="space-y-2 px-4 py-3.5 @md:px-5">
             <div className="flex flex-wrap items-center gap-2">
@@ -1649,42 +1894,24 @@ function McpServers() {
             {s.error && !s.needs_auth && <div className="rounded-lg bg-danger/10 px-2.5 py-1.5 text-xs text-danger">{s.error}</div>}
             {s.tools?.length > 0 && (
               <div className="flex flex-wrap gap-1">
-                {s.tools.map((tl) => <span key={tl.name} title={tl.description} className={`rounded-md px-1.5 py-0.5 font-mono text-[11px] ${tl.read_only ? "bg-ok/10 text-ok" : "bg-hover text-muted"}`}>{tl.name}</span>)}
+                {s.tools.map((tl) => <button key={tl.name} title={`${tl.description || tl.name}\n\n${t("mcp_try_hint")}`} onClick={() => setTrying({ sid: id, tool: tl.name })}
+                  className={`rounded-md px-1.5 py-0.5 font-mono text-[11px] hover:ring-1 hover:ring-accent ${tl.read_only ? "bg-ok/10 text-ok" : "bg-hover text-muted"}`}>{tl.name}</button>)}
+                <button onClick={() => setTrying({ sid: id, tool: s.tools[0].name })} className="inline-flex items-center gap-1 rounded-md bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-accent hover:opacity-90"><Play size={11} /> {t("mcp_try")}</button>
               </div>
             )}
           </div>
         ))}
-      </Card>
-      <Card title={t("mcp_presets")} desc={t("mcp_presets_desc")}>
-        <div className="grid gap-2 px-4 py-3.5 @md:grid-cols-2 @md:px-5">
-          {MCP_PRESETS.map((p) => {
-            const added = !!servers?.[p.name];
-            return (
-              <button key={p.name} disabled={added} onClick={() => preset(p)}
-                className="flex items-start gap-2.5 rounded-xl border border-line px-3 py-2.5 text-left transition hover:border-accent/60 hover:bg-hover disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent">
-                <Plug size={15} className="mt-0.5 shrink-0 text-muted" />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5 text-[13px] font-medium">{p.label}
-                    <span className="rounded bg-hover px-1 font-mono text-[10px] font-normal text-muted">{p.transport}</span>
-                    {p.auth ? <span className="rounded bg-warn/10 px-1 text-[10px] font-normal text-warn">{t("mcp_p_auth")}</span>
-                      : <span className="rounded bg-ok/10 px-1 text-[10px] font-normal text-ok">{t("mcp_p_public")}</span>}</span>
-                  <span className="mt-0.5 block text-xs leading-snug text-muted">{t(p.note)}</span>
-                </span>
-                {added ? <Check size={14} className="mt-0.5 shrink-0 text-ok" /> : <Plus size={14} className="mt-0.5 shrink-0 text-subtle" />}
-              </button>
-            );
-          })}
-        </div>
-      </Card>
+      </Card>}
       <div className="flex gap-2 px-1 text-xs leading-snug text-muted"><Info size={14} className="mt-0.5 shrink-0" />{t("mcp_safety")}</div>
       {form && <McpForm init={form} onClose={() => setForm(null)} onSaved={() => { setForm(null); load(); }} />}
+      {trying && servers?.[trying.sid] && <McpTry sid={trying.sid} server={servers[trying.sid]} init={trying.tool} onClose={() => setTrying(null)} />}
     </div>
   );
 }
 
 
 
-const PANES = { general: General, models: Models, multi: MultiModel, providers: Providers, context: Context, web: Web, mcp: McpServers, security: Security, languages: LanguagesTab };
+const PANES = { general: General, models: Models, multi: MultiModel, providers: Providers, context: Context, web: Web, voices: VoicesPane, mcp: McpServers, security: Security, languages: LanguagesTab };
 
 export default function SettingsView() {
   const t = useT();

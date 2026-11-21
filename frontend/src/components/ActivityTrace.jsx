@@ -3,12 +3,16 @@ import {
   AlertTriangle, Archive, Brain, Bug, Check, ChevronDown, ChevronRight, FileCode2, FileText, FolderTree, GitCommit, Globe,
   Image, ListChecks, Loader2, MessageSquareText, Play, Search, ShieldAlert, Terminal, X, Trash2, Square, Cloud, Sparkles, RotateCw,
   FilePen, FileSearch, Users, BookMarked, Plug, Camera, MapPin, CornerDownRight, Cpu, Copy, Download,
+  Wand2, Clapperboard, Film, ScanEye, AudioLines, FileAudio, Gauge,
 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
+import { FaviconStack, PhotoResults, SearchResults } from "./SearchCards";
 import { api } from "../lib/api";
 import CodeBlock from "./CodeBlock";
-import { stripActionEcho, toolErrorLine } from "../lib/errors";
+import { providerHint, stripActionEcho, toolErrorLine } from "../lib/errors";
 import Markdown from "./Markdown";
+import ThinkText from "./ThinkText";
+import Collapsible from "./Collapsible";
 
 const KIND = {
   thinking: [Brain, "thinking"], plan: [ListChecks, "step_plan"], file: [FileCode2, "step_file"],
@@ -22,6 +26,9 @@ const KIND = {
   edit: [FilePen, "step_edit"], grep: [FileSearch, "step_grep"], delegate: [Users, "step_delegate"], memory: [BookMarked, "step_memory"],
   mcp: [Plug, "step_mcp"], team: [Users, "step_team"], screenshot: [Camera, "step_screenshot"], catalog: [Sparkles, "step_catalog"],
   places: [MapPin, "step_places"], photo: [Image, "step_photo"], system: [Cpu, "step_system"], system_info: [Cpu, "step_system"],
+  // made, not searched: a picture or a clip the AI generates, a video cut together, a voice-over, a check of a file
+  image_gen: [Wand2, "step_image_gen"], video_gen: [Clapperboard, "step_video_gen"], video_edit: [Film, "step_video_edit"],
+  inspect: [ScanEye, "step_inspect"], speech: [AudioLines, "step_speech"], transcribe: [FileAudio, "step_transcribe"],
 };
 
 // Internal titles that only repeat the step kind are not shown; error codes (retry) are shown by their name.
@@ -35,8 +42,15 @@ const shownTitle = (t, step) => {
   return from ? `${from} · ${title}` : title;
 };
 
+// Retries the app makes itself (a stream that stopped mid-file, a repetition it cut) are not a busy provider.
+const OWN_RETRY = new Set(["stalled", "looping", "offline"]);
+
 // While a file step runs (e.g. waiting for approval) nothing has changed yet: present tense.
-const RUNNING_KEY = { photo: "step_photo_running", file: "step_file_running", edit: "step_edit_running", delete: "step_delete_running", screenshot: "step_screenshot_running" };
+const RUNNING_KEY = { photo: "step_photo_running", file: "step_file_running", edit: "step_edit_running", delete: "step_delete_running", screenshot: "step_screenshot_running",
+  image_gen: "step_image_gen_running", video_gen: "step_video_gen_running", video_edit: "step_video_edit_running", inspect: "step_inspect_running",
+  speech: "step_speech_running", transcribe: "step_transcribe_running", thinking: "thinking" };
+// A finished reasoning step says it is over ("Thought"), the running one "Thinking"
+const DONE_KEY = { thinking: "thought" };
 
 // Unified diff (edit_file step, approval card): added lines green, removed red, hunk headers muted.
 export function DiffView({ diff, height = "max-h-80" }) {
@@ -83,7 +97,10 @@ const Step = memo(function Step({ step: given }) {
     if (!open || full || !given.lazy) return;
     api.get(`/api/messages/${given.lazy.mid}/steps/${given.lazy.i}`).then(setFull).catch(() => {});
   }, [open, full, given.lazy]);
-  const step = full || given;
+  const given2 = full || given;
+  // A reasoning step that is still running has nothing to open yet: its text streams in the live box under the steps
+  // (written into both places at once, the stream could be followed in neither). It fills when thinking ends.
+  const step = given2.kind === "thinking" && given2.status === "running" ? { ...given2, detail: "" } : given2;
   if (step.kind === "note" && step.title === "steer") {
     // A message the user sent while the task ran: shown as the user's own words, where the model picked it up.
     return (
@@ -93,14 +110,14 @@ const Step = memo(function Step({ step: given }) {
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
             {t("steer_applied")}<Check size={12} />
           </div>
-          <div className="whitespace-pre-wrap break-words text-fg/90">{step.detail}</div>
+          <Collapsible max={180} className="break-words text-fg/90"><Markdown text={step.detail || ""} /></Collapsible>
         </div>
       </div>
     );
   }
   const [Icon, key0] = KIND[step.kind] || [AlertTriangle, step.kind];
   // A stream that stopped mid-file is not a busy provider: its own heading (the file is kept and continued).
-  const key = step.kind === "retry" && step.title === "stalled" ? "step_retry_stalled" : key0;
+  const key = step.kind === "retry" && OWN_RETRY.has(step.title) ? `step_retry_${step.title}` : key0;
   const d = step.data || {};
   const running = step.status === "running";
   const showTitle = !["thinking", "note", "compress"].includes(step.kind);
@@ -108,8 +125,12 @@ const Step = memo(function Step({ step: given }) {
   const noteLine = step.kind === "note" ? noteText.split("\n").find((l) => l.trim())?.replace(/[#*`>]/g, "").trim() : "";
   const lines = (step.kind === "edit" || step.kind === "file") && step.status === "done" && d.added != null ? ` · +${d.added} −${d.removed}` : "";
   // The live label already names the file and its characters: only the elapsed time is added here (it was shown twice).
-  const chars = step.kind === "retry" ? ` · ${d.seconds} ${t("unit_s")} · #${d.attempt}` : step.kind !== "prepare" ? ""
+  const chars = step.kind === "retry" ? (d.until_online ? (d.seconds != null ? ` · ${fmtDur(t, d.seconds * 1000)}` : "")
+    : ` · ${d.seconds} ${t("unit_s")} · #${d.attempt}`) : step.kind !== "prepare" ? ""
     : (d.seconds ? ` · ${fmtDur(t, d.seconds * 1000)}` : "");
+  // web_search / research: result cards; stock_photo: the downloaded photos
+  const cards = ["web_search", "research"].includes(d.tool) && Array.isArray(d.results) ? d.results : [];
+  const photos = d.tool === "stock_photo" && Array.isArray(d.photos) ? d.photos : [];
   return (
     <div className="text-[13px]">
       <button onClick={() => step.detail && setOpen(!open)}
@@ -117,9 +138,11 @@ const Step = memo(function Step({ step: given }) {
         <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-md ${step.status === "error" ? "bg-danger/10 text-danger" : running ? "bg-accent-soft text-accent" : "bg-hover"}`}>
           {running ? <Loader2 size={12} className="animate-spin" /> : <Icon size={12} />}
         </span>
-        <span className={`shrink-0 font-medium ${running ? "shimmer" : "text-fg/80"}`}>{t(running && RUNNING_KEY[step.kind] || key)}</span>
+        <span className={`shrink-0 font-medium ${running ? "shimmer" : "text-fg/80"}`}>{t(running ? RUNNING_KEY[step.kind] || key : step.status === "done" && DONE_KEY[step.kind] || key)}</span>
         {noteLine && <span className="truncate text-xs text-subtle">{noteLine}</span>}
         {showTitle && <span className="truncate font-mono text-xs text-subtle">{step.kind === "prepare" ? prepareLabel(t, d, step.title) : shownTitle(t, step)}{chars}{lines}</span>}
+        {!running && cards.length > 0 && <FaviconStack results={cards} />}
+        {!running && photos.length > 0 && <span className="shrink-0 whitespace-nowrap text-[11px] text-subtle">{t("photo_count", { n: photos.length })}</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1">
           {step.status === "error" && <X size={13} className="text-danger" />}
           {step.status === "done" && step.kind !== "thinking" && <Check size={13} className="text-ok opacity-0 group-hover:opacity-100" />}
@@ -138,8 +161,15 @@ const Step = memo(function Step({ step: given }) {
               <DiffView diff={d.diff} />
               <button onClick={() => useStore.getState().openFile(d.path)} className="text-xs text-accent hover:underline">{t("open_editor")}</button>
             </>
+          ) : cards.length > 0 && step.status !== "error" ? (
+            <SearchResults results={cards} engines={d.engines} raw={step.detail} />
+          ) : photos.length > 0 && step.status !== "error" ? (
+            <PhotoResults photos={photos} rawUrl={rawUrl} />
           ) : step.kind === "note" ? (
             <div className="note-md max-h-80 overflow-auto rounded-xl border border-line bg-panel/60 px-3 py-1.5"><Markdown text={noteText} /></div>
+          ) : step.kind === "thinking" ? (
+            // the saved reasoning, rendered like the live box: Markdown, tables, code in highlighted blocks
+            <div className="think-saved note-md max-h-[28rem] overflow-auto rounded-xl border border-line bg-panel/60 px-3 py-1.5"><ThinkText text={step.detail} /></div>
           ) : step.kind === "compress" ? (
             <CompressSummary detail={step.detail} t={t} />
           ) : ["retry", "fallback"].includes(step.kind) ? (
@@ -183,7 +213,10 @@ function ProviderIssue({ step, t }) {
     <div className="space-y-1.5 rounded-xl border border-line bg-panel/60 px-3 py-2 text-[12.5px]">
       {step.kind === "fallback" && d.from && <div className="font-medium">{t("fb_switched", { from: d.from, to: d.to || step.title })}</div>}
       <div className="text-muted">{what || t("err_generic")}</div>
-      {step.kind === "retry" && d.seconds != null && <div className="text-subtle">{t("retry_wait", { s: d.seconds, n: d.attempt || 1 })}</div>}
+      {providerHint(t, step.detail) && <div className="text-fg/80">{providerHint(t, step.detail)}</div>}
+      {step.kind === "retry" && d.until_online ? (
+        <div className="text-subtle">{d.seconds != null ? t("retry_until_online", { s: d.seconds }) : t("retry_until_online_wait")}</div>
+      ) : step.kind === "retry" && d.seconds != null && <div className="text-subtle">{t("retry_wait", { s: d.seconds, n: d.attempt || 1 })}</div>}
       {step.detail && (
         <details className="text-[11px] text-subtle">
           <summary className="cursor-pointer select-none">{t("tech_detail")}</summary>
@@ -245,6 +278,8 @@ function ShotStrip({ shots }) {
 // Steps are always grouped under one header. While a run is live the group stays collapsed and shows only the
 // current step, so a long task never turns into a long list; a click opens every step (live or finished).
 const sec = (ms) => (ms >= 10000 ? (ms / 1000).toFixed(0) : (ms / 1000).toFixed(1));
+// tokens per second with two decimals (187.60), in the reader's number format
+export const fmtTps = (v) => Number(v).toFixed(2);
 
 // "42 sn", "1 dk 30 sn", "1 sa 4 dk": how long a task has been (or was) running.
 export function fmtDur(t, ms) {
@@ -281,9 +316,13 @@ function prepareLabel(t, d, title) {
           : d.switch_in != null ? t("prep_tool_silent_switch", { s: d.idle || 0, left: d.switch_in })
             : t("prep_tool_silent_wait", { s: d.idle || 0 }))
         : d.phase === "after_think" ? t("prep_after_think", { s: d.idle || 0 })
+        : d.phase === "think_stalled" ? t("prep_think_stalled", { s: d.idle || 0 })
         : d.phase === "stalled" ? (d.stall_in != null ? t("prep_stalled", { s: d.idle || 0, left: d.stall_in }) : t("prep_stalled_local", { s: d.idle || 0 }))
           : d.phase === "writing" ? t("prep_writing") : t(`tool_${title}`);
-  return text + model;
+  // The connection check of a silent stream: checking / provider answers (the stream is lost: resuming) / slow (the
+  // model is still working) - so "is it working or did it drop?" is answered on screen.
+  const probe = d.probe?.state ? ` · ${t(`probe_${d.probe.state}`, { s: ((d.probe.ms || 0) / 1000).toFixed(1) })}` : "";
+  return text + probe + model;
 }
 
 // Where a finished task spent its time: first answer, the model (waiting for its first token), tools, team, overhead.
@@ -313,16 +352,19 @@ const STEP_WINDOW = 60;
 // The task's steps as Markdown (copy or .md download): what ran, on which file, with the notes, reasoning, errors
 // and outputs as they were stored (long stored details come cut; opened steps load in full).
 export function stepsMarkdown(t, steps, timing) {
-  const out = [`## ${t("steps", { n: steps.length })}` + (timing?.total_ms != null ? ` · ${fmtDur(t, timing.total_ms)}` : ""), ""];
+  const out = [`## ${t("steps", { n: steps.length })}` + (timing?.total_ms != null ? ` · ${fmtDur(t, timing.total_ms)}` : "")
+    + (timing?.tps ? ` · ${fmtTps(timing.tps)} ${t("unit_tps")} ${t("speed_avg_short")}` : ""), ""];
   for (const s of steps) {
     if (s.kind === "prepare") continue;
     const [, key0] = KIND[s.kind] || [null, s.kind];
-    const key = s.kind === "retry" && s.title === "stalled" ? "step_retry_stalled" : key0;
+    const key = s.kind === "retry" && OWN_RETRY.has(s.title) ? `step_retry_${s.title}` : key0;
     const d = s.data || {};
     const mark = s.status === "error" ? "❌" : s.status === "running" ? "⏳" : "✅";
     const title = ["thinking", "note", "compress"].includes(s.kind) ? "" : ` \`${shownTitle(t, s)}\``;
     const lines = d.added != null ? ` (+${d.added} −${d.removed})` : "";
-    out.push(`- ${mark} **${t(key)}**${title}${lines}`);
+    // the step's own time, and the model's output speed next to it when the step was the model writing
+    const took = s.ms > 0 ? ` · ${sec(s.ms)} ${t("unit_s")}` + (d.tps ? ` · ${fmtTps(d.tps)} ${t("unit_tps")}` : "") : "";
+    out.push(`- ${mark} **${t(key)}**${title}${lines}${took}`);
     const detail = String((s.kind === "note" ? stripActionEcho(s.detail) : s.detail) || "").trim();
     if (detail) {
       const fence = s.kind === "note" || s.kind === "thinking" ? null : "```";
@@ -357,7 +399,23 @@ function TraceExport({ steps, timing }) {
   );
 }
 
-function ActivityTrace({ steps, live, timing, started }) {
+// The model's output speed next to the elapsed time: live (tokens per second) while it thinks / writes text or code,
+// the task's average when it is done. A live value older than 3 s (a tool runs, the model is reading) is hidden.
+function SpeedMeter({ tps, at, avg }) {
+  const t = useT();
+  const [, tick] = useState(0);
+  useEffect(() => { if (avg != null) return undefined; const i = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(i); }, [avg]);
+  const value = avg != null ? avg : (tps && at && Date.now() - at < 3000 ? tps : null);
+  if (!value) return null;
+  return (
+    <span title={t(avg != null ? "speed_avg" : "speed_live")}
+      className={`inline-flex items-center gap-1 rounded-md px-1.5 py-px font-mono text-[11.5px] tabular-nums ${avg != null ? "bg-hover text-subtle" : "bg-accent-soft text-accent"}`}>
+      <Gauge size={12} className={avg != null ? "" : "animate-pulse"} />{fmtTps(value)} {t("unit_tps")}{avg != null ? ` ${t("speed_avg_short")}` : ""}
+    </span>
+  );
+}
+
+function ActivityTrace({ steps, live, timing, started, tps, tpsAt }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [all, setAll] = useState(false);
@@ -377,6 +435,7 @@ function ActivityTrace({ steps, live, timing, started }) {
         {errors > 0 && <span className="rounded bg-danger/10 px-1 text-[11px] text-danger">{errors}</span>}
         {live && <Elapsed since={started} />}
         {!live && timing?.total_ms != null && <span className="text-[12px] text-subtle">· {fmtDur(t, timing.total_ms)}</span>}
+        {live ? <SpeedMeter tps={tps} at={tpsAt} /> : timing?.tps ? <SpeedMeter avg={timing.tps} /> : null}
       </button>
       <TraceExport steps={steps} timing={timing} />
       {open && timing?.total_ms != null && <TimingRow timing={timing} />}

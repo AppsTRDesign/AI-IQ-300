@@ -15,8 +15,8 @@ const tr = {
     { id: "start", icon: "rocket", title: "Başlarken", articles: [
       { id: "install", title: "Kurulum ve ilk çalıştırma", summary: "install.bat, run.bat ve ilk açılış.", md: `
 ## Kurulum
-1. Proje klasöründe **install.bat** dosyasını çalıştırın. Python ve Node bağımlılıkları (tokenizer dahil) kurulur.
-2. **run.bat** ile uygulamayı başlatın. Tarayıcıda **http://127.0.0.1:8300** açılır.
+1. Proje klasöründe **install.bat** dosyasını çalıştırın. Python ve Node bağımlılıkları (tokenizer dahil) kurulur; her adım, ilerleme çubuğu, geçen ve kalan süre ekranda görünür, ayrıntılı kayıt \`data/logs\` klasörüne yazılır. Türkçe Windows'ta Türkçe, diğerlerinde İngilizce konuşur.
+2. **run.bat** ile uygulamayı başlatın. Tarayıcıda **http://127.0.0.1:8300** açılır. Pencerede okunaklı, renkli bir kayıt akar; sık yoklamalar gizlidir (\`run.bat --verbose\` hepsini gösterir, \`run.bat 8400\` başka port).
 3. Güncellemeden sonra install.bat'ı bir kez daha çalıştırın ve tarayıcıda **Ctrl+F5** yapın.
 
 ## Klasörler
@@ -52,6 +52,41 @@ const tr = {
 1. **Ayarlar > Sağlayıcılar**'ı açın, sağlayıcıyı etkinleştirin.
 2. API anahtarını girin ve **Test**'e basın. Test model listesini ve hata varsa nedenini gösterir.
 3. Desteklenenler: OpenAI, Anthropic, Gemini, OpenRouter, Groq, DeepSeek, Hugging Face, **NVIDIA NIM**, **Cloudflare Workers AI**, EVREN, Ollama Cloud ve 20'den fazlası.
+
+## İnternet kesilirse
+- Uygulama internet bağlantısını arka planda izler. Bağlantı gidince **"İnternet bağlantısı kesildi"**, gelince **"geri geldi (N sn kesik kaldı)"** bildirimi çıkar.
+- Bulut modelle çalışan bir görev yarıda **bitmez**: duraklar, sohbette "İnternet yok — bağlantı bekleniyor" kutusu geçen süreyle görünür. Bağlantı gelince **aynı model**, aynı konuşma ve yapılacaklar listesiyle kaldığı yerden kendiliğinden devam eder; yarım yazılan dosya korunur. Kesinti kotadan deneme harcamaz ve başka modele geçilmez, yani model hiçbir şeyi unutmaz.
+- İnternet isteyen araçlar (web araması, sayfa okuma, görsel üretimi…) da bağlantıyı bekler; localhost sayfaları ve yerel modeller kesintiden etkilenmez.
+- Bekleme süre sınırı yoktur; isterseniz görevi durdurabilirsiniz. Uygulama kapanırsa görev "yarıda kaldı" olarak işaretlenir ve devam ettirilebilir.
+
+## Akış susarsa (bağlantı denetimi)
+- Model cevap yazarken akış 20 sn susarsa uygulama aynı modele küçük, ayrı bir istek gönderir. "Hazırlanıyor" adımında sonucu görünür.
+- **Sağlayıcı hemen yanıt veriyor ama akış hâlâ susuyorsa** akış kopmuştur: kesme süresi akışın kendi temposuna göre ayarlanır (en az 90 sn; parça parça gönderen Evren gibi sağlayıcılarda daha uzun), sunucu bağlantıyı canlı tutma sinyalleriyle açık tutuyorsa hiç kesilmez. Yazılan kısım korunur ve model kaldığı yerden sürer.
+- Kısa sessizlikler (5-12 sn'lik normal parça araları) artık "veri gelmiyor" uyarısı vermez ve canlı düşünce akışını kapatmaz.
+- **Sağlayıcı yavaşsa** model hâlâ çalışıyordur, beklenir. **Hiç ulaşılamıyorsa** internet kontrol edilir; kesikse bağlantı beklenir.
+
+## Belge şablonları ve mod çipleri
+- (+) menüsünde Görsel üret, Tanıtım videosu, AI klip, Resimden video, Word, PDF, Excel ve PowerPoint seçilince mesaj kutusuna renkli bir **çip** eklenir; ne istediğinizi çipin yanına yazarsınız. Çip × ile ya da boş kutuda Backspace ile kalkar.
+- Belge çiplerinde o formata özel **şablon galerisi** açılır (gerçek önizlemeler). Bir şablon seçilince renkleri, yazı tipi, kapağı ve bölüm düzeni belgeye uygulanır.
+- **Şablon oluştur** Şablon Oluşturucu'yu başlatır: model önce şablonları anlatır, sizden bir referans dosyası (PDF, Word, PowerPoint veya görsel) ister; dosyanın renk paletini, yazı tiplerini, başlıklarını ve kapak düzenini tek adımda çıkarıp yeni şablonu kaydeder. Galeride görünür, kendi şablonlarınız silinebilir.
+- 35 hazır şablon ve 8 sayfa düzeni vardır: kapaklı rapor, antetli resmî yazı, not, akademik, dergi, fatura/teklif, özgeçmiş, minimal (faaliyet raporu, vaka çalışması, teknik makale, fiyat teklifi, prosedür, iş planı, satış hunisi, stok takibi, ürün lansmanı...). Kapak stilleri: hero, bant, minimal, koyu, fotoğraf, split, editoryal, köşe; numaralı / alt çizgili / büyük harfli başlıklar ve dolu / çizgili / yumuşak tablolar.
+- Gönderilen mesajda mod ve şablon, mesaj kutusundaki gibi **çip** olarak görünür.
+- Galerideki oklar uçlarda pasifleşir; **Tümünü gör** kartı formatın tüm şablonlarını bir pencerede açar (aşağı kaydırdıkça devamı yüklenir). Şablon yalnızca tasarımdır: başlık, bölümler ve antet satırları belgenin kendi içeriğinden gelir.
+- **Resimden video** sohbetin çalışma klasöründeki resimleri ve mesaja eklenenleri gösterir; yeni resim de yüklenebilir.
+
+## Sesler (yerel ve çevrimiçi)
+- **Ayarlar > Sesler**: her dil için varsayılan ses, ton (hız, perde, duygu, cümle arası duraklama), stüdyo işlemesi ve motor sırası. Sesli yanıtlar, yazıyı sese çevirme, video seslendirme ve Video Stüdyo aynı ayarları kullanır.
+- **Yerel motorlar (internetsiz):** Piper (hızlı, 50+ dil; Türkçe: Fettah kadın, Eren / Dfki / Fahrettin erkek), Kokoro (çok doğal İngilizce + 5 dil), Chatterbox (en doğal ve duygulu, 23 dil, kendi sesiniz; ayrı ortama kurulur, ~4 GB, işlemcide yavaş). Microsoft'un çevrimiçi sesleri yedektir.
+- Sesler ilk dinlemede ya da seçildiğinde indirilir (data/tts). Cinsiyet bilgisi olmayan seslerin kadın/erkek etiketi, sesin perdesi ölçülerek otomatik belirlenir.
+- **Stüdyo:** Doğal, Podcast, Yayın (-23 LUFS), Video (-14 LUFS), Sıcak anlatım veya Ham. EQ, de-esser, sıkıştırma ve ses düzeyi standardı tek geçişte uygulanır; isteğe bağlı oda yankısı.
+- **Yedek sırası:** motorlar aynı anda çalışmaz. Seçilen ses başarısız olursa aynı dil ve cinsiyetteki sonraki ses kullanılır; kapalı motorlar hiç kullanılmaz.
+- **Diyalog:** "Ayşe: ..." / "Can: ..." satırları farklı seslerle okunur (kadın/erkek otomatik ya da konuşmacı başına ses).
+- **Video:** seslendirme altında müzik otomatik kısılır; "Altyazı ekle" seçilirse cümleler gerçek zamanlamalarıyla videoya yazılır ve yanına .srt kaydedilir.
+- **Kendi sesiniz (Chatterbox):** 5–30 saniyelik kayıt; yalnızca kendi sesiniz ya da izinli bir ses için.
+
+## Kapatılan modeller
+- Bir sağlayıcı modeli yeni kullanıcılara kapattığında ("no longer available"), uygulama modeli listeden gizler ve sağlayıcının önerdiği yeni modele kendiliğinden geçer; etkin model de güncellenir.
+- Gömme (embedding), ses, koruma (guard) ve yalnızca görsel üreten modeller sohbet model listesinde gösterilmez.
 
 ## Cloudflare Workers AI
 - API anahtarının yanında **Hesap kimliği (Account ID)** gerekir: Cloudflare panelinde sağ üstteki 32 karakterlik onaltılık kod.
@@ -226,7 +261,8 @@ Listede olmayan bir araç kurulu değildir; model önce kontrol eder ya da kurul
 **Mobil uygulamalar (Android, iOS, Flutter, React Native, Expo, Capacitor):** **mobile-app-test** yeteneği:
 - Hızlı yol: web derlemesi tarayıcıda telefon boyutunda test edilir.
 - Tam yol: \`mobile_env\` aracı Android emülatörünü (Windows, macOS, Linux) kurar ve başlatır, APK'yı yükler, ekran görüntüsü alır, **Maestro** UI akışlarını çalıştırır. iOS simülatörü yalnızca macOS + Xcode'da.
-- Kurulum: \`install.bat\` / \`install.sh\` sonunda sorar (\`AIIQ_MOBILE=1\` sormadan kurar); Java 17+ gerekir. Ajan da gerektiğinde \`mobile_env action=setup\` ile kurabilir (birkaç GB, bir kez).
+- Kurulum: \`install.bat\` / \`install.sh\` başta sorar (\`AIIQ_MOBILE=1\` sormadan kurar) ve bilgisayarda zaten olanı gösterir: Android Studio'nun SDK'sı, JDK'sı veya daha önce kurulmuş araçlar yeniden indirilmez, sadece eksikler eklenir ve eskiler güncellenir (JDK 21, Gradle 8.13, platform-tools, build-tools, Android 36 imajı). Ajan da gerektiğinde \`mobile_env action=setup\` ile kurabilir.
+- \`mobile_env action=status\` tüm yolları (ANDROID_HOME, JAVA_HOME, gradle, adb, emülatör, sdkmanager), kurulu platform / build-tools / imajları ve compileSdk 36 / 37 için doğrulanmış sürüm setlerini verir; \`action=gradle\` Gradle'ı, \`action=sdk\` SDK paketlerini kurar.
 
 **Takılmazlar:** aynı hata tekrar gelince model denediği komutları görür ve farklı bir yol seçmek zorundadır; yaygın hatalar için bilinen çözümler (program PATH'te yok, yanlış yol, izin, dolu port, eksik paket) otomatik verilir.
 ` },
@@ -501,7 +537,10 @@ Yetenek adını yazmanız şart değil; model isteğe uyanı kendisi seçer. @re
 - **Ayarlar > MCP**: komut (stdio) ya da HTTP adresiyle bir MCP sunucusu ekleyin.
 - Araçları her sohbette modele sunulur; salt okunur araçlar onaysız, diğerleri onayla çalışır.
 - Tokenlar gizli anahtar deposunda saklanır.
-- **Hazır sunucular** (anahtarsız): DeepWiki (GitHub belgeleri), Context7 (kütüphane belgeleri), Sequential Thinking (adım adım düşünme), Fetch (web sayfası okuma), Memory (kalıcı bilgi grafiği), Everything (test). Bağlı olanlar ✓ ile soluk görünür.
+- **Hazır sunucular** (16, kategorili, aramalı): DeepWiki, Context7, Microsoft Learn, Cloudflare Docs, Hugging Face, GitHub (jeton), Sentry / Notion / Linear (oturum), Git, Playwright, Fetch, Time, Memory, Sequential Thinking, Everything. Tek tıkla eklenir; açık olanlar hemen çalışır.
+- **Kayıt defterinde bul**: resmi MCP kayıt defteri, npm ve GitHub'da arayın; anahtar istemeyen sunucu tek tıkla eklenir, isteyende form açılır.
+- **Dene**: bir sunucunun araç etiketine tıklayın, argümanları doldurun, **Çalıştır** ile sonucu görün (modelin yaptığı çağrının aynısı). **Sohbette kullan** aracı sohbet kutusuna çip olarak koyar.
+- **Sohbette \`#\` kısayolu**: \`/\` yetenek ve \`@\` ajan gibi, \`#\` yazınca çalışan MCP araçları listelenir; seçtiğiniz aracın değişkenleri çipin altında alan olarak açılır (çipe tıklayıp değiştirin), model o aracı bu değerlerle çağırır. (+) menüsünde **MCP aracı** da aynı listeyi açar. Kopyalanan mesajdaki çipler yapıştırınca yine çip olur.
 - Ajan gerektiğinde \`mcp_search\` ile resmi kayıt / npm / GitHub'da sunucu bulup \`mcp_add\` ile kendisi bağlar; oturum isteyenlerde (OAuth) Oturum aç düğmesi çıkar.
 ` },
       { id: "browser", title: "Tarayıcı ajanı: gerçek bir pencerede gezinme", summary: "Siteye girip tıklama, form doldurma, giriş yapma; proje testi.", md: `
@@ -643,8 +682,8 @@ const en = {
     { id: "start", icon: "rocket", title: "Getting started", articles: [
       { id: "install", title: "Install and first run", summary: "install.bat, run.bat and the first start.", md: `
 ## Install
-1. Run **install.bat** in the project folder. It installs the Python and Node dependencies (the tokenizer too).
-2. Start the app with **run.bat**. It opens at **http://127.0.0.1:8300**.
+1. Run **install.bat** in the project folder. It installs the Python and Node dependencies (the tokenizer too) and shows each step with a progress bar, elapsed and remaining time; the full log goes to \`data/logs\`. It speaks Turkish on a Turkish Windows and English elsewhere.
+2. Start the app with **run.bat**. It opens at **http://127.0.0.1:8300**. The window shows a readable, coloured log; frequent polling is hidden (\`run.bat --verbose\` shows everything, \`run.bat 8400\` uses another port).
 3. After an update run install.bat once more and press **Ctrl+F5** in the browser.
 
 ## Folders
@@ -680,6 +719,41 @@ const en = {
 1. Open **Settings > Providers** and enable the provider.
 2. Enter the API key and press **Test**. It shows the model list, or the reason when something is wrong.
 3. Supported: OpenAI, Anthropic, Gemini, OpenRouter, Groq, DeepSeek, Hugging Face, **NVIDIA NIM**, **Cloudflare Workers AI**, EVREN, Ollama Cloud and 20+ more.
+
+## If the internet drops
+- The app watches the internet connection in the background. When it drops you see **"Internet connection lost"**; when it returns, **"back (it was down for N s)"**.
+- A task running on a cloud model does **not** end half-way: it pauses, and the chat shows a "No internet — waiting for the connection" box with the time passed. Once the connection is back it continues by itself on the **same model**, with the same conversation and to-do list, where it stopped; a half-written file is kept. The drop uses no retries against the quota and does not switch models, so the model forgets nothing.
+- Tools that need the internet (web search, reading pages, image generation…) wait for the connection too; localhost pages and local models are not affected.
+- There is no time limit on the wait; you can stop the task. If the app is closed, the task is marked as interrupted and can be resumed.
+
+## When a stream goes silent (connection check)
+- If the stream is silent for 20 s while the model writes, the app sends a tiny separate request to the same model. The "Preparing" step shows the result.
+- **The provider answers at once but the stream stays silent:** the stream was lost. The cut follows the stream's own pace (at least 90 s; longer for providers that send in batches, such as Evren), and a stream the server keeps alive with keep-alives is never cut. What was written is kept and the model continues where it stopped.
+- Short pauses (the normal 5-12 s gaps between batches) no longer show "no data" and no longer close the live reasoning.
+- **The provider is slow:** the model is still working, so the app waits. **It cannot be reached:** the internet is checked; if it is down, the app waits for the connection.
+
+## Document templates and mode chips
+- Choosing Make an image, Promo video, AI clip, Image to video, Word, PDF, Excel or PowerPoint in the (+) menu puts a coloured **chip** into the message box; you write what you want next to it. × or Backspace in an empty box removes it.
+- Document chips open that format's **template gallery** (real previews). A chosen template gives the document its colours, type, cover and section layout.
+- **Create template** starts the Template Creator: the model explains templates and asks for a reference file (PDF, Word, PowerPoint or an image); it reads the file's colour palette, fonts, headings and cover look in one step and saves the new template. It appears in the gallery and your own templates can be deleted.
+- 35 built-in templates in 8 page layouts: report with cover, official letter, memo, academic, magazine, invoice / quote, résumé, minimal (annual report, case study, white paper, price quote, SOP, business plan, sales pipeline, inventory, product launch...). Cover styles: hero, band, minimal, dark, photo, split, editorial, corner; numbered / underlined / caps headings and solid / line / soft tables.
+- In the sent message the mode and template show as **chips**, as in the message box.
+- The gallery arrows grey out at the ends; the **View all** card opens every template of the format in a dialog (more load while you scroll). A template is only the design: the title, sections and letterhead lines come from the document's own content.
+- **Image to video** shows the pictures in the chat's working folder and the ones attached to the message; you can also upload a new one.
+
+## Voices (local and online)
+- **Settings > Voices**: the default voice per language, tone (speed, pitch, emotion, pause between sentences), the studio finish and the engine order. Spoken replies, text to speech, video voice-overs and the Video Studio all use them.
+- **Local engines (offline):** Piper (fast, 50+ languages; Turkish: Fettah female, Eren / Dfki / Fahrettin male), Kokoro (very natural English + 5 languages), Chatterbox (the most natural and expressive, 23 languages, your own voice; installed into its own environment, ~4 GB, slow on a CPU). Microsoft's online voices are the fallback.
+- Voices download the first time they are played or chosen (data/tts). A voice without gender metadata is labelled female/male by measuring its pitch.
+- **Studio:** Natural, Podcast, Broadcast (-23 LUFS), Video (-14 LUFS), Warm narration or Raw. EQ, de-esser, compression and a loudness standard in one pass; optional room echo.
+- **Fallback order:** engines never run at the same time. If the chosen voice fails, the next voice of the same language and gender is used; engines switched off are never used.
+- **Dialogs:** "Anna: ..." / "Ben: ..." lines are read by different voices (female/male automatically, or a voice per speaker).
+- **Video:** the music is ducked under the voice-over; with "Add subtitles" the sentences are written on the video with their real timings and a .srt is saved next to it.
+- **Your own voice (Chatterbox):** a 5–30 second clip; only your own voice or one you have permission to use.
+
+## Retired models
+- When a provider retires a model for new users ("no longer available"), the app hides it and moves to the successor the provider names; the active model is updated too.
+- Embedding, speech, guard and image-only models are not shown in the chat model list.
 
 ## Cloudflare Workers AI
 - Besides the API token it needs the **Account ID**: the 32-character hex code at the top right of the Cloudflare dashboard.
@@ -854,7 +928,8 @@ A tool that is not listed is not installed; the model checks first or gives the 
 **Mobile apps (Android, iOS, Flutter, React Native, Expo, Capacitor):** the **mobile-app-test** skill:
 - Fast path: the web build is tested in the browser at phone size.
 - Full path: the \`mobile_env\` tool sets up and starts the Android emulator (Windows, macOS, Linux), installs the APK, takes screenshots and runs **Maestro** UI flows. The iOS simulator needs macOS + Xcode.
-- Setup: \`install.bat\` / \`install.sh\` ask at the end (\`AIIQ_MOBILE=1\` installs without asking); Java 17+ is needed. The agent can also run \`mobile_env action=setup\` when needed (several GB, once).
+- Setup: \`install.bat\` / \`install.sh\` ask at the start (\`AIIQ_MOBILE=1\` installs without asking) and show what the computer already has: Android Studio's SDK and JDK or tools installed earlier are not downloaded again; only missing parts are added and old ones updated (JDK 21, Gradle 8.13, platform-tools, build-tools, the Android 36 image). The agent can also run \`mobile_env action=setup\` when needed.
+- \`mobile_env action=status\` returns every path (ANDROID_HOME, JAVA_HOME, gradle, adb, emulator, sdkmanager), the installed platforms / build-tools / images and the verified version sets for compileSdk 36 / 37; \`action=gradle\` installs Gradle, \`action=sdk\` installs SDK packages.
 
 **No loops:** when the same error comes back the model sees the commands it already tried and must take a different route; known fixes for common errors (program not on PATH, wrong path, permission, busy port, missing package) are given automatically.
 ` },
@@ -1129,7 +1204,10 @@ You don't have to type the skill; the model picks the one that fits. The @resear
 - **Settings > MCP**: add an MCP server by command (stdio) or HTTP address.
 - Its tools are offered in every chat; read-only tools run without asking, the others ask.
 - Tokens are kept in the secret store.
-- **Ready servers** (no key): DeepWiki (GitHub docs), Context7 (library docs), Sequential Thinking (step-by-step thinking), Fetch (reads web pages), Memory (lasting knowledge graph), Everything (test). Connected ones show dimmed with a ✓.
+- **Ready servers** (16, by category, searchable): DeepWiki, Context7, Microsoft Learn, Cloudflare Docs, Hugging Face, GitHub (token), Sentry / Notion / Linear (sign-in), Git, Playwright, Fetch, Time, Memory, Sequential Thinking, Everything. One click adds one; public ones work at once.
+- **Find in registry**: search the official MCP registry, npm and GitHub; a server that needs no key is added with a click, the others open the form.
+- **Try**: click a tool's label on a server, fill in its arguments, **Run** shows the result (the same call the model makes). **Use in chat** puts the tool into the message box as a chip.
+- **\`#\` in the message box**: like \`/\` skills and \`@\` agents, typing \`#\` lists the running MCP tools; the arguments of the tool you pick open as fields under its chip (click the chip to change them) and the model calls that tool with them. **MCP tool** in the (+) menu opens the same list. Chips in a copied message come back as chips when pasted.
 - When needed the agent finds a server with \`mcp_search\` (official registry / npm / GitHub) and connects it with \`mcp_add\` itself; servers that need a sign-in (OAuth) get a Sign in button.
 ` },
       { id: "browser", title: "Browser agent: acting in a real window", summary: "Opening a site, clicking, filling forms, signing in; testing a project.", md: `

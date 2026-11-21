@@ -3,6 +3,7 @@ import { Download, ImagePlus, Loader2, Palette, Save, Sparkles, Wand2 } from "lu
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
 import { Button, Modal, inputCls } from "./ui";
+import Select from "./Select";
 import { FONTS, FONT_CSS } from "./VideoStudio";
 
 // Logo maker for brands: a live canvas (brand name, tagline, symbol, colours, layout, badge shapes), symbols drawn by
@@ -265,10 +266,18 @@ export default function LogoMaker() {
             {busy === "cutout" ? <Loader2 size={13} className="animate-spin" /> : <ImagePlus size={13} />}{t("lm_upload_symbol")}</button>
           <input ref={file} type="file" accept="image/*" className="hidden" onChange={(e) => { uploadIcon(e.target.files?.[0]); e.target.value = ""; }} />
           <div className="grid grid-cols-2 gap-2">
-            <label className="text-[11.5px] text-muted">{t("vs_font")}<select className={field} value={s.font} onChange={(e) => set({ font: e.target.value })}>{FONTS.map((f) => <option key={f} value={f}>{t(`vs_font_${f}`)}</option>)}</select></label>
-            <label className="text-[11.5px] text-muted">{t("lm_weight")}<select className={field} value={s.weight} onChange={(e) => set({ weight: +e.target.value })}>{[400, 500, 600, 700, 800, 900].map((w) => <option key={w}>{w}</option>)}</select></label>
-            <label className="text-[11.5px] text-muted">{t("lm_layout")}<select className={field} value={s.layout} onChange={(e) => set({ layout: e.target.value })}>{LAYOUTS.map((l) => <option key={l} value={l}>{label(`layout_${l}`)}</option>)}</select></label>
-            <label className="text-[11.5px] text-muted">{t("lm_shape")}<select className={field} value={s.shape} onChange={(e) => set({ shape: e.target.value })}>{SHAPES.map((l) => <option key={l} value={l}>{label(`shape_${l}`)}</option>)}</select></label>
+            <div className="text-[11.5px] text-muted"><span className="mb-0.5 block">{t("vs_font")}</span>
+              <Select size="sm" value={s.font} onChange={(v) => set({ font: v })} ariaLabel={t("vs_font")}
+                options={FONTS.map((f) => ({ value: f, label: t(`vs_font_${f}`), icon: <span className="w-6 text-center text-[13px] text-fg" style={{ fontFamily: FONT_CSS[f] }}>Aa</span> }))} /></div>
+            <div className="text-[11.5px] text-muted"><span className="mb-0.5 block">{t("lm_weight")}</span>
+              <Select size="sm" value={s.weight} onChange={(v) => set({ weight: +v })} ariaLabel={t("lm_weight")}
+                options={[400, 500, 600, 700, 800, 900].map((w) => ({ value: w, label: String(w), icon: <span className="w-6 text-center text-[13px] text-fg" style={{ fontWeight: w }}>Aa</span> }))} /></div>
+            <div className="text-[11.5px] text-muted"><span className="mb-0.5 block">{t("lm_layout")}</span>
+              <Select size="sm" value={s.layout} onChange={(v) => set({ layout: v })} ariaLabel={t("lm_layout")}
+                options={LAYOUTS.map((l) => ({ value: l, label: label(`layout_${l}`) }))} /></div>
+            <div className="text-[11.5px] text-muted"><span className="mb-0.5 block">{t("lm_shape")}</span>
+              <Select size="sm" value={s.shape} onChange={(v) => set({ shape: v })} ariaLabel={t("lm_shape")}
+                options={SHAPES.map((l) => ({ value: l, label: label(`shape_${l}`) }))} /></div>
           </div>
           <div className="grid grid-cols-3 gap-2">
             {["primary", "secondary", "text"].map((k) => (

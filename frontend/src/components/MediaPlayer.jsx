@@ -39,9 +39,11 @@ function useWaveform(url, bars = 160) {
   return peaks;
 }
 
-function AudioPlayer({ url }) {
+// inline: inside a chat card - no autoplay, smaller waveform, the space bar only while the pointer is over it.
+export function AudioPlayer({ url, inline = false }) {
   const t = useT();
   const el = useRef(null);
+  const over = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [dur, setDur] = useState(0);
@@ -56,16 +58,20 @@ function AudioPlayer({ url }) {
   };
   const toggle = () => (el.current.paused ? el.current.play() : el.current.pause());
   useEffect(() => {
-    const k = (e) => { if (e.code === "Space" && e.target.tagName !== "INPUT") { e.preventDefault(); toggle(); } };
+    const k = (e) => {
+      if (e.code !== "Space" || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+      if (inline && !over.current) return;
+      e.preventDefault(); toggle();
+    };
     addEventListener("keydown", k);
     return () => removeEventListener("keydown", k);
   }, []);
   return (
-    <div className="space-y-4">
-      <audio ref={el} src={url} loop={loop} preload="metadata" autoPlay
+    <div className={inline ? "space-y-2" : "space-y-4"} onMouseEnter={() => { over.current = true; }} onMouseLeave={() => { over.current = false; }}>
+      <audio ref={el} src={url} loop={loop} preload="metadata" autoPlay={!inline}
         onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}
         onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)} onLoadedMetadata={(e) => setDur(e.currentTarget.duration)} />
-      <div onClick={seek} className="relative flex h-28 cursor-pointer items-center gap-[2px] rounded-2xl bg-bg px-3">
+      <div onClick={seek} className={`relative flex cursor-pointer items-center gap-[2px] rounded-2xl bg-bg px-3 ${inline ? "h-16" : "h-28"}`}>
         {(peaks?.length ? peaks : Array.from({ length: 160 }, () => 0.15)).map((v, i, a) => (
           <span key={i} className={`flex-1 rounded-full transition-colors ${i / a.length <= pct ? "bg-accent" : "bg-active"} ${peaks === null ? "animate-pulse" : ""}`}
             style={{ height: `${Math.max(6, v * 100)}%` }} />
@@ -121,7 +127,7 @@ export function MediaPlayer() {
             <div className="truncate text-[13.5px] font-semibold">{nameOf(dialog.path)}</div>
             <div className="truncate font-mono text-[11px] text-subtle">{dialog.path}</div>
           </div>
-          <a href={url + "&download=true"} title={t("download")} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-hover"><Download size={16} /></a>
+          <a href={url + "&download=true"} download={nameOf(dialog.path)} title={t("download")} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-hover"><Download size={16} /></a>
           <button onClick={close} className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-hover"><X size={17} /></button>
         </div>
         <div className={video ? "bg-black" : "p-5"}>
