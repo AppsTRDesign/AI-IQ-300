@@ -26,7 +26,7 @@ AI IQ 300, bilgisayarınızda çalışan ve ChatGPT/Claude tarzı sade bir sohbe
 
 <p align="center"><a href="https://www.youtube.com/watch?v=IxbYD4iCyb0"><img src="https://img.youtube.com/vi/IxbYD4iCyb0/maxresdefault.jpg" alt="AI IQ 300 tanıtım videosu" width="100%"></a></p>
 
-<p align="center"><b>▶ <a href="https://www.youtube.com/shorts/2hlEQY_8nmA">Tanıtım videosunu izle (YouTube 16:9)</a></b> · 🇬🇧 <a href="https://www.youtube.com/watch?v=Fcy0ib8GEA4">English</a></p>
+<p align="center"><b>▶ <a href="https://youtube.com/shorts/fsrAsy4j84M?feature=share">Tanıtım videosunu izle (YouTube 16:9)</a></b> · 🇬🇧 <a href="https://www.youtube.com/watch?v=gSqQ8b9ssGs">English</a></p>
 
 Tek cümleden çalışan uygulamaya: komut yazılır, ajan planlar, bütün dosyaları tek turda yazar, `tsc` ile derler, uygulamayı **gerçek tarayıcıda** açıp console + network denetimini yapar, yakaladığı hatayı anında düzeltir ve test edilmiş sonucu teslim eder. Videoda gerçek AI IQ 300 paneli, tüm ayar ekranları, donanım taraması ve sistem onarımı, web araştırması, sesten yazı / yazıdan ses, belge ve video stüdyosu yer alıyor.
 
