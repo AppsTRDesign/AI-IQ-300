@@ -27,6 +27,25 @@ def _flag(v, default=False) -> bool:
     return default if v is None or v == "" else str(v).lower() in ("true", "1", "yes")
 
 
+def _num(v, default: float) -> float:
+    """A number as models send it: 3, "3", "200px", "2s", "1.5 seconds", "" -> default (int("3s") stopped steps)."""
+    if isinstance(v, bool) or v is None:
+        return default
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = re.search(r"-?\d+(?:[.,]\d+)?", str(v))
+    return float(m.group(0).replace(",", ".")) if m else default
+
+
+def _ms(v, default: float) -> float:
+    """Milliseconds: "1.5s" / "2 sn" / "3 saniye" / "1 second" are seconds (ms=1.5s waited 1 ms)."""
+    n = _num(v, default)
+    if isinstance(v, str) and re.search(r"\d\s*(s|sec|secs|seconds?|sn|saniye)\b", v.strip(), re.I) \
+            and not re.search(r"\d\s*ms\b", v, re.I):
+        n *= 1000
+    return n
+
+
 def _trusted(ctx, url: str) -> bool:
     """Where test sign-ins/test cards may be typed: local dev hosts, or a test host the user's request names."""
     return is_local(url) or is_named_test_host(url, ctx.goal)
@@ -114,8 +133,22 @@ async def _navigate(ctx, args):
     if url in ("back", "forward", "reload"):
         if not page:
             raise BrowserError("No page is open yet.")
-        await {"back": page.go_back, "forward": page.go_forward, "reload": page.reload}[url](wait_until="domcontentloaded")
+        before = page.url
+        try:
+            resp = await {"back": page.go_back, "forward": page.go_forward, "reload": page.reload}[url](
+                wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:  # noqa: BLE001 - a slow page: what has loaded is used
+            if "Timeout" not in str(e):
+                raise BrowserError(f"{url} failed: {str(e).splitlines()[0][:200]}") from e
+            resp = True
         await AGENT.settle(page)
+        if url != "reload" and (resp is None and page.url == before or page.url == "about:blank" != before):
+            # no earlier / later page: a new tab's history starts at about:blank - the page under test is restored
+            if page.url != before:
+                await page.goto(before, wait_until="domcontentloaded", timeout=30000)
+                await AGENT.settle(page)
+            return f"{url}: there is no {'earlier' if url == 'back' else 'later'} page in this tab - still on {before}", \
+                {"url": page.url}
         return f"{url}: {page.url}", {"url": page.url}
     from .registry import local_page_instead
     url, local_note = local_page_instead(ctx, url if re.match(r"https?://", url, re.I) else (
@@ -180,7 +213,7 @@ async def _rendered(page, limit: float = 20.0) -> None:
 
 async def _snapshot(ctx, args):
     text = await AGENT.snapshot(_flag(args.get("interactive")), str(args.get("ref") or ""),
-                                int(args.get("max_chars") or 12000))
+                                int(_num(args.get("max_chars"), 12000)) or 12000)
     return text, {"url": AGENT.page.url}
 
 
@@ -193,13 +226,86 @@ async def _find(ctx, args):
         f"Nothing matches '{q}' on {AGENT.page.url}. Take browser_snapshot to see the page.", {}
 
 
+# Where a click on the element would land: scrolled into view, its centre, the element really there (another layer
+# over it = covered) and whether it or a parent is animating (never "stable" for Playwright).
+POINT_JS = r"""(e) => {
+  const r0 = e.getBoundingClientRect();
+  if (r0.top < 0 || r0.bottom > innerHeight || r0.left < 0 || r0.right > innerWidth) e.scrollIntoView({block: 'center', inline: 'center'});
+  const r = e.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const top = document.elementFromPoint(x, y);
+  let covered = null;
+  if (top && e.getRootNode() === document && top !== e && !e.contains(top) && !top.contains(e)) {
+    const s = getComputedStyle(top);
+    if (s.pointerEvents !== 'none') {
+      const id = top.id ? '#' + top.id : '', cls = typeof top.className === 'string' && top.className.trim() ? '.' + top.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+      covered = '<' + top.tagName.toLowerCase() + id + cls + '>';
+    }
+  }
+  let moving = false;
+  for (let p = e; p && p !== document.documentElement && !moving; p = p.parentElement)
+    moving = (p.getAnimations ? p.getAnimations() : []).some((a) => a.playState === 'running');
+  return {x, y, covered, moving};
+}"""
+
+
+async def _press(page, x: float, y: float, hold: float, drag: str) -> str:
+    """Press at x,y with the mouse (pointer events, as a touch game also gets them): held `hold` ms, or dragged to
+    "dx,dy" (pixels from there) / "x2,y2" with "to:" / an element ref. Returns the note for the trace."""
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    note = ""
+    try:
+        if drag:
+            m = re.fullmatch(r"\s*(to:)?\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*", drag)
+            if m:
+                tx, ty = float(m.group(2)), float(m.group(3))
+                if not m.group(1):
+                    tx, ty = x + tx, y + ty
+            else:  # another element (a ref / text)
+                loc, _w, _i = await AGENT.target(drag if re.fullmatch(r"\[?e?\d+\]?", drag) else "", "", "" if re.fullmatch(r"\[?e?\d+\]?", drag) else drag)
+                box = await loc.bounding_box()
+                if not box:
+                    raise BrowserError(f"drag target {drag} has no position on screen")
+                tx, ty = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            steps = max(5, min(40, int(max(abs(tx - x), abs(ty - y)) / 12)))
+            per = (hold / 1000 / steps) if hold else 0.012
+            for i in range(1, steps + 1):  # in small moves, as a finger does (a jump is not a drag for most games)
+                await page.mouse.move(x + (tx - x) * i / steps, y + (ty - y) * i / steps)
+                await asyncio.sleep(per)
+            note = f" (dragged to {tx:.0f},{ty:.0f})"
+        else:
+            await asyncio.sleep(hold / 1000)
+            note = f" (held {hold:.0f} ms)"
+    finally:
+        await page.mouse.up()
+    return note
+
+
 async def _click(ctx, args):
     page = AGENT.page
     before = len(AGENT.pages)
     dialog = str(args.get("dialog") or "")
+    hold = max(0.0, min(_ms(args.get("hold"), 0), 10000))
+    drag = str(args.get("drag") or args.get("drag_to") or "").strip()
     if args.get("x") not in (None, "") and args.get("y") not in (None, ""):
-        await page.mouse.click(float(args["x"]), float(args["y"]))
-        what = f"({args['x']},{args['y']})"
+        x, y = _num(args["x"], 0), _num(args["y"], 0)
+        AGENT.acted = True
+        if hold or drag:
+            what = f"({x:.0f},{y:.0f})" + await _press(page, x, y, hold, drag)
+        else:
+            await page.mouse.click(x, y)
+            what = f"({x:.0f},{y:.0f})"
+    elif hold or drag:  # press and hold / drag an element (games: "hold to charge", "drag to move", sliders)
+        loc, what, info = await AGENT.target(str(args.get("ref") or ""), str(args.get("selector") or ""),
+                                             str(args.get("text") or ""))
+        AGENT.acted = True
+        await loc.scroll_into_view_if_needed(timeout=3000)
+        box = await loc.bounding_box()
+        if not box:
+            raise BrowserError(f"{what} has no position on screen (hidden or zero size): take browser_snapshot.")
+        what = f"{what} \"{(info.get('name') or '')[:60]}\"" + await _press(
+            page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, hold, drag)
     else:
         loc, what, info = await AGENT.target(str(args.get("ref") or ""), str(args.get("selector") or ""),
                                              str(args.get("text") or ""))
@@ -221,26 +327,53 @@ async def _click(ctx, args):
         local_site = is_local(AGENT.page.url)
         AGENT.dialog_choice = "accept" if dialog == "accept" or (local_site and dialog != "dismiss") else "dismiss"
         mods = [k for k in _keys(str(args.get("modifiers") or "").replace("+", " ")) if k]
+        kw = dict(button=str(args.get("button") or "left"), click_count=2 if _flag(args.get("double")) else 1,
+                  modifiers=mods or None)
+        # Looked at first (one quick script): an element under another layer, or one that keeps moving (a pulsing
+        # button), made every click wait for Playwright's timeout before the fallback - 6 s per click in a game test.
+        pre = None
+        if not hover:
+            try:
+                pre = await loc.evaluate(POINT_JS)
+            except Exception:  # noqa: BLE001 - navigating / detached: the normal click says what is wrong
+                pre = None
         try:
             if hover:
                 await loc.hover(timeout=5000)
+            elif pre and pre.get("covered"):
+                raise RuntimeError(f"{pre['covered']} intercepts pointer events")
+            elif pre and pre.get("moving"):
+                await loc.click(timeout=1500, force=True, **kw)
+                info["note"] = (info.get("note") or "") + " (it is animated: clicked without waiting for it to stop)"
             else:
-                await loc.click(timeout=5000, button=str(args.get("button") or "left"),
-                                click_count=2 if _flag(args.get("double")) else 1, modifiers=mods or None)
+                await loc.click(timeout=2000, **kw)
         except Exception as e:
-            err = str(e).splitlines()[0][:220]
-            if hover or "disabled" in str(e) or not await loc.count():
+            full = str(e)
+            err = full.splitlines()[0][:220]
+            if hover or "disabled" in full or not await loc.count():
                 raise BrowserError(f"click on {what} failed: {err}. Take browser_snapshot: the element may be "
                                    "disabled or gone.") from e
-            # Covered by another layer (a sticky header, an animation still running): a script click still
-            # reaches the element; the trace says so, so a real overlap bug is not hidden.
-            try:
-                await loc.evaluate("(e) => { e.scrollIntoView({block: 'center'}); e.click(); }")
-                info["note"] = (info.get("note") or "") + " (a normal click was blocked - something covers it or it " \
-                                                          "is still moving - so it was clicked by script)"
-            except Exception:
-                raise BrowserError(f"click on {what} failed: {err}. Take browser_snapshot: the element may be "
-                                   "covered or disabled.") from e
+            cover = re.search(r"(<[^>]{1,160}>)[^\n]{0,80}?intercepts pointer events", full)
+            done = False
+            if not cover:
+                # Only moving (a CSS animation): a real mouse click on it as it is now, the way a person taps it.
+                try:
+                    await loc.click(timeout=1500, force=True, **kw)
+                    info["note"] = (info.get("note") or "") + " (it is animated: clicked without waiting for it to stop)"
+                    done = True
+                except Exception:
+                    pass
+            if not done:
+                # Covered by another layer (a sticky header, an overlay): a script click still reaches the element;
+                # the trace names the layer, so a real overlap bug is not hidden.
+                try:
+                    await loc.evaluate("(e) => { e.scrollIntoView({block: 'center'}); e.click(); }")
+                    info["note"] = (info.get("note") or "") + (
+                        f" (covered by {cover.group(1)[:120]} - a person could not tap it there; clicked by script)"
+                        if cover else " (a normal click was blocked, so it was clicked by script)")
+                except Exception:
+                    raise BrowserError(f"click on {what} failed: {err}. Take browser_snapshot: the element may be "
+                                       "covered or disabled.") from e
         what = f"{what} \"{(info.get('name') or '')[:60]}\"{info.get('note') or ''}"
     await asyncio.sleep(0.2)
     await AGENT.settle(AGENT.page)
@@ -311,12 +444,19 @@ async def _key(ctx, args):
         if focus:
             await _guard_click(ctx, {"name": "submit (Enter)", "submit": True, "formPassword": True}, "")
     AGENT.acted = True
-    for _ in range(max(1, min(int(args.get("repeat") or 1), 50))):
+    hold = max(0, min(_ms(args.get("hold"), 0), 10000))
+    for _ in range(max(1, min(int(_num(args.get("repeat"), 1)), 50))):
         for k in keys:
-            await page.keyboard.press(k)
+            if hold:  # a game's "hold to charge" / move while the key is down
+                await page.keyboard.down(k)
+                await asyncio.sleep(hold / 1000)
+                await page.keyboard.up(k)
+            else:
+                await page.keyboard.press(k)
     await asyncio.sleep(0.15)
     await AGENT.settle(AGENT.page, 1000)
-    return f"pressed {' '.join(keys)}" + (f" x{args.get('repeat')}" if str(args.get("repeat") or "1") != "1" else ""), {}
+    return f"pressed {' '.join(keys)}" + (f" (held {hold:.0f} ms)" if hold else "") + \
+        (f" x{args.get('repeat')}" if str(args.get("repeat") or "1") != "1" else ""), {}
 
 
 async def _form(ctx, args):
@@ -343,7 +483,7 @@ async def _form(ctx, args):
                 info = await AGENT.element(loc, what)
         value = f.get("value")
         try:
-            if info["tag"] == "select":
+            if info.get("tag") == "select":
                 # the option by its text or value, exact first, then ignoring case / a partial match; a value that
                 # matches nothing is answered at once with the real options (it used to wait 2 x 5 s)
                 opts = await loc.evaluate("(s) => [...s.options].map((o) => [o.value, o.text.trim()])")
@@ -355,10 +495,10 @@ async def _form(ctx, args):
                                        + ", ".join(f"{t!r}" for _, t in opts[:30]))
                 await loc.select_option(value=pick, timeout=5000)
                 done.append(f"{what}={value}")
-            elif info["type"] in ("checkbox", "radio"):
+            elif info.get("type") in ("checkbox", "radio"):
                 await loc.set_checked(_flag(value, True), timeout=5000)
                 done.append(f"{what}={'on' if _flag(value, True) else 'off'}")
-            elif info["type"] == "file":
+            elif info.get("type") == "file":
                 files = [value] if isinstance(value, str) else list(value or [])
                 paths = [_path(ctx, p) for p in files]
                 missing = [str(p) for p in paths if not p.is_file()]
@@ -381,11 +521,13 @@ async def _form(ctx, args):
 async def _scroll(ctx, args):
     page = AGENT.page
     if args.get("ref") or args.get("selector") or args.get("text"):
-        loc, what = AGENT.locator(str(args.get("ref") or ""), str(args.get("selector") or ""), str(args.get("text") or ""))
+        # target(): a stale ref is found again by its name, a hidden element is said at once
+        loc, what, _ = await AGENT.target(str(args.get("ref") or ""), str(args.get("selector") or ""),
+                                          str(args.get("text") or ""))
         await loc.scroll_into_view_if_needed(timeout=8000)
         return f"scrolled {what} into view", {}
-    d = str(args.get("direction") or "down")
-    n = max(1, min(int(args.get("amount") or 3), 20)) * 300
+    d = str(args.get("direction") or "down").lower()
+    n = int(max(1, min(_num(args.get("amount"), 3), 20)) * 300)
     dx, dy = {"down": (0, n), "up": (0, -n), "right": (n, 0), "left": (-n, 0)}.get(d, (0, n))
     await page.mouse.wheel(dx, dy)
     await asyncio.sleep(0.4)
@@ -401,7 +543,7 @@ async def _wait(ctx, args):
     requests fail (an Expo / SPA bundle answering 500) ends the wait at once with those errors. Waiting the full
     120-150 s on a blank page was most of a live test's browser time."""
     page = AGENT.page
-    timeout = max(1.0, min(float(args.get("timeout") or 15), WAIT_MAX))
+    timeout = max(1.0, min(_num(args.get("timeout"), 15) or 15, WAIT_MAX))
     tid = AGENT.tab_id()
     errs0, bad0 = len(AGENT.console.get(tid, [])), len(AGENT.bad.get(tid, []))
     t0 = time.monotonic()
@@ -410,7 +552,8 @@ async def _wait(ctx, args):
     async def met() -> str:
         try:
             if args.get("text"):
-                await page.get_by_text(str(args["text"])).first.wait_for(state="visible", timeout=1000)
+                # any VISIBLE match: the first match is often a hidden copy (a template, a closed modal) that never shows
+                await page.get_by_text(str(args["text"])).filter(visible=True).first.wait_for(state="visible", timeout=1000)
                 return f"'{args['text']}' is on the page"
             if args.get("gone"):
                 await page.get_by_text(str(args["gone"])).first.wait_for(state="hidden", timeout=1000)
@@ -445,7 +588,7 @@ async def _wait(ctx, args):
                 state = "blank" if blank else "showing other content"
                 raise BrowserError(f"waited {timeout:.0f}s: not found (the page is {state}; browser_snapshot shows "
                                    "what is there, browser_inspect console / network shows errors)")
-    ms = max(0, min(int(float(args.get("ms") or 1000)), 15000))
+    ms = int(max(0, min(_ms(args.get("ms"), 1000), 15000)))
     await asyncio.sleep(ms / 1000)
     return f"waited {ms} ms", {}
 
@@ -491,7 +634,7 @@ async def _screenshot(ctx, args):
         raise BrowserError(msg)
     target.parent.mkdir(parents=True, exist_ok=True)
     if args.get("ref") or args.get("selector"):
-        loc, _ = AGENT.locator(str(args.get("ref") or ""), str(args.get("selector") or ""))
+        loc, _w, _i = await AGENT.target(str(args.get("ref") or ""), str(args.get("selector") or ""))
         await loc.screenshot(path=str(target), timeout=10000)
     else:
         await page.screenshot(path=str(target), full_page=_flag(args.get("full_page")), timeout=20000)
@@ -505,14 +648,40 @@ async def _screenshot(ctx, args):
             {"path": out, "screenshot": out, "url": page.url, "title": await page.title(), "size": size})
 
 
+# Runs the model's function and turns what cannot travel as JSON into something readable: undefined (was "null" -
+# the model could not tell a missing name from a null value), DOM elements and lists (were "{}"), functions, Maps,
+# Sets, errors, cyclic objects (were an exception).
+JS_RESULT = r"""(async (fn) => {
+  const el = (e) => e.outerHTML ? e.outerHTML.replace(/\s+/g, ' ').slice(0, 300) : String(e);
+  const conv = (v, d) => {
+    if (v === undefined) return d ? null : '__aiiq_undefined__';
+    if (v === null || typeof v !== 'object' && typeof v !== 'function') return typeof v === 'bigint' ? String(v) : v;
+    if (typeof v === 'function') return 'function ' + (v.name || '(anonymous)') + '()';
+    if (v instanceof Element) return el(v);
+    if (v instanceof NodeList || v instanceof HTMLCollection) return {count: v.length, items: [...v].slice(0, 20).map(el)};
+    if (v instanceof Error) return v.name + ': ' + v.message;
+    if (v instanceof Map) return Object.fromEntries([...v].slice(0, 100).map(([k, x]) => [String(k), conv(x, d + 1)]));
+    if (v instanceof Set) return [...v].slice(0, 100).map((x) => conv(x, d + 1));
+    if (d > 4) return Array.isArray(v) ? '[array ' + v.length + ']' : '[object]';
+    if (Array.isArray(v)) return v.slice(0, 200).map((x) => conv(x, d + 1));
+    const o = {};
+    for (const k of Object.keys(v).slice(0, 100)) { try { o[k] = conv(v[k], d + 1); } catch (e) { o[k] = '[unreadable]'; } }
+    return o;
+  };
+  return conv(await fn(), 0);
+})"""
+
+
 async def _inspect(ctx, args):
     what = str(args.get("what") or "console")
     tid = AGENT.tab_id()
-    limit = max(1, min(int(args.get("limit") or 40), 200))
+    limit = int(max(1, min(_num(args.get("limit"), 40), 200)))
     pattern = str(args.get("pattern") or "").lower()
     if what == "console":
+        from .browser import AUTO_REQUEST
         items = [m for m in AGENT.console.get(tid, []) if (not _flag(args.get("only_errors")) or m["type"] in ("error", "warning"))
-                 and (not pattern or pattern in m["text"].lower())][-limit:]
+                 and (not pattern or pattern in m["text"].lower())
+                 and not ("Failed to load resource" in m["text"] and AUTO_REQUEST.search(m.get("url") or ""))][-limit:]
         AGENT.seen_console[tid] = len(AGENT.console.get(tid, []))
         # "Failed to load resource: 500" says nothing about WHICH request: its URL goes with it (the model guessed for
         # minutes in a live test), and the failed requests themselves are listed under it.
@@ -551,9 +720,20 @@ async def _inspect(ctx, args):
         if ctx.mode == "ask":
             await _ask(ctx, {"tool": "browser_inspect", "code": code[:500]}, "runs JavaScript in the page")
         try:
-            val = await AGENT.page.evaluate(code if re.match(r"\s*(\(|async\b|function\b)", code) else f"() => ({code})")
+            val = await AGENT.page.evaluate(
+                JS_RESULT + "(" + (code if re.match(r"\s*(\(|async\b|function\b)", code) else f"() => ({code})") + ")")
         except Exception as e:
-            raise BrowserError(f"JavaScript error: {str(e).splitlines()[0][:300]}") from e
+            if "SyntaxError" not in str(e):
+                raise BrowserError(f"JavaScript error: {str(e).splitlines()[0][:300]}") from e
+            # Several statements ("const p = game.player; p.x + ',' + p.y") are not one expression: run them as a
+            # script and give back the value of the last one, as a console does (models wrote this again and again).
+            try:
+                val = await AGENT.page.evaluate("(c) => (" + JS_RESULT + ")(() => (0, eval)(c))", code)
+            except Exception as e2:
+                raise BrowserError(f"JavaScript error: {str(e2).splitlines()[0][:300]}") from e2
+        if val == "__aiiq_undefined__":
+            return ("undefined - the expression has no value (a name that does not exist, or a statement without a "
+                    "result). Check the name, e.g. Object.keys(window).filter(k => /game/i.test(k))"), {}
         return clip(json.dumps(val, ensure_ascii=False, default=str), 6000), {}
     raise BrowserError("what is console, network, storage or js")
 
@@ -626,7 +806,7 @@ async def act(ctx, action: str, args: dict) -> ToolResult:
             if "crash" in str(e).lower():  # renderer crash: a fresh tab, and no endless retries of the same page
                 url = str(args.get("url") or "") or (AGENT.active.url if AGENT.active else "")
                 return ToolResult(False, await AGENT.recover_crash(url))
-            if "closed" in str(e).lower():
+            if "has been closed" in str(e).lower() or "target closed" in str(e).lower():
                 await AGENT.close()
                 return ToolResult(False, "The browser window was closed; call the tool again to reopen it.")
             return ToolResult(False, f"{type(e).__name__}: {str(e).splitlines()[0][:300] if str(e) else ''}")
@@ -646,9 +826,12 @@ def label(name: str, args: dict, body: str) -> str:
         return str(args.get("query") or args.get("what") or body)[:120]
     if a == "batch":
         try:
-            steps = json.loads(args.get("actions") or body or "[]")
+            raw = args.get("actions") or body or "[]"
+            steps = _batch_json(raw) if isinstance(raw, str) else raw
+            if isinstance(steps, dict):
+                steps = steps.get("actions") or steps.get("steps") or [steps]
             return " → ".join(str(s.get("action", "?")) for s in steps if isinstance(s, dict))[:140]
-        except (json.JSONDecodeError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             return "batch"
     if a == "handoff":
         return str(args.get("reason") or body)[:120]
@@ -690,9 +873,13 @@ async def browser_find(ctx, args, body):
 
 @tool("browser_click", '<tool name="browser_click" ref="e12"></tool>',
       "Click an element (by ref, or selector/text) like a person; or x,y for a canvas. double=true double-clicks, "
-      "button=right opens context menus, hover=true only moves the mouse over it (menus, tooltips). confirm()/prompt() "
-      "dialogs are dismissed unless dialog=accept. Returns the page after the click.",
+      "button=right opens context menus, hover=true only moves the mouse over it (menus, tooltips). hold=800 presses "
+      "and holds 800 ms (\"hold to charge\"); drag=\"120,0\" drags 120 px right from it (or drag=\"to:400,300\", or "
+      "drag=e15 onto another element) in small moves, as a finger does - for games, sliders, sortable lists. "
+      "confirm()/prompt() dialogs are dismissed unless dialog=accept. Returns the page after the click.",
       {**TARGET, "x": S("Optional: x pixel"), "y": S("Optional: y pixel"),
+       "hold": S("Optional: press and hold this many ms"),
+       "drag": S("Optional: drag by \"dx,dy\" px, to \"to:x,y\", or onto an element ref"),
        "double": S("true: double click", enum=["true", "false"]), "button": S("left or right", enum=["left", "right", "middle"]),
        "hover": S("true: hover only", enum=["true", "false"]), "modifiers": S("Optional: ctrl, shift, alt"),
        "dialog": S("accept: confirm the confirm() dialog this click opens", enum=["accept", "dismiss"]), **SNAP})
@@ -721,8 +908,10 @@ async def browser_type(ctx, args, body):
 
 @tool("browser_key", '<tool name="browser_key">Enter</tool>',
       "Press keys in the browser: one or more space-separated keys or combos (Enter, Escape, Tab, ArrowDown, "
-      "ctrl+a, shift+Tab...). repeat presses them several times.",
-      {"keys": S("Keys, space separated"), "repeat": {"type": "integer", "description": "Times (default 1)"}, **SNAP},
+      "ctrl+a, shift+Tab...). repeat presses them several times; hold=1500 keeps each key down 1.5 s (a game: move "
+      "while ArrowRight is held).",
+      {"keys": S("Keys, space separated"), "repeat": {"type": "integer", "description": "Times (default 1)"},
+       "hold": S("Optional: keep each key down this many ms"), **SNAP},
       main="keys", required=("keys",))
 async def browser_key(ctx, args, body):
     args.setdefault("keys", body.strip())
@@ -804,7 +993,8 @@ BATCH_ALIASES = {"js": "inspect", "eval": "inspect", "evaluate": "inspect", "scr
                  "fill": "type", "input": "type", "press": "key", "keypress": "key", "goto": "navigate",
                  "open": "navigate", "visit": "navigate", "hover": "click", "dblclick": "click", "tap": "click",
                  "select": "form", "check": "form", "uncheck": "form", "expect": "wait", "assert": "wait",
-                 "wait_for": "wait", "sleep": "wait", "shot": "screenshot", "console": "inspect"}
+                 "wait_for": "wait", "sleep": "wait", "shot": "screenshot", "console": "inspect",
+                 "drag": "click", "swipe": "click", "longpress": "click", "long_press": "click", "hold": "click"}
 
 
 def _batch_step(step) -> dict:
@@ -817,13 +1007,20 @@ def _batch_step(step) -> dict:
         step.setdefault("code", step.get("script") or step.get("expression") or step.get("js") or step.get("text") or "")
     elif action in ("hover", "dblclick"):
         step["hover" if action == "hover" else "double"] = "true"
+    elif action in ("drag", "swipe"):
+        if not step.get("drag"):
+            to = step.get("to") or step.get("target_ref")
+            dx, dy = step.get("dx"), step.get("dy")
+            step["drag"] = str(to) if to else f"{_num(dx, 0):.0f},{_num(dy, 0):.0f}"
+    elif action in ("longpress", "long_press", "hold") and not step.get("hold"):
+        step["hold"] = step.get("ms") or step.get("duration") or 800
     elif real == "form" and action != "form" and not step.get("fields"):
         value = step.get("value", step.get("option", step.get("text")))
         if action in ("check", "uncheck"):
             value = action == "check"
         step["fields"] = [{k: step[k] for k in ("ref", "selector", "label") if step.get(k)} | {"value": value}]
     elif real == "wait" and action in ("sleep",) and step.get("ms") is None:
-        step["ms"] = step.get("seconds", 1) * 1000 if isinstance(step.get("seconds"), (int, float)) else 1000
+        step["ms"] = _num(step.get("seconds"), 1) * 1000 if step.get("seconds") is not None else step.get("duration") or 1000
     elif real == "type" and step.get("text") is None and step.get("value") is not None:
         step["text"] = step["value"]
     step["action"] = real
@@ -852,6 +1049,19 @@ def _target_keys(args: dict, action: str) -> dict:
     return args
 
 
+def _batch_json(text: str):
+    """The steps as models write them: in a ``` fence, with real line breaks inside a js step's code (not valid JSON
+    strings), trailing commas. Raises the first JSONDecodeError when none of that helps."""
+    s = re.sub(r"^```[\w-]*\s*\n?|\n?```\s*$", "", str(text or "").strip()).strip()
+    first = None
+    for cand in (s, re.sub(r",\s*([\]}])", r"\1", s)):
+        try:
+            return json.loads(cand, strict=False)  # strict=False: raw newlines / tabs inside strings
+        except json.JSONDecodeError as e:
+            first = first or e
+    raise first
+
+
 @tool("browser_batch", '<tool name="browser_batch">[{"action": "type", "ref": "e3", "text": "demo@test.local"}, '
       '{"action": "click", "ref": "e9"}, {"action": "wait", "text": "Dashboard"}]</tool>',
       "Several browser steps in one call, in order (navigate, click, type, key, form, select, scroll, wait, find, "
@@ -865,9 +1075,15 @@ def _target_keys(args: dict, action: str) -> dict:
 async def browser_batch(ctx, args, body):
     raw = args.get("actions") or body
     try:
-        steps = json.loads(raw) if isinstance(raw, str) else raw
-    except json.JSONDecodeError:
-        return ToolResult(False, "actions must be a JSON list: [{\"action\": \"click\", \"ref\": \"e3\"}, ...]")
+        steps = _batch_json(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError as e:
+        # where it broke, so the next call fixes that spot instead of guessing (a weak model resent it unchanged)
+        near = str(raw)[max(0, e.pos - 60):e.pos + 20].replace("\n", "\\n")
+        return ToolResult(False, f"actions must be a JSON list: [{{\"action\": \"click\", \"ref\": \"e3\"}}, ...] - it "
+                                 f"does not parse at character {e.pos} ({e.msg}) near: …{near}… In a js step put the "
+                                 "code in ONE JSON string: escape \" inside it as \\\" (or use ' quotes in the JS).")
+    if isinstance(steps, dict):  # {"actions": [...]} or one step
+        steps = steps.get("actions") or steps.get("steps") or [steps]
     if not isinstance(steps, list) or not steps:
         return ToolResult(False, "actions is empty.")
     lines, data = [], {}
@@ -898,6 +1114,10 @@ async def browser_batch(ctx, args, body):
             if "crash" in str(e).lower():
                 url = AGENT.active.url if AGENT.active else ""
                 return ToolResult(False, "\n".join(lines) + "\nstopped: " + await AGENT.recover_crash(url))
+            if "has been closed" in str(e).lower() or "target closed" in str(e).lower():
+                await AGENT.close()
+                return ToolResult(False, "\n".join(lines) + "\nstopped: the browser window was closed; call the tool "
+                                                            "again to reopen it.")
             return ToolResult(False, "\n".join(lines) + f"\nstopped: {type(e).__name__}: {str(e).splitlines()[0][:300] if str(e) else ''}")
         finally:
             AGENT.last = time.monotonic()

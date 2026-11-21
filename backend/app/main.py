@@ -12,7 +12,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -55,6 +55,10 @@ async def lifespan(app: FastAPI):
     # kept running and locked its chat folder.
     # Before v0.10.3 chat files lived in workspace/: move them into chat/<id>/ once.
     await asyncio.to_thread(workspace.migrate_layout)
+    _s = load_settings()  # one Cloudflare account id for chat and images (older settings kept it in one place only)
+    _a, _b = (_s.get("providers", {}).get("cloudflare") or {}).get("account_id"), (_s.get("media") or {}).get("cloudflare_account")
+    if bool(_a) != bool(_b) and "cloudflare" in _s.get("providers", {}):
+        save_settings({"providers": {"cloudflare": {"account_id": _a or _b}}, "media": {"cloudflare_account": _a or _b}})
     await asyncio.to_thread(_stop_orphans)
     db.execute("UPDATE processes SET state='orphaned' WHERE state IN ('queued','running','cancelling')")
     # Tasks that were running when the app stopped (power cut, crash): shown as interrupted, resumable.
@@ -72,7 +76,10 @@ async def lifespan(app: FastAPI):
     warm = asyncio.create_task(router.warm_info())  # model windows ready before the first task asks
     guard = asyncio.create_task(_ram_guard())  # unloads local models before low RAM freezes the computer
     health = asyncio.create_task(_health_watch())  # local servers / settings changes pushed to the UI
+    from . import netwatch
+    net = asyncio.create_task(netwatch.watch())  # internet drops / returns pushed to the UI; tasks wait and resume
     yield
+    net.cancel()
     warm.cancel()
     guard.cancel()
     health.cancel()
@@ -83,6 +90,11 @@ async def lifespan(app: FastAPI):
     db.checkpoint()  # the write-ahead log is folded into the database file
     from .llm import modelstats
     modelstats.flush()
+
+
+def _net_snapshot() -> dict:
+    from . import netwatch
+    return netwatch.snapshot()
 
 
 async def _ram_guard() -> None:
@@ -680,6 +692,7 @@ class ChatIn(BaseModel):
     attachments: list[dict] = []
     images: list[str] = []
     ui_lang: str | None = None
+    chips: list[dict] = []  # composer mode / template chips: shown as chips in the sent message
 
 
 @app.post("/api/sessions/{sid}/chat")
@@ -697,7 +710,12 @@ async def chat(sid: str, body: ChatIn):
     if body.permission_mode and body.permission_mode not in policy.MODES:
         raise fail(400, "bad_permission_mode", "Invalid permission mode")
     if not session["title"]:
-        db.execute("UPDATE sessions SET title=? WHERE id=?", (orchestrator.clean_title(body.text)[:60], sid))
+        title_src = body.text
+        strip = next((c.get("strip") for c in body.chips if isinstance(c, dict) and c.get("strip")), "")
+        if strip and title_src.startswith(strip):  # the chips' labels, not the instruction behind them
+            labels = " · ".join(str(c.get("label") or "") for c in body.chips if isinstance(c, dict) and c.get("label"))
+            title_src = f"{labels}: {title_src[len(strip):].strip()}" if labels else title_src[len(strip):]
+        db.execute("UPDATE sessions SET title=? WHERE id=?", (orchestrator.clean_title(title_src)[:60], sid))
     root = workspace.session_root(session)
     # Reading and copying attachments (pictures, videos) runs off the event loop: a large file copied here held
     # every other chat's stream and the websocket until it was done.
@@ -760,6 +778,19 @@ async def upload(sid: str, file: UploadFile):
     is_image = (file.content_type or "").startswith("image/")
     kind = "image" if is_image else "text" if _looks_text(data) else "binary"
     return {"name": dest.name, "path": str(dest), "size": len(data), "kind": kind}
+
+
+@app.get("/api/sessions/{sid}/upload/raw")
+def upload_raw(sid: str, name: str):
+    """An attachment uploaded earlier (a saved composer draft brings its image back after a reload)."""
+    _session(sid)
+    try:
+        dest = policy.resolve_in(sessions.path(sid) / "uploads", Path(name).name)
+    except ValueError:
+        raise fail(400, "bad_request", "Invalid name")
+    if not dest.is_file():
+        raise fail(404, "not_found", "Attachment not found")
+    return FileResponse(dest)
 
 
 def _looks_text(data: bytes) -> bool:
@@ -925,13 +956,22 @@ async def fs_upload(sid: str, file: UploadFile, path: str = "", project_id: str 
     return _entry(dest, _root(sid, project_id).resolve())
 
 
-@app.get("/api/sessions/{sid}/fs/raw")
+@app.api_route("/api/sessions/{sid}/fs/raw", methods=["GET", "HEAD"])
 def fs_raw(sid: str, path: str, project_id: str | None = None, download: bool = False):
     p = _find_file(sid, path, project_id)
     if not p.is_file():
         raise HTTPException(404)
     return FileResponse(p, filename=p.name if download else None,
                         content_disposition_type="attachment" if download else "inline")
+
+
+@app.get("/api/sessions/{sid}/fs/exists")
+def fs_exists(sid: str, path: str, project_id: str | None = None):
+    """Whether a file the answer names exists (its chip opens it): an answer, not a 404 for every missing name."""
+    try:
+        return {"exists": _find_file(sid, path, project_id).is_file()}
+    except HTTPException:
+        return {"exists": False}
 
 
 # ---------- video studio (Settings-free, per chat folder) ----------
@@ -1078,7 +1118,9 @@ The patch changes ONLY what was asked; everything else stays. Patch format:
   (generated original music: "corporate"|"upbeat"|"lofi"|"cinematic"|"acoustic"|"electronic"|"ambient"|"calm", or an
   <audio path>, or null; or {"src", "volume", "in", "start", "seed"}), "effects" (grain, old_film, vhs,
   glitch, shake, letterbox, glow, light_leak, sepia, bw, dreamy, vignette, sharpen, flash_in), "transition",
-  "voice" ({"voice": "tr-TR-EmelNeural" | "tr-TR-AhmetNeural" | "en-US-JennyNeural" | "en-US-GuyNeural", "rate": 1}),
+  "voice" ({"voice": "" (the user's default) | "piper:tr_TR-fettah-medium" (female) | "piper:tr_TR-99eren99-medium"
+  (male) | "kokoro:af_heart" (English) | "tr-TR-EmelNeural" (online), "gender": female|male, "rate": 1, "pitch": 0,
+  "emotion": 0.5, "studio": "video"}), "subtitles" (true: the voice-over's sentences burned in with real timings),
   "animate" (true: every photo really moves)
 Use only media paths from the list. If the request needs pictures or clips that are not in the list (find, download,
 generate), or information from the web, reply {"need_agent": true, "message": "<short sentence in LANG>"} instead."""
@@ -1282,8 +1324,10 @@ async def video_voice(sid: str, body: VoiceClipIn):
     from .tools import speech
     if not body.text.strip():
         raise fail(400, "empty", "Nothing to read")
-    lang = (body.voice[:2] if body.voice else (load_settings().get("language") or "tr")).lower()
-    h = hashlib.sha1(f"{body.voice}|{body.rate}|{body.text}".encode()).hexdigest()[:10]
+    from .voice.render import lang_of, settings as voice_settings
+    lang = (lang_of(body.voice) if body.voice else (load_settings().get("language") or "tr")).lower()
+    tone = {k: voice_settings()[k] for k in ("pitch", "emotion", "studio", "room", "pause")}
+    h = hashlib.sha1(f"{body.voice}|{body.rate}|{tone}|{body.text}".encode()).hexdigest()[:10]
     target = _resolve(sid, f"media/voice/voice-{h}.mp3", body.project_id)
     if not target.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1519,6 +1563,72 @@ async def media_test(service: str, body: EngineTestIn):
                          "url": ""}]}
 
 
+@app.get("/api/media/models/{kind}/{service}")
+async def media_models(kind: str, service: str):
+    """The models an image / video service may use (only that kind), its default and the current choice."""
+    from .tools import mediamodels
+    if kind not in mediamodels.MODELS or service not in mediamodels.MODELS[kind]:
+        return {"choices": [], "default": "", "current": ""}
+    return {"choices": await mediamodels.choices(kind, service), "default": await mediamodels.default(kind, service),
+            "current": await mediamodels.current(kind, service)}
+
+
+@app.post("/api/video/test/{service}")
+async def video_test(service: str, body: EngineTestIn, real: bool = False):
+    """One AI video service alone (Settings > Web > AI video). Without real: a key / availability check that costs
+    nothing. With real=true: a real 2-4 s clip from a small generated picture (paid services charge for it)."""
+    import httpx
+    from .config import get_secret
+    from .tools import animate, services
+    t0 = time.monotonic()
+    spec = services.CATALOG.get(service)
+    if not spec or spec["kind"] != "video":
+        return {"ok": False, "error": "unknown video service"}
+    if not services.has_key(service):
+        return {"ok": False, "error": "no key saved for this service: enter and save the key first"}
+    try:
+        if real:
+            from PIL import Image, ImageDraw
+            import tempfile
+            pic = Path(tempfile.mkdtemp()) / "test.jpg"
+            im = Image.new("RGB", (768, 432), (40, 90, 160))
+            d = ImageDraw.Draw(im)
+            d.ellipse((300, 120, 470, 290), fill=(250, 200, 60))
+            d.rectangle((0, 330, 768, 432), fill=(30, 130, 60))
+            im.save(pic, quality=90)
+            clip = await services.call(service, lambda: animate.make_with(service, pic, body.q.strip() or
+                                       "the sun slowly rises over green hills, gentle camera move", 4.0))
+            size = Path(clip).stat().st_size
+            return {"ok": size > 1000, "ms": int((time.monotonic() - t0) * 1000), "count": 1, "provider": service,
+                    "results": [{"title": f"MP4 {size // 1024} KB", "url": ""}]}
+        async with httpx.AsyncClient(timeout=20) as c:
+            if spec.get("free"):
+                r = await c.get(f"https://huggingface.co/api/spaces/{spec['space']}", params={"expand[]": "runtime"})
+                stage = ((r.json().get("runtime") or {}).get("stage") if r.status_code == 200 else f"HTTP {r.status_code}")
+                ok, info = stage == "RUNNING" or stage in ("SLEEPING", "PAUSED"), str(stage)
+            elif service == "veo":
+                from .tools import mediamodels
+                names = mediamodels.of_kind("video", await mediamodels.gemini_models())
+                ok, info = bool(names), ", ".join(names[:4]) or "this Gemini key lists no Veo model"
+            elif service == "replicate":
+                r = await c.get("https://api.replicate.com/v1/account",
+                                headers={"Authorization": f"Bearer {get_secret('replicate_api_key')}"})
+                ok, info = r.status_code == 200, (r.json().get("username") if r.status_code == 200 else f"HTTP {r.status_code}: {r.text[:120]}")
+            elif service == "runway":
+                r = await c.get("https://api.dev.runwayml.com/v1/organization",
+                                headers={"Authorization": f"Bearer {get_secret('runway_api_key')}", "X-Runway-Version": "2024-11-06"})
+                ok = r.status_code == 200
+                info = (f"credits: {r.json().get('creditBalance')}" if ok else f"HTTP {r.status_code}: {r.text[:120]}")
+            else:  # fal.ai: an unknown request id answers 404 with a valid key, 401 / 403 with a wrong one
+                r = await c.get("https://queue.fal.run/fal-ai/fast-sdxl/requests/00000000-0000-0000-0000-000000000000/status",
+                                headers={"Authorization": f"Key {get_secret('fal_api_key')}"})
+                ok, info = r.status_code not in (401, 403), ("key accepted" if r.status_code not in (401, 403) else f"HTTP {r.status_code}: {r.text[:120]}")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:300]}
+    return {"ok": ok, "ms": int((time.monotonic() - t0) * 1000), "count": 1, "provider": service,
+            "results": [{"title": info, "url": ""}], **({} if ok else {"error": info})}
+
+
 @app.post("/api/stock/test/{service}")
 async def stock_test(service: str, body: EngineTestIn):
     """One photo service alone (Settings > Web > Photo services): a sample search with its own error."""
@@ -1614,14 +1724,175 @@ async def set_model_context(body: ModelIn):
     return {**info, "current": n}
 
 
-# ---------- spoken replies (edge-tts) ----------
+# ---------- voices: local (Piper, Kokoro, Chatterbox) + Microsoft's online voices ----------
+async def _all_voices(lang: str = "") -> tuple[list[dict], str | None]:
+    """Every voice for the pickers: local ones (installed or downloadable) first, then the online ones."""
+    from . import tts
+    from .voice import catalog
+    local = await catalog.local_voices(lang)
+    err = None
+    try:
+        edge = [{**v, "engine": "edge", "lang": v["locale"][:2].lower(), "country": v["locale"].split("-")[-1],
+                 "quality": "high", "offline": False, "installed": True} for v in await tts.voices(lang)]
+    except tts.TTSError as e:  # offline: the local voices still work
+        edge, err = [], str(e)
+    return local + edge, err
+
+
 @app.get("/api/tts/voices")
 async def tts_voices(lang: str = ""):
+    voices, err = await _all_voices(lang)
+    return {"ok": bool(voices), "voices": voices, **({"error": err} if err and not voices else {})}
+
+
+def _studio_presets():
+    from .voice.studio import PRESETS
+    return PRESETS
+
+
+@app.get("/api/voices")
+async def voices_list(lang: str = ""):
+    from .voice import catalog, render
+    voices, err = await _all_voices(lang)
+    return {"voices": voices, "online_error": err, "progress": catalog.PROGRESS, "settings": render.settings(),
+            "presets": list(_studio_presets()),
+            "engines": {"piper": sum(1 for v in voices if v["engine"] == "piper" and v["installed"]),
+                        "kokoro": catalog.kokoro_installed(), "chatterbox": catalog.cbx_python() is not None,
+                        "edge": not err}}
+
+
+class VoiceIdIn(BaseModel):
+    id: str
+
+
+_VOICE_TASKS: set = set()
+
+
+@app.post("/api/voices/install")
+async def voices_install(body: VoiceIdIn):
+    """Download a local voice in the background; GET /api/voices shows the progress."""
+    from .voice import catalog
+    if not re.fullmatch(r"(piper|kokoro|chatterbox):[\w.@-]{1,80}", body.id):
+        raise fail(400, "bad_voice", "Unknown voice")
+    cur = catalog.PROGRESS.get(body.id)
+    if cur and cur.get("state") in ("downloading", "measuring", "installing"):
+        return {"ok": True, "progress": cur}
+
+    async def job() -> None:
+        try:
+            await catalog.install(body.id)
+            bus.publish("system", "voice", {"id": body.id, "state": "done"})
+        except Exception as e:  # noqa: BLE001
+            bus.publish("system", "voice", {"id": body.id, "state": "error", "error": str(e)[:300]})
+    t = asyncio.create_task(job())
+    _VOICE_TASKS.add(t)
+    t.add_done_callback(_VOICE_TASKS.discard)
+    await asyncio.sleep(0)
+    return {"ok": True, "progress": catalog.PROGRESS.get(body.id)}
+
+
+@app.delete("/api/voices/{vid:path}")
+def voices_remove(vid: str):
+    from .voice import catalog, engines
+    if vid.startswith("ref:"):
+        name = vid[4:]
+        if not re.fullmatch(r"[\w-]{1,40}", name):
+            raise fail(400, "bad_voice", "Unknown voice")
+        (catalog.REFS_DIR / f"{name}.wav").unlink(missing_ok=True)
+        return {"ok": True}
+    if not re.fullmatch(r"(piper|kokoro|chatterbox):[\w.@-]{1,80}", vid):
+        raise fail(400, "bad_voice", "Unknown voice")
+    if vid.startswith("chatterbox:"):
+        engines.CBX.stop()
+    engines._PIPER.pop(vid.split(":", 1)[1], None)
+    if vid.startswith("kokoro:"):
+        engines._KOKORO.clear()
+    catalog.remove(vid)
+    return {"ok": True}
+
+
+class VoicePreviewIn(BaseModel):
+    text: str
+    voice: str
+    rate: float = 1.0
+    pitch: float | None = None
+    emotion: float | None = None
+    preset: str | None = None
+    room: bool | None = None
+    pause: float | None = None
+
+
+@app.post("/api/voices/preview")
+async def voices_preview(body: VoicePreviewIn):
     from . import tts
+    tone = {k: v for k, v in body.model_dump().items() if k in ("pitch", "emotion", "preset", "room", "pause") and v is not None}
     try:
-        return {"ok": True, "voices": await tts.voices(lang)}
+        audio = await tts.synthesize(body.text, body.voice, body.rate, tone)
     except tts.TTSError as e:
-        return {"ok": False, "voices": [], "error": str(e)}
+        raise fail(400 if str(e) in ("nothing to read", "unknown voice") else 502, "tts_failed", str(e))
+    return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/voices/reference")
+async def voices_reference(file: UploadFile, name: str = Form(...), consent: bool = Form(False)):
+    """The user's own voice (or one they have permission to use) as a Chatterbox reference: 5-30 s, cleaned to
+    24 kHz mono WAV; its pitch gives the gender label."""
+    from .voice import catalog, engines
+    if not consent:
+        raise fail(400, "consent_required", "Confirm that this is your voice or that you have permission to use it")
+    name = re.sub(r"[^\w-]+", "-", name.strip())[:40].strip("-")
+    if not name:
+        raise fail(400, "bad_name", "Give the voice a name")
+    data = await file.read()
+    if len(data) > 30 * 1024 * 1024:
+        raise fail(400, "too_large", "Reference clip is too large")
+    try:
+        x, sr = await asyncio.to_thread(engines.decode, data, 24000)
+    except Exception as e:  # noqa: BLE001
+        raise fail(400, "bad_audio", f"Could not read the audio: {str(e)[:200]}")
+    secs = len(x) / sr
+    if secs < 4:
+        raise fail(400, "too_short", "The clip must be at least 5 seconds of speech")
+    x = x[: int(sr * 30)]
+    catalog.REFS_DIR.mkdir(parents=True, exist_ok=True)
+    import wave
+    import numpy as np
+    with wave.open(str(catalog.REFS_DIR / f"{name}.wav"), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes((np.clip(x / max(1e-6, float(np.abs(x).max())) * 0.9, -1, 1) * 32767).astype(np.int16).tobytes())
+    hz = catalog.pitch_hz(x, sr)
+    return {"ok": True, "name": name, "seconds": round(min(secs, 30), 1), "gender": catalog.save_reference(name, catalog.REFS_DIR / f"{name}.wav", hz)}
+
+
+# ---------- document templates (make_doc template=<id>; the gallery above the composer) ----------
+@app.get("/api/doc-templates")
+def doc_templates_list(kind: str = "", lang: str = "tr"):
+    from .tools import doc_templates as dt
+    return {"templates": [{"id": t["id"], "kinds": t["kinds"], "name": dt.text(t, "name", lang),
+                           "desc": dt.text(t, "desc", lang), "outline": dt.text(t, "outline", lang) or [],
+                           "colors": t["colors"], "user": bool(t.get("user")),
+                           "instruction": dt.instruction(t, lang)} for t in dt.all_templates(kind)]}
+
+
+@app.get("/api/doc-templates/{tid}/preview")
+def doc_template_preview(tid: str, kind: str = "", lang: str = "tr"):
+    """The template's thumbnail: real HTML in its colours, type and cover (shown scaled in an iframe)."""
+    from .tools import doc_templates as dt
+    t = dt.get(tid)
+    if not t:
+        raise fail(404, "not_found", "No such template")
+    return Response(dt.preview_html(t, lang, kind), media_type="text/html",
+                    headers={"Cache-Control": "max-age=300"})
+
+
+@app.delete("/api/doc-templates/{tid}")
+def doc_template_delete(tid: str):
+    from .tools import doc_templates as dt
+    if not dt.delete_user(tid):
+        raise fail(404, "not_found", "Only templates you made can be deleted")
+    return {"ok": True}
 
 
 class TTSIn(BaseModel):
@@ -1646,6 +1917,10 @@ class TTSFileIn(BaseModel):
     voice: str
     path: str
     rate: float = 1.0
+    pitch: float | None = None
+    emotion: float | None = None
+    preset: str | None = None
+    pause: float | None = None
 
 
 @app.post("/api/sessions/{sid}/tts-file")
@@ -1658,7 +1933,8 @@ async def tts_file(sid: str, body: TTSFileIn):
     if root not in target.parents or target.suffix.lower() != ".mp3":
         raise fail(400, "bad_path", "Only an .mp3 inside the chat's folder")
     try:
-        res = await speech.text_to_speech(body.text[:20000], target, "", body.voice, "", body.rate)
+        res = await speech.text_to_speech(body.text[:20000], target, "", body.voice, "", body.rate, pitch=body.pitch,
+                                          emotion=body.emotion, preset=body.preset or None, pause=body.pause)
     except Exception as e:  # offline, unknown voice
         raise fail(502, "tts_failed", str(e)[:300])
     # The chosen voice is kept with the answer, so the card shows it after a reload too.
@@ -1696,7 +1972,10 @@ def put_provider(pid: str, body: ProviderIn):
     if not re.fullmatch(r"[a-z0-9_-]{1,40}", pid) or body.kind not in ("openai", "ollama", "anthropic", "gemini", "cloudflare"):
         raise fail(400, "invalid_provider", "Invalid provider id or protocol")
     router.invalidate_models(pid)
-    return save_settings({"providers": {pid: body.model_dump(exclude_none=True)}})
+    patch = {"providers": {pid: body.model_dump(exclude_none=True)}}
+    if pid == "cloudflare":
+        _sync_shared(patch)
+    return save_settings(patch)
 
 
 @app.delete("/api/providers/{pid}")
@@ -2035,6 +2314,42 @@ async def mcp_restart(sid: str):
     return _mcp_view().get(sid)
 
 
+@app.get("/api/mcp-catalog")
+def mcp_catalog_list():
+    """The ready-made servers (one click adds one)."""
+    from .mcp_catalog import catalog
+    return catalog()
+
+
+@app.get("/api/mcp-registry")
+async def mcp_registry(q: str = ""):
+    """Search the official MCP registry (+ npm, GitHub) for a need: the same search the model's mcp_search uses."""
+    from . import mcp_client
+    try:
+        return {"results": await mcp_client.search_servers(q, 12)}
+    except Exception as e:  # noqa: BLE001  offline, registry down
+        raise fail(502, "mcp_registry", f"{type(e).__name__}: {str(e)[:200]}") from None
+
+
+class McpCallIn(BaseModel):
+    tool: str
+    arguments: dict = {}
+
+
+@app.post("/api/mcp/{sid}/call")
+async def mcp_call(sid: str, body: McpCallIn):
+    """The user runs an MCP tool directly (Settings > MCP > Try): the same call the model makes with the mcp tool."""
+    from . import mcp_client
+    if sid not in (load_settings().get("mcp_servers") or {}):
+        raise fail(404, "not_found", "Unknown MCP server")
+    t0 = time.monotonic()
+    try:
+        ok, text = await mcp_client.call(sid, body.tool, body.arguments or {})
+    except Exception as e:  # noqa: BLE001  not running, bad arguments, timeout
+        return {"ok": False, "text": str(e)[:4000], "ms": round((time.monotonic() - t0) * 1000)}
+    return {"ok": ok, "text": text[:200000], "ms": round((time.monotonic() - t0) * 1000)}
+
+
 @app.get("/api/settings")
 def get_settings():
     return {**load_settings(), "secrets": secret_status()}
@@ -2046,6 +2361,7 @@ def patch_settings(body: dict):
     if body.get("permission_mode") and body["permission_mode"] not in policy.MODES:
         raise fail(400, "bad_permission_mode", "Invalid permission mode")
     current = load_settings()["providers"]
+    _sync_shared(body)
     for pid, patch in (body.get("providers") or {}).items():
         router.invalidate_models(pid)
         # A local server the user switched off stays off; otherwise it is turned on by itself when it starts
@@ -2060,13 +2376,38 @@ class SecretIn(BaseModel):
     value: str | None = None
 
 
+def _sync_shared(body: dict) -> None:
+    """One value for what a provider and a media service share (they are one account): the Cloudflare account id
+    typed in the image card is the provider's account id and the other way round."""
+    media = body.get("media") if isinstance(body.get("media"), dict) else None
+    cf = ((body.get("providers") or {}).get("cloudflare") or {}) if isinstance(body.get("providers"), dict) else {}
+    if media and "cloudflare_account" in media:
+        body.setdefault("providers", {}).setdefault("cloudflare", {})["account_id"] = str(media["cloudflare_account"]).strip()
+    elif isinstance(cf, dict) and "account_id" in cf:
+        body.setdefault("media", {})["cloudflare_account"] = str(cf["account_id"] or "").strip()
+
+
+# A key shared by a chat provider and the media services: saving it in either place turns on both
+SHARED_KEYS = {"gemini_api_key": ("gemini", ["media"]), "cloudflare_api_key": ("cloudflare", ["media"]),
+               "huggingface_api_key": ("huggingface", ["media", "video"]), "together_api_key": ("together", ["media"]),
+               "openai_api_key": ("openai", ["media"])}
+
+
 @app.put("/api/secrets")
 def put_secret(body: SecretIn):
     set_secret(body.name, body.value)
     pid = body.name.removesuffix("_api_key")
-    # Cloud providers ship disabled; saving a key for one turns it on.
-    if body.value and pid != body.name and (cfg := load_settings()["providers"].get(pid)) and not cfg.get("enabled"):
+    s = load_settings()
+    # Cloud providers ship disabled; saving a key for one turns it on (also when the key was typed in a media card).
+    if body.value and pid != body.name and (cfg := s["providers"].get(pid)) and not cfg.get("enabled"):
         save_settings({"providers": {pid: {"enabled": True}}})
+    if body.value:
+        # ... and the media services that use the same key are switched on too (a disabled one comes back)
+        sid = SHARED_KEYS.get(body.name, (pid, []))[0]
+        for section in ("media", "video"):
+            off = list((s.get(section) or {}).get("disabled") or [])
+            if sid in off:
+                save_settings({section: {"disabled": [x for x in off if x != sid]}})
     router.invalidate_models(pid)
     return secret_status()
 
@@ -2236,7 +2577,7 @@ async def events_ws(ws: WebSocket):
     fresh = truncated or not since or (bool(boot) and boot != bus.boot)
     now = time.time()
     first = [{"seq": bus.last_seq, "ts": now, "topic": "system", "type": "hello",
-              "payload": {"boot": bus.boot, "reset": fresh}}]
+              "payload": {"boot": bus.boot, "reset": fresh, "net": _net_snapshot()}}]
     if fresh:
         first += [{"seq": bus.last_seq, "ts": now, "topic": "run", "type": "snapshot", "payload": r.snapshot()}
                   for r in orchestrator.RUNS.values()]

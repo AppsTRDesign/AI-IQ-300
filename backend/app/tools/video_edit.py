@@ -216,7 +216,7 @@ def _expand(root: Path, src: str) -> list[str]:
 TOP_KEYS = {"width", "height", "aspect", "fps", "duration", "look", "music", "voiceover", "fade", "quality", "output",
             "scenes", "clips", "transition", "transition_dur", "font", "fit", "photos", "images", "pictures", "files",
             "captions", "narration", "says", "title", "subtitle", "outro", "logo", "watermark", "base", "project",
-            "add_clips", "remove_scenes", "voice", "effects", "animate", "add_scenes", "remove_clips"}
+            "add_clips", "remove_scenes", "voice", "effects", "animate", "add_scenes", "remove_clips", "subtitles"}
 SCENE_KEYS = {"src", "dur", "in", "out", "motion", "transition", "transition_dur", "title", "subtitle", "caption",
               "lower_third", "text", "text_style", "say", "fit", "volume", "color", "voice", "effects", "animate",
               "motion_prompt", "animated_src", "stretch"}
@@ -366,6 +366,21 @@ def normalize(spec: dict, root: Path) -> dict:
     spec = dict(spec)
     if spec.get("base") or spec.get("project"):
         spec = _apply_patch(spec, root)
+    # narration / says: a list = one spoken line per photo; anything else is ONE voice-over for the whole video -
+    # a text, an audio file the model made with text_to_speech ("speech/x.mp3"), or {"src"} / {"text"}. An object
+    # here crashed with KeyError 0, reported as "Missing required argument: 0", and the voice was silently dropped.
+    for k in ("narration", "says"):
+        v = spec.get(k)
+        if v and not isinstance(v, list):
+            spec.pop(k)
+            if not spec.get("voiceover"):
+                if isinstance(v, dict):
+                    spec["voiceover"] = {x: v[x] for x in ("src", "text", "start", "volume") if v.get(x) is not None} \
+                        or {"text": str(v.get("say") or "")}
+                elif Path(str(v)).suffix.lower() in AUDIO_EXT:
+                    spec["voiceover"] = {"src": str(v)}
+                else:
+                    spec["voiceover"] = {"text": str(v)}
     photos = spec.get("photos") or spec.get("images") or spec.get("pictures") or spec.get("files")
     if isinstance(photos, str):
         photos = [photos]
@@ -1032,11 +1047,48 @@ async def make_music(kind: str, seconds: float, target: Path, seed: int = 0) -> 
     return target
 
 
-async def _voice(text: str, target: Path, lang: str, cfg: dict) -> Path:
+async def _voice(text: str, target: Path, lang: str, cfg: dict) -> dict:
     from . import speech
-    await speech.text_to_speech(text, target, (cfg.get("language") or lang or "tr")[:3], str(cfg.get("voice") or ""),
-                                str(cfg.get("gender") or ""), float(cfg.get("rate") or 1.0))
-    return target
+    # the video's own mix sets the loudness, so the voice gets the "video" finish unless one is given
+    tone = {k: cfg[k] for k in ("pitch", "emotion", "pause", "room") if cfg.get(k) is not None}
+    return await speech.text_to_speech(text, target, (cfg.get("language") or lang or "tr")[:3],
+                                       str(cfg.get("voice") or ""), str(cfg.get("gender") or ""),
+                                       float(cfg["rate"]) if cfg.get("rate") else None,
+                                       preset=str(cfg.get("studio") or "video"), speakers=cfg.get("speakers"), **tone)
+
+
+def _subs_style(spec: dict) -> str:
+    """libass style for burned subtitles: white text, dark outline, above the bottom edge (spec.subtitles may be a
+    dict: size, color "#ffffff", position bottom|top)."""
+    s = spec.get("subtitles") if isinstance(spec.get("subtitles"), dict) else {}
+    size = int(s.get("size") or 15)
+    col = str(s.get("color") or "#ffffff").lstrip("#")
+    col = col if re.fullmatch(r"[0-9a-fA-F]{6}", col) else "ffffff"
+    bgr = col[4:6] + col[2:4] + col[0:2]
+    align = 8 if str(s.get("position") or "").lower() == "top" else 2
+    return (f"FontName=Arial,FontSize={size},PrimaryColour=&H00{bgr},OutlineColour=&H00000000,BackColour=&H80000000,"
+            f"BorderStyle=1,Outline=1.6,Shadow=0.6,Bold=1,Alignment={align},MarginV=22")
+
+
+async def _burn_subs(target: Path, segs: list[tuple[float, float, str]], spec: dict, workdir: Path) -> Path:
+    """Timed subtitles from the voice-over's real sentence timings, burned into the video; a .srt goes next to it."""
+    from ..voice.render import srt_text
+    segs = sorted(segs)
+    srt = srt_text(segs)
+    (workdir / "subs.srt").write_text(srt, encoding="utf-8")
+    target.with_suffix(".srt").write_text(srt, encoding="utf-8")
+    tmp = target.with_name(target.stem + ".subs" + target.suffix)
+    args = [_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(target),
+            "-vf", f"subtitles=subs.srt:force_style='{_subs_style(spec)}'", "-c:a", "copy", "-c:v", "libx264",
+            "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmp)]
+    proc = await asyncio.create_subprocess_exec(*args, cwd=str(workdir), stdout=asyncio.subprocess.DEVNULL,
+                                                stderr=asyncio.subprocess.PIPE)
+    _, err = await asyncio.wait_for(proc.communicate(), TIMEOUT)
+    if proc.returncode or not tmp.is_file():
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("subtitles: " + err.decode("utf-8", "replace").strip()[-300:])
+    tmp.replace(target)
+    return target.with_suffix(".srt")
 
 
 async def _animate_scenes(spec: dict, root: Path) -> tuple[dict, dict]:
@@ -1156,13 +1208,17 @@ async def render(spec: dict, root: Path, target: Path, lang: str = "tr") -> dict
                 ready.append((at, f))
             else:
                 jobs.append((at, str(vo_cfg["text"]), textdir / "voiceover.mp3", {**voice_cfg, **vo_cfg}))
+        subs: list[tuple[float, float, str]] = []
         if jobs:
             try:
-                await asyncio.gather(*(_voice(t, p, lang, cfg) for _, t, p, cfg in jobs))
+                said = await asyncio.gather(*(_voice(t, p, lang, cfg) for _, t, p, cfg in jobs))
             except Exception as e:
                 raise RuntimeError(f"voice-over (text to speech) failed: {str(e)[:200]}") from e
             vvol = float(vo_cfg.get("volume") or 1.0)
             extra["voice"] = [(at, p, vvol) for at, _, p, _ in jobs]
+            # each sentence's real place in the video (voice start + its time in the recording)
+            subs = [(at + s["start"], at + s["end"], s["text"]) for (at, *_), r in zip(jobs, said)
+                    for s in (r.get("segments") or [])]
         extra["voice"] += [(at, p, float(vo_cfg.get("volume") or 1.0)) for at, p in ready]
         if vo_cfg.get("src"):
             if str(vo_cfg["src"]) not in probes:
@@ -1207,6 +1263,9 @@ async def render(spec: dict, root: Path, target: Path, lang: str = "tr") -> dict
         if proc.returncode != 0 or not target.is_file():
             tail = err.decode("utf-8", "replace").strip()[-600:]
             raise RuntimeError(tail or f"exit code {proc.returncode}")
+        if spec.get("subtitles") and subs:
+            subs = [(a, min(b, pl["duration"]), s) for a, b, s in subs if a < pl["duration"]]
+            await _burn_subs(target, subs, spec, textdir)
     finally:
         shutil.rmtree(textdir, ignore_errors=True)
     info = await asyncio.to_thread(_probe_sync, target)
@@ -1215,6 +1274,7 @@ async def render(spec: dict, root: Path, target: Path, lang: str = "tr") -> dict
     return {"duration": info["duration"] or pl["duration"], "width": pl["width"], "height": pl["height"],
             "audio": pl["audio"], "size": target.stat().st_size, "gaps": pl["gaps"], "scenes": pl["scenes"],
             "preview": preview, "music": bool(extra.get("music")), "voice": len(extra.get("voice") or []),
+            "subtitles": len(subs) if spec.get("subtitles") else 0,
             "look": pl["look"], "project": project, "ignored": ignored, "animated": anim_notes,
             "layers": {"logo": sum(1 for c in spec.get("clips") or [] if isinstance(c, dict) and c.get("_logo")),
                        "text": sum(1 for c in spec.get("clips") or [] if isinstance(c, dict) and c.get("type") == "text"),

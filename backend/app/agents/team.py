@@ -132,6 +132,11 @@ async def _member(ctx: ToolContext, m: dict, board: list[dict], i: int, push, sh
         team_note = (f"\n\n[Team plan - your teammates and their parts. Do only YOUR part; do not redo theirs. Members of "
                      f"your stage work at the same time: agree on shared names (files, functions) with team_message "
                      f"right away when your parts touch, and read their messages.]\n{plan}") if plan else ""
+        if (role := str(m.get("role") or m.get("agent") or "").lstrip("@").strip()):
+            # The lead model chose a specialist for this part (team member role=NAME): its instructions go along.
+            from . import catalog
+            if (spec := catalog.agents().get(role)) and spec.get("prompt"):
+                system += f"\n\n# You act as the specialist @{role}\n" + spec["prompt"][:6000]
         native = router.native_tools(model, await router.context_info(model))
         if not native:
             # This model has no function calling: it writes tool calls as tags (parsed below like the main task).

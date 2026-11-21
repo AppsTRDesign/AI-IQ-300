@@ -26,6 +26,8 @@ IDLE = 900  # seconds without use before the window closes (the profile stays)
 HIDDEN_ARGS = ["--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer"]
 _UA_CACHE: dict[str, str] = {}  # channel -> the browser's user agent without the headless marker
 SNAPSHOT_LINES = 700
+# Requested by the browser itself, not by the page's code: a 404 there is no error of the page under test.
+AUTO_REQUEST = re.compile(r"/favicon\.ico\b|/apple-touch-icon[\w.-]*\.png|\.map(\?|$)|/\.well-known/", re.I)
 # Development hosts: test sign-ins and test card numbers are typed only here (or on a test host the user named).
 LOCAL_HOST = re.compile(r"^(localhost|127(\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0|[\w.-]+\.localhost|[\w.-]+\.test)$", re.I)
 TEST_LABEL = re.compile(r"(^|[.-])(staging|stage|dev|test|qa|sandbox|preview|uat)(\d*)([.-])", re.I)
@@ -58,6 +60,9 @@ SNAPSHOT_JS = r"""(opts) => {
     if (el.hidden || el.getAttribute('aria-hidden') === 'true') return true;
     const s = getComputedStyle(el);
     if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return true;
+    // a screen faded out with opacity 0 (a game's HUD under its title screen) is not on screen either
+    // (not a field itself: custom checkboxes / file inputs are often opacity 0 under their styled label)
+    if (parseFloat(s.opacity) < 0.05 && !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return true;
     if (el.tagName === 'DIALOG' && !el.open) return true;
     return false;
   };
@@ -335,6 +340,23 @@ def _keys(text: str) -> list[str]:
     return out
 
 
+_STACK_AT = re.compile(r"\(?((?:https?|file)://[^\s()]+?):(\d+):(\d+)\)?")
+
+
+def _page_error(e) -> dict:
+    """An uncaught exception with its type and the place it was thrown ("ReferenceError: duration is not defined
+    at index.html:3106:21"): the message alone made the model search a 3,600-line file for the cause."""
+    name = getattr(e, "name", "") or ""
+    msg = getattr(e, "message", None) or str(e)
+    stack = getattr(e, "stack", "") or ""
+    where, url = "", ""
+    if m := _STACK_AT.search(stack):
+        url = m.group(1)
+        where = f" (at {url.rsplit('/', 1)[-1] or url}:{m.group(2)}:{m.group(3)})"
+    head = f"{name}: {msg}" if name and not msg.startswith(name) else msg
+    return {"type": "error", "text": f"Uncaught {head[:900]}{where}", "url": url, "ts": time.time()}
+
+
 class BrowserAgent:
     """One visible browser shared by the app's tasks (one action at a time), started on first use."""
 
@@ -431,6 +453,12 @@ class BrowserAgent:
             from playwright.async_api import async_playwright
         except ImportError as e:
             raise BrowserError("Playwright is not installed (run install.bat / install.sh).") from e
+        if self.pw is not None:  # the user closed the window: its Playwright driver is still running - stop it first
+            try:
+                await self.pw.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self.pw = None
         cfg = load_settings().get("browser") or {}
         no_display = sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
         self.channel = str(cfg.get("channel") or "")
@@ -531,8 +559,7 @@ class BrowserAgent:
         self.network[tid] = deque(maxlen=400)
         page.on("console", lambda m, t=tid: None if self.fast and "Failed to load resource" in m.text else self.console[t].append(
             {"type": m.type, "text": m.text[:1000], "url": (m.location or {}).get("url", ""), "ts": time.time()}))
-        page.on("pageerror", lambda e, t=tid: self.console[t].append(
-            {"type": "error", "text": f"Uncaught {str(e)[:1000]}", "url": "", "ts": time.time()}))
+        page.on("pageerror", lambda e, t=tid: self.console[t].append(_page_error(e)))
         # The status straight from the response event: request.response() came back empty for 404 / 500 answers, so
         # failed requests were listed without a status and never reported as failed.
         page.on("response", lambda r, t=tid: self._on_response(t, r))
@@ -548,6 +575,10 @@ class BrowserAgent:
             self.pages.remove(page)
         if self.active is page:
             self.active = self.pages[-1] if self.pages else None
+        tid = self.ids.get(page)
+        if tid:  # a long test opens and closes many tabs: their logs do not stay in memory
+            for d in (self.console, self.network, self.bad, self.seen_console):
+                d.pop(tid, None)
 
     def _on_response(self, tid, resp):
         """Sync with the page: a 4xx / 5xx is noted at once for the next page check (the request log fills later)."""
@@ -595,11 +626,14 @@ class BrowserAgent:
         folder = self.download_dir or (DATA_DIR / "downloads")
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / name
+        stem, suf, i = target.stem, target.suffix, 2
+        while target.exists():  # a second "report.pdf" does not overwrite the first
+            target, i = folder / f"{stem} ({i}){suf}", i + 1
         try:
             await download.save_as(str(target))
             self.downloads.append(str(target))
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - said, not hidden: the model would claim the file
+            self.downloads.append(f"FAILED {name}: {str(e).splitlines()[0][:150] if str(e) else 'download failed'}")
 
     async def _new_page(self, url: str = ""):
         page = await self.context.new_page()
@@ -638,6 +672,14 @@ class BrowserAgent:
                                    "(start tool), then open it again.") from e
             if "ERR_NAME_NOT_RESOLVED" in text:
                 raise BrowserError(f"The address {url} does not exist (name not resolved).") from e
+            if re.search(r"ERR_EMPTY_RESPONSE|ERR_CONNECTION_(RESET|CLOSED)|ERR_INVALID_HTTP_RESPONSE", text):
+                raise BrowserError(f"{url}: something listens on that port but closes every connection "
+                                   f"({re.search(r'ERR_[A-Z_]+', text).group(0)}) - usually an old, broken server left "
+                                   "from an earlier task. Start yours on another free port and open that one; do not "
+                                   "kill processes by name.") from e
+            if "ERR_CERT" in text or "SSL" in text:
+                raise BrowserError(f"{url}: the site's certificate is not valid ({text.splitlines()[0][:120]}). For a "
+                                   "local dev server use http://, not https://.") from e
             if "Timeout" in text:
                 return None  # slow page: what has loaded is still usable
             raise BrowserError(text.splitlines()[0][:300]) from e
@@ -837,11 +879,19 @@ class BrowserAgent:
         tid = self.tab_id()
         logs = list(self.console.get(tid, []))
         seen = self.seen_console.get(tid, 0)
-        errors = [m for m in logs[seen:] if m["type"] in ("error", "warning")]
+        # Requests the browser makes by itself (favicon.ico, apple-touch-icon, source maps, .well-known) are not the
+        # page's errors: a missing favicon was reported after every click with "fix these errors now" and the model
+        # kept re-checking it.
+        errors = [m for m in logs[seen:] if m["type"] in ("error", "warning")
+                  and not ("Failed to load resource" in m["text"] and AUTO_REQUEST.search(m.get("url") or ""))]
         self.seen_console[tid] = len(logs)
         # Failed requests since the last report too (a 404 script / css, a 500 API call): every page load and action
-        # says at once what broke, so it is fixed before the test goes on.
-        failed = list(dict.fromkeys(self.bad.get(tid, [])))
+        # says at once what broke, so it is fixed before the test goes on. A page that itself failed to open is
+        # already the error of that navigation: it is not reported again on the next page (localhost:8080 showed up
+        # as a failure of the page opened afterwards on 8081).
+        here = (self.active.url if self.active else "").split("#")[0]
+        failed = [f for f in dict.fromkeys(self.bad.get(tid, [])) if not AUTO_REQUEST.search(f)
+                  and not (f.split(" ")[1:2] == ["document"] and f.split(" ", 2)[-1].rstrip("/") != here.rstrip("/"))]
         self.bad.pop(tid, None)
         if errors:
             out.append(f"[{len(errors)} new console error/warning: " + " | ".join(m["text"][:200] for m in errors[:4]) + "]")
@@ -855,7 +905,8 @@ class BrowserAgent:
             out.append(f"[Dialog ({d['type']}) \"{d['message']}\" was {d['answer']}"
                        + (". To confirm it, repeat the action with dialog=accept." if d["answer"] == "dismissed" else "") + "]")
         while self.downloads:
-            out.append(f"[Downloaded: {self.downloads.pop(0)}]")
+            d = self.downloads.pop(0)
+            out.append(f"[Download {d}]" if d.startswith("FAILED") else f"[Downloaded: {d}]")
         return "\n".join(out)
 
     async def find(self, query: str, limit: int = 20) -> list[str]:

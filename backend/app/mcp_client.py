@@ -168,9 +168,11 @@ class Server:
 
     # ------------------------------------------------------------------ stdio
     async def _read_stdout(self) -> None:
-        assert self.proc and self.proc.stdout
+        proc = self.proc  # (see _read_stderr: self.proc may be cleared while this waits)
+        if not (proc and proc.stdout):
+            return
         try:
-            while line := await self.proc.stdout.readline():
+            while line := await proc.stdout.readline():
                 try:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
@@ -182,10 +184,16 @@ class Server:
                     fut.set_exception(MCPError("server exited"))
 
     async def _read_stderr(self) -> None:
-        if not (self.proc and self.proc.stderr):
+        # The process is held locally: stopping / restarting the server sets self.proc to None while this reader still
+        # waits ("'NoneType' object has no attribute 'stderr'" in the log after every restart).
+        proc = self.proc
+        if not (proc and proc.stderr):
             return
-        while line := await self.proc.stderr.readline():
-            self.stderr = (self.stderr + [line.decode(errors="replace").strip()])[-20:]
+        try:
+            while line := await proc.stderr.readline():
+                self.stderr = (self.stderr + [line.decode(errors="replace").strip()])[-20:]
+        except (OSError, ValueError, asyncio.CancelledError):
+            pass
 
     def _dispatch(self, msg: dict) -> None:
         if not isinstance(msg, dict):
@@ -336,7 +344,8 @@ def status() -> dict[str, dict]:
                   "needs_auth": bool(err and "SIGN_IN_REQUIRED" in err),
                   "signed_in": bool(oauth_data(k).get("access_token")),
                   "tools": [{"name": t["name"], "description": (t.get("description") or "")[:300],
-                             "read_only": bool((t.get("annotations") or {}).get("readOnlyHint"))} for t in (s.tools if s else [])]}
+                             "read_only": bool((t.get("annotations") or {}).get("readOnlyHint")),
+                             "input_schema": t.get("inputSchema") or {}} for t in (s.tools if s else [])]}
     return out
 
 
@@ -351,10 +360,42 @@ def _schema_hint(schema: dict) -> str:
     return "{" + ", ".join(bits) + "}"
 
 
-def prompt_section() -> str:
+def picked_tools(request: str) -> list[tuple[str, str]]:
+    """'server/tool' names in the request (the composer's MCP tool chip, or typed) whose server is configured."""
+    # A #server/tool chip or the MCP mode chip's "server/tool MCP ..." names a tool even when that server is not
+    # installed (then the model is told so); a bare "a/b" counts only when "a" is a configured server.
+    cfg = servers_cfg()
+    out = []
+    for m in re.finditer(r"(#?)\b([a-z0-9_-]{1,32})/([A-Za-z0-9_.-]{1,64})\b(\s+MCP\b)?", request or ""):
+        if m.group(1) or m.group(4) or m.group(2) in cfg:
+            out.append((m.group(2), m.group(3)))
+    return list(dict.fromkeys(out))
+
+
+def prompt_section(request: str = "") -> str:
     tools = available_tools()
+    picked = picked_tools(request)
+    # the tool the user picked goes first (never cut by the 80-tool limit) with its whole argument list
+    first = [(k, t) for k, t in tools if (k, t["name"]) in picked]
+    tools = first + [x for x in tools if x not in first]
+    missing = [f"{s}/{t}" for s, t in picked if not any(k == s and x["name"] == t for k, x in tools)]
+    note = ""
+    if missing:  # picked, but its server is off / failed / has no such tool: say it once, no guessing, no retries
+        from .mcp_catalog import CATALOG
+        cfg = servers_cfg()
+        ready = []  # not installed but in the ready catalog: the model can connect it itself
+        for s in dict.fromkeys(x.split("/")[0] for x in missing):
+            c = next((e for e in CATALOG if e["id"] == s and not e.get("auth")), None)
+            if c and s not in cfg:
+                ready.append(f'mcp_add {{"id": "{s}", ' + (f'"url": "{c["url"]}"' if c["transport"] == "http" else
+                             f'"command": "{c["command"]}", "args": {json.dumps(c["args"].split())}') + "}")
+        note = ("\nNOT AVAILABLE now: " + ", ".join(missing) + " (its server is not installed / not running, or has no "
+                "such tool). Do not pretend to call it and do not repeat yourself. "
+                + ("It is a ready server: connect it with " + "; ".join(ready) + ", then call the tool. " if ready else
+                   "Tell the user in one sentence to switch it on or add it in Settings > MCP, then answer what you "
+                   "can without it."))
     if not tools:
-        return ""
+        return ("# MCP tools" + note) if note else ""
     lines = [f"- {k}/{t['name']}: {(t.get('description') or '').strip().splitlines()[0][:200] if t.get('description') else ''} "
              f"args {_schema_hint(t.get('inputSchema') or {})}" for k, t in tools[:80]]
     s0, t0 = tools[0]
@@ -362,7 +403,8 @@ def prompt_section() -> str:
     return ("# MCP tools (external servers the user connected)\nCall them with the mcp tool: server, tool and EVERY "
             "required argument (no ?) inside arguments, e.g. mcp {\"server\": \"" + s0 + "\", \"tool\": \"" + t0["name"]
             + "\", \"arguments\": " + json.dumps(ex) + "}. Prefer them over improvised scripts when they fit the "
-            "task.\n" + "\n".join(lines))
+            "task." + (" The user picked " + ", ".join(f"{k}/{t['name']}" for k, t in first) + ": call it." if first else "")
+            + note + "\n" + "\n".join(lines))
 
 
 def find_tool(server: str, tool: str) -> dict | None:

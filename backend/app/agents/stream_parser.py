@@ -14,7 +14,9 @@ import re
 from dataclasses import dataclass
 
 # opener -> closer; longer/more specific openers first
-TAGS = [("<tool_call>", "</tool_call>"), ("<function=", "</function>"), ("<tools ", "</tools>"), ("<tools=", "</tools>"),
+DSML = "｜DSML｜"  # DeepSeek's markup: <｜DSML｜invoke name="x"><｜DSML｜parameter name="k" string="true">v</｜DSML｜parameter>
+TAGS = [(f"<{DSML}invoke ", f"</{DSML}invoke>"),
+        ("<tool_call>", "</tool_call>"), ("<function=", "</function>"), ("<tools ", "</tools>"), ("<tools=", "</tools>"),
         ("<tool=", "</tool>"), ("<tool ", "</tool>"), ("<tool>", "</tool>"),
         ("<think>", "</think>"), ("<thinking>", "</thinking>"), ("<reasoning>", "</reasoning>"),
         ("<|channel|>analysis<|message|>", "<|end|>"),  # gpt-oss (harmony) reasoning channel
@@ -22,8 +24,12 @@ TAGS = [("<tool_call>", "</tool_call>"), ("<function=", "</function>"), ("<tools
 HARMONY_RUN = re.compile(r"(?:<\|\w+\|>[\w .=]*)*(?:<\|?\w*\|?)?")  # complete or partial control-token run
 THINK_OPENERS = {"<think>", "<thinking>", "<reasoning>", "<|channel|>analysis<|message|>"}
 # Closing tags without an opener, and harmony control tokens around the final answer: never shown.
+# Also the pieces of other call formats that a model leaves around its text (seen in notes: "...doğruluyorum.
+# </parameter>", a note that was only "</tool>", DeepSeek's <｜DSML｜function_calls> wrapper).
 STRAY = re.compile(r"</?tool_call>|</function>|<\|start\|>assistant|<\|channel\|>\w+(?: to=[\w.]+)?"
-                   r"(?:\s*<\|constrain\|>\w+)?<\|message\|>|<\|(?:end|return|start|call)\|>")
+                   r"(?:\s*<\|constrain\|>\w+)?<\|message\|>|<\|(?:end|return|start|call)\|>"
+                   r"|</parameter>|<parameter=[\w.-]+>|</tools?>|</?arg_(?:key|value)>|</?invoke\b[^>\n]{0,80}>"
+                   r"|</?｜DSML｜[\w]*[^>\n]{0,80}>|<｜[\w▁ ]{1,40}｜>")
 # A reasoning closer with no opener: the template opened the block in the prompt (DeepSeek-R1 / QwQ style), so
 # everything shown before it was reasoning.
 LONE_CLOSE = re.compile(r"</(?:think|thinking|reasoning)>")
@@ -34,8 +40,79 @@ ATTR = re.compile(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
 
 def attrs(text: str) -> dict:
     return {k: html.unescape(a if a or not b else b) for k, a, b in ATTR.findall(text or "")}
+
+
+# Arguments that hold a whole file, an edit or a command. Weak models put them into the opening tag as an attribute
+# (<tool name="write_file" path="a.js" content="...">) instead of between the tags. Such a value holds quotes and
+# '>' of its own (SVG, HTML, arrow functions): read like a short attribute it ended at the first quote, the rest
+# became the body, and every write of app.js stopped at  cart: '<svg viewBox=  (seen live, a dozen times in a row).
+BIG_ATTRS = ("content", "edits", "command", "code", "old", "new", "items", "text", "body", "patch", "diff",
+             "old_string", "new_string", "search", "replace", "script", "html", "markdown", "query")
+_BIG_OPEN = re.compile(r'^<([\w.-]+)((?:\s+[\w.-]+\s*=\s*(?:"[^"\n]*"|\'[^\'\n]*\'))*)\s+(' + "|".join(BIG_ATTRS)
+                       + r')\s*=\s*(["\'])', re.S)
+_TAIL_ATTR = re.compile(r'\s+([\w.-]+)\s*=\s*(?:"([^"\n]{0,300})"|\'([^\'\n]{0,300})\')\s*$')
+_PAIR_SPLIT = re.compile(r'(["\'])\s+(new|new_string|replace|replacement|updated|after)\s*=\s*(["\'])', re.S)
+
+
+def _unescape_big(value: str, quote: str) -> str:
+    """A value written with JSON-style escapes (one long line with \\n in it) becomes real text again."""
+    if "\n" not in value and ("\\n" in value or "\\t" in value):
+        value = (value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+                 .replace("\\" + quote, quote).replace("\\\\", "\\"))
+    elif quote == '"' and '"' not in value and "&quot;" in value:
+        value = value.replace("&quot;", '"')
+    return value
+
+
+def big_attr_call(raw: str) -> tuple[str, dict, str] | None:
+    """(tag, args, body) of a tag whose big argument (content=, command=, old=/new= ...) was written as an attribute.
+    The value runs to the last quote before the tag's end; short attributes after it (append="true") are kept."""
+    m = _BIG_OPEN.match(raw.strip())
+    if not m:
+        return None
+    tag, before, key, quote = m.group(1), m.group(2), m.group(3), m.group(4)
+    rest = raw.strip()[m.end():]
+    if rest.startswith(quote):
+        return None  # content="" and the text between the tags: the ordinary parse is right
+    body = ""
+    rest = re.sub(r"\s*</(?:%s|tool|tools)>\s*$" % re.escape(tag), "", rest)
+    # A real body after the opening tag (content="..." and then the file between the tags as well): the body wins
+    # unless it is empty; the attribute value ends at the quote right before that '>'.
+    tail: dict = {}
+    if rest.rstrip().endswith("/>"):
+        rest = rest.rstrip()[:-2]
+    elif rest.rstrip().endswith(">"):
+        rest = rest.rstrip()[:-1]
+    else:
+        close = rest.rfind(quote + ">")
+        if close < 0:
+            return None
+        rest, body = rest[:close + 1], rest[close + 2:]
+    while (t := _TAIL_ATTR.search(rest)) and t.start() > 0:
+        # peel short attributes written after the big one (append="true"); a value of the big one itself that looks
+        # like one (fill="none" at the very end of an SVG) cannot be told apart and stays only if nothing else fits
+        if not rest[:t.start()].rstrip().endswith(quote):
+            break
+        tail[t.group(1)] = t.group(2) if t.group(2) is not None else t.group(3)
+        rest = rest[:t.start()]
+    rest = rest.rstrip()
+    if not rest.endswith(quote):
+        return None
+    value = rest[:-1]
+    args = attrs(before)
+    args.update({k: html.unescape(v) for k, v in tail.items()})
+    if key in ("old", "old_string", "search") and (p := list(_PAIR_SPLIT.finditer(value))):
+        # old="..." new="...": both are big; the last  " new="  splits them
+        cut = p[-1]
+        args[key] = _unescape_big(value[:cut.start()], quote)
+        args[cut.group(2)] = _unescape_big(value[cut.end():], cut.group(3))
+    else:
+        args[key] = _unescape_big(value, quote)
+    return tag, args, body
 MAX_OPEN = max(len(o) for o, _ in TAGS)
 CLOSERS = ("</tool_call>", "</function>", "</think>", "</thinking>", "</reasoning>")
+STRAY_HEADS = ("</parameter>", "<parameter=", "</tool>", "</tools>", f"<{DSML}", f"</{DSML}", "</arg_", "<arg_",
+               "</invoke", "<invoke", "<｜")
 
 
 @dataclass
@@ -63,8 +140,27 @@ def _normalize(raw: str) -> str:
     return re.sub(r"</tools>\s*$", "</tool>", raw)
 
 
+def _dsml(raw: str) -> ToolCall | None:
+    m = re.match(r'<｜DSML｜invoke\s+name\s*=\s*"([\w.-]+)"\s*>(.*?)(?:</｜DSML｜invoke>)?\s*$', raw, re.S)
+    if not m:
+        return None
+    params = {}
+    for k, s, v in re.findall(r'<｜DSML｜parameter\s+name\s*=\s*"([\w.-]+)"([^>]*)>(.*?)</｜DSML｜parameter>',
+                              m.group(2), re.S):
+        if 'string="false"' in s:
+            try:
+                params[k] = json.loads(v)
+                continue
+            except json.JSONDecodeError:
+                pass
+        params[k] = v
+    return ToolCall(m.group(1), {}, "", params)
+
+
 def parse_tool(raw: str, names: set[str] | frozenset[str] = frozenset()) -> ToolCall | None:
     raw = _normalize(raw.strip())
+    if raw.startswith(f"<{DSML}invoke"):
+        return _dsml(raw)
     if names and (call := parse_named(raw, names)):
         return call
     if raw.startswith("<|channel|>commentary to="):  # harmony: to=functions.NAME ... <|message|>{json}<|call|>
@@ -100,6 +196,10 @@ def parse_tool(raw: str, names: set[str] | frozenset[str] = frozenset()) -> Tool
             except json.JSONDecodeError:
                 args = {"_raw": args}
         return ToolCall(d.get("name", ""), {}, "", args) if d.get("name") else None
+    if raw.startswith("<tool") and (big := big_attr_call(raw)):
+        args = big[1]
+        name = args.pop("name", "")
+        return ToolCall(name, args, big[2]) if name else None
     m = re.match(r"<tool\b([^>]*)>(.*?)(?:</tool>)?\s*$", raw, re.S)
     if not m:
         return None
@@ -118,7 +218,7 @@ def _is_call(block: str) -> bool:
 # Raw tool syntax that must never reach the user (any model, any provider).
 LEAK = re.compile(r"<parameter=|<function=|</?tool_call>|\[TOOL_CALLS\]|<\|tool_call|<tool\s+name=|\"arguments\"\s*:\s*\{|"
                   r"<tools?\s*=|</?tools\b|\[/?tools?(\s*name)?\s*=|\[/tools?\]|"
-                  r"<\|channel\|>|<\|message\|>",
+                  r"<\|channel\|>|<\|message\|>|<｜DSML｜",
                   re.I)
 
 
@@ -225,6 +325,8 @@ def cli_calls(text: str, tool_names: set[str]) -> tuple[list[ToolCall], str]:
 def parse_named(raw: str, names: set[str] | frozenset[str]) -> ToolCall | None:
     """A tool written as its own tag, as weak models do: <research query="..."></research>, <run>dir</run>,
     <web_search query="x"/>. Attributes are the arguments, the inner text is the main argument."""
+    if (big := big_attr_call(raw)) and big[0] in names:
+        return ToolCall(big[0], big[1], big[2])
     m = re.match(r"<([\w-]+)\b([^>]*?)(/?)>(.*?)(?:</\1>)?\s*$", raw.strip(), re.S)
     if not m or m.group(1) not in names:
         return None
@@ -272,6 +374,11 @@ class StreamSplitter:
                 return start
             start = self.buf.find("<|", start + 2)
         if any(o.startswith(tail) for o, _ in self.tags) or any(c.startswith(tail) for c in CLOSERS):
+            return cut
+        # A stray piece of call syntax split between two chunks ("</pa" + "rameter>") is held until it is whole, so
+        # STRAY can take it out; otherwise each half went to the chat as text.
+        if any(h.startswith(tail) for h in STRAY_HEADS) or (
+                len(tail) < 100 and ">" not in tail and any(tail.startswith(h) for h in STRAY_HEADS)):
             return cut
         return -1
 
@@ -340,6 +447,9 @@ class StreamSplitter:
             out = []
             self._visible(out, rest)
             return out
+        if self.open and self.open[0] in ("<tool ", "<tools ") and rest.rstrip().endswith("/>") \
+                and parse_tool(rest.rstrip(), self.names):
+            return [("tool", rest.rstrip())]  # <tool name="write_file" path="a" content="..."/>: complete, self-closed
         if self.open:
             return [("tool_incomplete", rest + self.open[1])]
         out = []

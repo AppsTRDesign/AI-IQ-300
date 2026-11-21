@@ -218,7 +218,32 @@ async def inspect(path: Path, work: Path, model: str, question: str = "", lang: 
             except Exception as e:  # no model download possible, a broken stream...
                 res["transcript"] = f"(speech to text failed: {str(e)[:150]})"
         return res
-    raise ValueError(f"not an image, video or audio file: {path.name}")
+    if ext == ".pdf":
+        # How a generated document looks (models wrote PyMuPDF scripts to render a page and look at it): the first
+        # pages side by side in one picture, inspected like any image (colours, OCR text, the vision description).
+        def sheet() -> tuple[Path, int]:
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(str(path))
+            pages = [doc[i].render(scale=1.4).to_pil().convert("RGB") for i in range(min(3, len(doc)))]
+            w = sum(p.width for p in pages) + 12 * (len(pages) - 1)
+            out = Image.new("RGB", (w, max(p.height for p in pages)), "#d9d9d9")
+            x = 0
+            for p in pages:
+                out.paste(p, (x, 0))
+                x += p.width + 12
+            target = work / "screenshots" / f"{path.stem}-pages.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            out.save(target)
+            return target, len(doc)
+        pic, n = await asyncio.to_thread(sheet)
+        img = Image.open(pic)
+        res.update(kind="pdf", pages=n, sheet=str(pic), size=f"{img.width}x{img.height}")
+        res.update(await asyncio.to_thread(_image_facts, img))
+        seen = await describe_for("", pic, (question + " (the first pages of a PDF document, side by side)").strip(),
+                                  budget=60)
+        _vision(res, seen)
+        return res
+    raise ValueError(f"not an image, video, audio or PDF file: {path.name}")
 
 
 def report(res: dict) -> str:

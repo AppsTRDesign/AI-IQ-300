@@ -66,9 +66,26 @@ def _b64_json(sid: str, r: httpx.Response, pick) -> bytes:
     return base64.b64decode(b64)
 
 
+async def _model(sid: str) -> str:
+    from . import mediamodels
+    return await mediamodels.current("image", sid)
+
+
 async def _gemini(c: httpx.AsyncClient, prompt: str, w: int, h: int, seed: int | None) -> bytes:
     key = get_secret("gemini_api_key") or ""
-    r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+    model = await _model("gemini") or GEMINI_MODEL
+    base = "https://generativelanguage.googleapis.com/v1beta/models/"
+    if model.startswith("imagen"):  # Imagen: the predict API, aspect ratio instead of pixels
+        r = await c.post(f"{base}{model}:predict", headers={"x-goog-api-key": key},
+                         json={"instances": [{"prompt": prompt}],
+                               "parameters": {"sampleCount": 1, "aspectRatio": _ratio(w, h) if _ratio(w, h) in
+                                              ("1:1", "3:4", "4:3", "9:16", "16:9") else "1:1"}})
+        services.check("gemini", r)
+        preds = r.json().get("predictions") or []
+        if preds and preds[0].get("bytesBase64Encoded"):
+            return base64.b64decode(preds[0]["bytesBase64Encoded"])
+        raise ServiceError("no picture in the answer (the prompt may have been filtered)")
+    r = await c.post(f"{base}{model}:generateContent",
                      headers={"x-goog-api-key": key},
                      json={"contents": [{"parts": [{"text": prompt}]}],
                            "generationConfig": {"responseModalities": ["IMAGE"]}})
@@ -86,14 +103,28 @@ async def _cloudflare(c: httpx.AsyncClient, prompt: str, w: int, h: int, seed: i
         ((load_settings().get("providers") or {}).get("cloudflare") or {}).get("account_id") or ""
     if not account:
         raise ServiceError("no Cloudflare account id (Settings > Web > Image services)")
-    r = await c.post(f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{CF_MODEL}",
-                     headers={"Authorization": f"Bearer {key}"}, json={"prompt": prompt, "steps": 4})
+    model = await _model("cloudflare") or CF_MODEL
+    body = {"prompt": prompt}
+    if "flux-1-schnell" in model:
+        body["steps"] = 4
+    else:
+        body.update({"width": min(w, 1024), "height": min(h, 1024)})
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}"
+    if "flux-2" in model:  # FLUX.2 on Workers AI takes multipart form fields, not JSON
+        r = await c.post(url, headers={"Authorization": f"Bearer {key}"},
+                         files={"prompt": (None, prompt), "width": (None, str(min(w, 1024))),
+                                "height": (None, str(min(h, 1024)))})
+    else:
+        r = await c.post(url, headers={"Authorization": f"Bearer {key}"}, json=body)
+    if r.status_code < 400 and r.headers.get("content-type", "").startswith("image/"):  # SDXL models answer a PNG
+        services.note_headers("cloudflare", r.headers)
+        return r.content
     return _b64_json("cloudflare", r, lambda d: d["result"]["image"])
 
 
 async def _together(c: httpx.AsyncClient, prompt: str, w: int, h: int, seed: int | None) -> bytes:
     key = get_secret("together_api_key") or ""
-    body = {"model": TOGETHER_MODEL, "prompt": prompt, "width": min(w, 1440), "height": min(h, 1440), "steps": 4,
+    body = {"model": await _model("together") or TOGETHER_MODEL, "prompt": prompt, "width": min(w, 1440), "height": min(h, 1440), "steps": 4,
             "n": 1, "response_format": "b64_json"}
     if seed is not None:
         body["seed"] = seed
@@ -103,8 +134,13 @@ async def _together(c: httpx.AsyncClient, prompt: str, w: int, h: int, seed: int
 
 async def _openai(c: httpx.AsyncClient, prompt: str, w: int, h: int, seed: int | None) -> bytes:
     key = get_secret("openai_api_key") or ""
+    model = await _model("openai") or "gpt-image-1"
+    body = {"model": model, "prompt": prompt, "size": _size_openai(w, h), "n": 1}
+    if model == "dall-e-3":  # DALL-E 3 sizes, and base64 must be asked for
+        body.update(size={"1024x1536": "1024x1792", "1536x1024": "1792x1024"}.get(body["size"], "1024x1024"),
+                    response_format="b64_json")
     r = await c.post("https://api.openai.com/v1/images/generations", headers={"Authorization": f"Bearer {key}"},
-                     json={"model": "gpt-image-1", "prompt": prompt, "size": _size_openai(w, h), "n": 1})
+                     json=body)
     return _b64_json("openai", r, lambda d: d["data"][0]["b64_json"])
 
 
@@ -113,7 +149,7 @@ async def _huggingface(c: httpx.AsyncClient, prompt: str, w: int, h: int, seed: 
     params = {"width": min(w, 1440), "height": min(h, 1440)}
     if seed is not None:
         params["seed"] = seed
-    r = await c.post(f"https://router.huggingface.co/hf-inference/models/{HF_MODEL}",
+    r = await c.post(f"https://router.huggingface.co/hf-inference/models/{await _model('huggingface') or HF_MODEL}",
                      headers={"Authorization": f"Bearer {key}", "Accept": "image/png"},
                      json={"inputs": prompt, "parameters": params})
     return _image_bytes("huggingface", r)
@@ -124,7 +160,9 @@ async def _stability(c: httpx.AsyncClient, prompt: str, w: int, h: int, seed: in
     fields = {"prompt": (None, prompt), "output_format": (None, "png"), "aspect_ratio": (None, _ratio(w, h))}
     if seed is not None:
         fields["seed"] = (None, str(seed))
-    r = await c.post(STABILITY_URL, headers={"Authorization": f"Bearer {key}", "Accept": "image/*"}, files=fields)
+    model = await _model("stability") or "core"
+    url = STABILITY_URL.rsplit("/", 1)[0] + "/" + (model if model in ("core", "ultra", "sd3") else "core")
+    r = await c.post(url, headers={"Authorization": f"Bearer {key}", "Accept": "image/*"}, files=fields)
     return _image_bytes("stability", r)
 
 
@@ -148,7 +186,8 @@ async def _pollinations(c: httpx.AsyncClient, prompt: str, width: int, height: i
             r = await c.get(BASE + quote(prompt[:1500], safe=""), params=params, headers=headers)
             if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
                 return r.content
-            last = f"HTTP {r.status_code}: {r.text[:150]}"
+            from ..llm.providers import message_of
+            last = f"HTTP {r.status_code}: {(message_of(r.text[:4000]) or r.text)[:200]}"
         except httpx.HTTPError as e:
             last = str(e)[:150]
     raise RuntimeError(last or "no image")

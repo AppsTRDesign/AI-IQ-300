@@ -61,7 +61,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "search": {"google_cx": "", "yandex_folder": "", "searxng_url": "", "disabled": []},
     "maps": {"disabled": []},  # place search providers switched off (google, yandex, osm)
     # Image services switched off (ids from tools/services.py) and the Cloudflare account id the FLUX service needs.
-    "media": {"disabled": [], "cloudflare_account": ""},
+    "media": {"disabled": [], "cloudflare_account": "", "models": {}},
+    # Image-to-video services switched off and the model chosen per service (empty: its default, see mediamodels.py)
+    "video": {"disabled": [], "models": {}},
+    # Voices (backend/app/voice): default voice per language, tone (rate / pitch semitones / emotion / pause between
+    # sentences), the studio finish (none | natural | podcast | broadcast | video | warm), the engine order used when
+    # a voice fails, engines switched off and the user's own reference clips for Chatterbox (with consent).
+    "voice": {"defaults": {}, "rate": 1.0, "pitch": 0.0, "emotion": 0.5, "pause": 0.3, "studio": "natural",
+              "room": False, "order": ["piper", "kokoro", "chatterbox", "edge"], "disabled": [], "quality": "fast"},
     "stock": {"disabled": [], "unsplash_app_id": ""},  # photo services switched off (pexels, pixabay, unsplash)
     "fallback_model": "",  # cloud_fallback: the model used when the selected provider cannot be reached
     # Multi-model (cloud only): pool [{model, tags}], per-agent models, per-provider 5 h / weekly limits.
@@ -102,6 +109,9 @@ def _read(path: Path) -> dict:
         return {}
 
 
+DIRECT_NOW = {"minimax", "moonshot", "zai", "requesty", "vercel", "poe", "baseten"}
+
+
 def _clean(s: dict) -> dict:
     s["providers"] = {k: v for k, v in s["providers"].items() if v}  # None = removed by user
     s["model_profiles"] = {k: v for k, v in (s.get("model_profiles") or {}).items() if v}
@@ -115,6 +125,12 @@ def _clean(s: dict) -> dict:
             cfg.pop("auth_header", None)
         if not cfg.get("base_url") and defaults.get(pid, {}).get("base_url"):  # Cloudflare has no fixed URL
             cfg["base_url"] = defaults[pid]["base_url"]
+        # Providers that were offered only through a local LiteLLM gateway now have their own OpenAI-compatible
+        # address: a saved gateway default (never changed by the user) moves to it.
+        if (pid in DIRECT_NOW and cfg.get("base_url") == "http://127.0.0.1:4000/v1"
+                and defaults.get(pid, {}).get("base_url") != cfg["base_url"]):
+            cfg["base_url"] = defaults[pid]["base_url"]
+            cfg["name"] = defaults[pid].get("name", cfg.get("name"))
     return s
 
 

@@ -92,11 +92,13 @@ async def capture(url: str, out: Path, *, device: str = "desktop", width: int | 
                 elif not r.url.startswith("file:"):
                     problems.append(f"failed to load: {r.url[:160]} ({r.failure or 'error'})")
 
-            page.on("pageerror", lambda e: problems.append(f"JS error: {str(e).splitlines()[0][:200]}"))
-            page.on("console", lambda m: m.type == "error" and "ERR_FILE_NOT_FOUND" not in m.text
-                    and problems.append(f"console error: {m.text[:200]}"))
+            from .browser import AUTO_REQUEST, _page_error
+            page.on("pageerror", lambda e: problems.append("JS error: " + _page_error(e)["text"].removeprefix("Uncaught ")[:240]))
+            page.on("console", lambda m: m.type == "error" and "ERR_FILE_NOT_FOUND" not in m.text and not (
+                "Failed to load resource" in m.text and AUTO_REQUEST.search((m.location or {}).get("url", "")))
+                and problems.append(f"console error: {m.text[:200]}"))
             page.on("requestfailed", failed)
-            page.on("response", lambda r: r.status >= 400 and "favicon" not in r.url and problems.append(f"HTTP {r.status}: {r.url[:160]}"))
+            page.on("response", lambda r: r.status >= 400 and not AUTO_REQUEST.search(r.url) and problems.append(f"HTTP {r.status}: {r.url[:160]}"))
             resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=8000)

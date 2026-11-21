@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -130,6 +131,28 @@ def refresh() -> None:
     with _LOCK:
         _INFO = None
     warm()
+
+
+def clean_text(s: str) -> str:
+    """Text Windows' C runtime gave back (time zone names, month / day names from strftime): after a library changed
+    the process locale, "Türkiye Standart Saati" came back as "T\\udcfcrkiye..." and every model request with it in the
+    prompt failed ("surrogates not allowed"). The bytes are decoded again in the system's code page, else dropped."""
+    if not any(0xD800 <= ord(c) <= 0xDFFF for c in s or ""):
+        return s
+    raw = s.encode("utf-8", "surrogateescape")
+    import locale
+    for enc in (locale.getpreferredencoding(False), "cp1254", "cp1252"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+def tz_name() -> str:
+    """This computer's time zone name, safe to send anywhere (its UTC offset when the name is not readable)."""
+    name = clean_text(time.strftime("%Z"))
+    return name or time.strftime("%z")
 
 
 def os_line() -> str:

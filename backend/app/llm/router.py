@@ -13,7 +13,7 @@ from typing import AsyncIterator, Callable
 
 import httpx
 
-from ..config import DATA_DIR, get_secret, load_settings
+from ..config import DATA_DIR, get_secret, load_settings, save_settings
 from ..events import bus
 from . import modelstats, usage
 from .providers import ADAPTERS, VISION_HINT, Capabilities, OllamaProvider, Provider, ProviderError
@@ -105,6 +105,9 @@ def effort_spec(model_id: str, m: dict, settings: dict | None = None) -> dict:
     elif kind == "gemini" and (thinking or re.search(r"gemini-(2\.5|[3-9])", name)):
         return api((["off"] if "flash" in name else []) + ["low", "medium", "high"])  # thinkingBudget
     elif kind == "openai":
+        if "generativelanguage.googleapis.com" in url and (thinking or re.search(r"gemini-(2\.5|[3-9])", name)):
+            # Gemini's OpenAI-compatible reasoning_effort ("none" turns thinking off on Flash models)
+            return api((["off"] if "flash" in name else []) + ["low", "medium", "high"])
         if "openrouter" in url and thinking:
             return api(["off", "minimal", "low", "medium", "high"])  # OpenRouter reasoning.effort
         if "api.openai.com" in url and re.search(r"(^|/)(o[134]|gpt-5)", name):
@@ -200,6 +203,7 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
     started = False
     chunks, max_gap = 0, 0.0
     last_kind = None  # type of the latest event (text, thinking, tool_call_progress...)
+    last_ping = 0.0  # the latest SSE keep-alive: the server still holds this request open
     try:
         while True:
             if pending is None:
@@ -209,6 +213,7 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
                 # A keep-alive (SSE comment) keeps the connection open but carries nothing: it must not reset the
                 # silence clock, or a provider that pings while it writes a tool call never hits the stall limit.
                 pending, done = None, set()
+                last_ping = time.monotonic()
             if not done:
                 idle = time.monotonic() - last_data
                 limit = max_silence if started else (first_silence or max_silence)
@@ -222,13 +227,16 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
                     # follows this stream's own pace: 10 x its longest gap so far, at least 45 s.
                     # Not after reasoning: a provider that sends a tool call only when it is complete (EVREN) is
                     # silent between the last thought and the call, and that silence was cut as a stall at 46 s.
-                    paced = max(45.0, max_gap * 10) < limit
-                    limit = min(limit, max(45.0, max_gap * 10))
+                    # (EVREN sends file arguments in batches 5-12 s apart, more under load: at least 90 s.)
+                    paced = max(90.0, max_gap * 10) < limit
+                    limit = min(limit, max(90.0, max_gap * 10))
                 if limit and idle >= limit:
-                    raise ProviderError("timeout", f"{name}: no data for {int(idle)} s "
+                    # Mid-answer it is a stalled stream (what was written is kept and continued), not a busy provider
+                    raise ProviderError("stalled" if started else "timeout", f"{name}: no data for {int(idle)} s "
                                         f"({'stalled mid-answer' if started else 'no first token'}; limit {int(limit)} s"
                                         + (", from this stream's own pace)" if paced else " in Settings > Agent)"))
-                yield {"type": "idle", "seconds": int(idle)}
+                yield {"type": "idle", "seconds": int(idle),
+                       "keepalive": int(time.monotonic() - last_ping) if last_ping else None}
                 continue
             fut, pending = pending, None
             now = time.monotonic()
@@ -319,6 +327,7 @@ async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = N
     caller = dict(opts or {})  # without this model's profile: a fallback model applies its own
     # lane "side": a background job (chat title) that must never overlap a task's own request on that provider.
     lane = caller.pop("lane", "main")
+    retired_retry = caller.pop("_retired_retry", False)  # already the successor of a retired model: no second hop
     opts = dict(caller)
     pname, model = split_model_id(model_id)
     if "num_ctx" not in opts and (n := load_settings()["context"]["num_ctx"].get(model_id)):
@@ -375,6 +384,35 @@ async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = N
                 _MAIN_ACTIVE[pname] = max(0, _MAIN_ACTIVE.get(pname, 1) - 1)
         usage.record(model_id, tokens["input"], tokens["output"])  # quota windows (5 h / week)
     except ProviderError as e:
+        if e.code == "model_retired" and prov is not None and not retired_retry:
+            # The provider retired this model for new users and usually names the successor ("Please update your
+            # code to use models/gemini-3.8-flash"): it is hidden from the lists, the request goes to the successor,
+            # and an active-model choice of the old name is moved to it - the user never sees a dead model again.
+            from .providers import mark_retired
+            m = re.search(r"\buse\s+(?:models/)?([A-Za-z0-9][\w.\-]+[\w])", str(e))
+            successor = m.group(1) if m and m.group(1) != model.removeprefix("models/") else ""
+            mark_retired(prov.cfg, model, successor)
+            invalidate_models(pname)
+            if successor:
+                new_id = f"{pname}:{successor}"
+                if load_settings().get("active_model") == model_id:
+                    save_settings({"active_model": new_id})
+                if on_fallback:
+                    on_fallback(new_id)
+                async for evt in stream_chat(new_id, messages, {**caller, "lane": lane, "_retired_retry": True}, cancel,
+                                             on_fallback):
+                    yield evt
+                return
+        if (e.code == "bad_request" and re.search(r"reasoning is mandatory|cannot be disabled|thinking.*(required|cannot)", str(e), re.I)
+                and (caller.get("think") is False or caller.get("effort") == "off" or caller.get("no_think"))):
+            # A model whose reasoning cannot be switched off (OpenRouter: "Reasoning is mandatory for this endpoint"):
+            # the same request again with its reasoning left on, instead of a failed turn.
+            fixed = {k: v for k, v in caller.items() if k not in ("think", "no_think")}
+            if fixed.get("effort") == "off":
+                fixed.pop("effort")
+            async for evt in stream_chat(model_id, messages, {**fixed, "lane": lane}, cancel, on_fallback):
+                yield evt
+            return
         if e.code in ("overloaded", "rate_limit"):
             provider_busy(pname)
         usage.fail(model_id, e.code, str(e), usage.reset_hint(prov.base_url) if prov else None)
@@ -390,6 +428,48 @@ async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = N
                 yield evt
             return
         raise
+
+
+async def ping(model_id: str, timeout: float = 20.0) -> dict:
+    """Liveness probe while a task's stream is silent: a separate, tiny request (1 token, no reasoning) to the same
+    model on a NEW connection. It tells the cases apart that silence alone cannot:
+      alive - the provider answers a new request at once (also with 429 / quota: it is there): our stream is stuck
+              (a dropped connection a proxy / NAT never closed, or a generation the server lost);
+      slow  - no answer within `timeout`: the provider is overloaded, the model may still be working - keep waiting;
+      sick  - it answers with a server error (5xx): our stream will not come back either;
+      down  - it cannot be reached (connection / DNS): this computer or the provider is offline.
+    Returns {"state": ..., "ms": int, "error": str}. Bypasses the provider's slot limit on purpose (it must not wait
+    for the very stream it checks)."""
+    pname, model = split_model_id(model_id)
+    t0 = time.monotonic()
+    try:
+        prov = get_provider(pname)
+    except Exception as e:  # noqa: BLE001
+        return {"state": "down", "ms": 0, "error": str(e)}
+
+    async def one() -> None:
+        async for evt in prov.stream(model, [{"role": "user", "content": "ping"}],
+                                     {"max_tokens": 1, "think": False, "no_think": True, "effort": "off"}):
+            if evt.get("type") in ("text", "thinking", "usage", "tool_call", "tool_call_start", "done"):
+                return
+    try:
+        await asyncio.wait_for(one(), timeout)
+        state, err = "alive", ""
+    except asyncio.TimeoutError:
+        state, err = "slow", f"no answer to a 1-token request in {int(timeout)} s"
+    except ProviderError as e:
+        err = str(e)
+        state = ("alive" if e.code in ("rate_limit", "quota", "payment", "auth", "plan_required", "bad_request",
+                                      "context", "invalid")
+                 else "sick" if e.code in ("server", "bad_gateway", "overloaded")
+                 else "slow" if e.code == "timeout" else "down")
+    except httpx.TimeoutException as e:
+        state, err = "slow", type(e).__name__
+    except httpx.HTTPError as e:
+        state, err = "down", f"{type(e).__name__}: {e}"
+    except Exception as e:  # noqa: BLE001 - a probe never breaks the task
+        state, err = "slow", f"{type(e).__name__}: {e}"
+    return {"state": state, "ms": int((time.monotonic() - t0) * 1000), "error": err[:300]}
 
 
 async def complete(model_id: str, messages: list[dict], opts: dict | None = None,
@@ -562,7 +642,14 @@ def native_tools(model_id: str, info: dict) -> bool:
         # CPU model was 5-10 minutes of silence (nothing visible, everything lost on a drop). The text protocol streams
         # the file as it is written (live progress, resumable). Model profile "native" turns function calling back on.
         return False
-    return prov.native_tools and (forced == "native" or info.get("tools") is not False) and model_id not in _NO_NATIVE_TOOLS
+    if forced != "native" and not streams_tool_args(model_id):
+        # One rule for every provider and model, nothing learned per model: native function calling only where the
+        # provider is known to stream a call's arguments live (EVREN). Anywhere else a long file written as a native
+        # call is minutes of silence ("preparing... the provider sends it when complete"), invisible to the user and
+        # lost whole on any break. The text protocol streams every file as it is written and can be continued.
+        return False
+    return (prov.native_tools and (forced == "native" or info.get("tools") is not False) and model_id not in _NO_NATIVE_TOOLS
+            and f"{pname}:*" not in _NO_NATIVE_TOOLS)
 
 
 def disable_native_tools(model_id: str, persist: bool = False) -> None:
@@ -573,10 +660,15 @@ def disable_native_tools(model_id: str, persist: bool = False) -> None:
         persist = False  # its provider streams tool calls: a silence was a pause, not a call sent only at the end
     _NO_NATIVE_TOOLS.add(model_id)
     if persist:
+        # It is the provider's server that holds a tool call back until it is complete, so every model of it does the
+        # same: all of them start with the streamed text protocol (NVIDIA: Nemotron Ultra was learned, Super then sat
+        # silent for 60 s+ on its first file in the next task).
+        _NO_NATIVE_TOOLS.add(f"{model_id.partition(':')[0]}:*")
         try:
             saved = set(json.loads(_STREAM_TOOLS.read_text(encoding="utf-8"))) if _STREAM_TOOLS.exists() else set()
-            if model_id not in saved:
-                _STREAM_TOOLS.write_text(json.dumps(sorted(saved | {model_id})), encoding="utf-8")
+            add = {model_id, f"{model_id.partition(':')[0]}:*"}
+            if not add <= saved:
+                _STREAM_TOOLS.write_text(json.dumps(sorted(saved | add)), encoding="utf-8")
         except (OSError, ValueError):
             pass
 
@@ -596,6 +688,49 @@ try:
         if _STREAMS_ARGS_FILE.exists() else set()
 except (OSError, ValueError):
     _STREAMS_ARGS = set()
+# Measured, not learned: EVREN streams native tool arguments chunk by chunk (2,289 chunks in one file, longest gap
+# 2.7 s). Known from the start, so a fresh install (or a cleaned data/ folder) never treats its pauses as "sends tool
+# calls only at the end" and never moves its models to the text protocol for that.
+_STREAMS_ARGS |= {"evren"}
+
+
+# A provider that ends every request after a fixed time (NVIDIA's hosted API: ~300 s; a file streaming at 35 tok/s
+# stopped at 35-60K characters again and again and the stream then sat silent until the stall cut). Learned from the
+# requests that broke off after streaming for a long time: two such breaks close to each other are a limit, not chance.
+_CAPS_FILE = DATA_DIR / "request_caps.json"
+try:
+    _CAPS: dict[str, dict] = json.loads(_CAPS_FILE.read_text(encoding="utf-8")) if _CAPS_FILE.exists() else {}
+except (OSError, ValueError):
+    _CAPS = {}
+
+
+def note_request_break(model_id: str, secs: float) -> float | None:
+    """A request that streamed for `secs` and then stopped sending. Returns the learned limit when there is one."""
+    if secs < 120 or is_local(model_id):
+        return request_cap(model_id)
+    # Learned per provider (its gateway ends the request, whichever model streams): one rule for all of its models.
+    d = _CAPS.setdefault(model_id.partition(":")[0], {"obs": []})
+    d["obs"] = (d.get("obs", []) + [round(secs)])[-6:]
+    obs = sorted(d["obs"])
+    if round_cap := next((r for r in (120, 180, 240, 300, 360, 600, 900) if abs(secs - r) <= r * 0.025), None):
+        # Gateways end requests at round numbers (NVIDIA: 300 s, measured directly: 44.6K characters, then silence
+        # with the connection left open): a break right at one is that limit at once, not after a second lost file.
+        d["cap"] = min(d.get("cap") or round_cap, round_cap)
+    for a, b in zip(obs, obs[1:]):
+        if b - a <= max(25, a * 0.12):  # two breaks at about the same elapsed time
+            d["cap"] = min(d.get("cap") or a, a)
+            break
+    try:
+        _CAPS_FILE.write_text(json.dumps(_CAPS), encoding="utf-8")
+    except OSError:
+        pass
+    return request_cap(model_id)
+
+
+def request_cap(model_id: str) -> float | None:
+    """Seconds after which this model's provider ends a request (learned per provider, shared by all its models)."""
+    cap = (_CAPS.get(model_id.partition(":")[0]) or {}).get("cap")
+    return float(cap) if cap else None
 
 
 def streams_tool_args(model_id: str) -> bool:

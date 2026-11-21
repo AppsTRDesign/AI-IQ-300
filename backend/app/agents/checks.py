@@ -74,9 +74,46 @@ def intent_alt(intent: str, skip: tuple = ("tr", "en")) -> str:
     return "|".join(sorted(set(parts), key=len, reverse=True))
 
 
-def _extend(rx: re.Pattern, intent: str, wrap: str = "{}") -> re.Pattern:
+class _LangRx:
+    """A Turkish / English pattern plus the same intent's words of other languages, which are tried only when the
+    text is not Turkish or English: their word starts hit our own words ("bild" = picture in German matched
+    "bildiren" in a Turkish request and the app asked for a chart nobody wanted)."""
+
+    def __init__(self, base: re.Pattern, foreign: re.Pattern):
+        self.base, self.foreign = base, foreign
+        self.pattern, self.flags = f"(?:{base.pattern})|{foreign.pattern}", base.flags
+
+    @staticmethod
+    def _native(text: str) -> bool:
+        """The text is Turkish or English (the app's own language detector)."""
+        s = (text or "")[:3000]
+        lang = reply_language(s, "xx")
+        if lang == "tr":
+            return True
+        return lang == "en" and _lang_counts(s)[1] > 0  # really English words, not a short foreign greeting
+
+    def _pick(self, text: str) -> re.Pattern:
+        return self.base if self._native(text) else re.compile(self.pattern, self.flags)
+
+    def search(self, text, *a):
+        return self.base.search(text, *a) or (None if self._native(text) else self.foreign.search(text, *a))
+
+    def finditer(self, text, *a):
+        return self._pick(text).finditer(text, *a)
+
+    def findall(self, text, *a):
+        return self._pick(text).findall(text, *a)
+
+    def sub(self, repl, text, *a, **k):
+        return self._pick(text).sub(repl, text, *a, **k)
+
+    def match(self, text, *a):
+        return self._pick(text).match(text, *a)
+
+
+def _extend(rx: re.Pattern, intent: str, wrap: str = "{}"):
     alt = intent_alt(intent)
-    return re.compile(f"(?:{rx.pattern})|{wrap.format('(?:' + alt + ')')}", rx.flags) if alt else rx
+    return _LangRx(rx, re.compile(wrap.format("(?:" + alt + ")"), rx.flags)) if alt else rx
 
 
 def _lang_rx(code: str, words: list[str]) -> re.Pattern:
@@ -159,7 +196,7 @@ GROUP_TOOLS = {
     "design": {"stock_photo", "web_screenshot", "generate_image"},
     "browser": set(BROWSER_TOOLS),
     "places": {"places", "my_location"},
-    "docs": {"make_doc", "read_document"},
+    "docs": {"make_doc", "read_document", "doc_template"},
     "memory": {"remember", "save_catalog"},
     "project": {"impact", "symbols"},
     "team": {"team", "ask_model"},
@@ -335,6 +372,14 @@ ERROR_PLAYBOOK = [
      "`<program> --help` once, then use exactly those flags; do not guess another variant."),
     (re.compile(r"EADDRINUSE|address already in use|Only one usage of each socket|port \d+ (is )?(already )?in use", re.I),
      "The port is busy: start it on another free port (or stop only the process this task started)."),
+    (re.compile(r"Input redirection is not supported", re.I),
+     "Windows `timeout /t N` needs a console window and fails here. To wait use `Start-Sleep -Seconds N` (PowerShell) "
+     "- or better, no wait at all: the start tool already waits until a server answers, then open it with the browser "
+     "tool."),
+    (re.compile(r"ERR_EMPTY_RESPONSE|connection was closed unexpectedly|Bağlantı beklenmedik bir şekilde kapatıldı|"
+                r"ECONNRESET|Connection reset by peer", re.I),
+     "Something answers on that port but closes every connection - usually an old, broken server left from an earlier "
+     "task. Do not kill processes by name: start your server on another free port and open that one."),
     (re.compile(r"ModuleNotFoundError|No module named|Cannot find module|could not find driver|Class \"?[\w\\]+\"? not "
                 r"found|Call to undefined function|extension .* (missing|not loaded)", re.I),
      "A package or extension is missing: install it with the project's package manager (pip / npm / composer) inside "
@@ -491,8 +536,22 @@ def tool_hint(request: str) -> str:
     return f"\n[Tool hint: {'; '.join(hints)}.]" if hints else ""
 
 
+def request_core(text: str) -> str:
+    """The user's own words of a request, for to-do items: without the app's instructions in front of them
+    ("/docs PDF: [Şablon: ... make_doc template=...]" became the to-do items "/docs PDF" and "[Şablon: ..."), the
+    Markdown stars and the "1.)" style of numbering."""
+    t = text or ""
+    t = re.sub(r"\[(?:[^\[\]]{0,40}:\s*)?[^\[\]]*(?:make_doc|doc_template|generate_video|generate_image|template=)[^\[\]]*\]", " ", t)
+    t = re.sub(r"^\s*(?:/[\w-]+\s+)+", "", t)  # /docs /web-research ...
+    t = re.sub(r"^\s*(?:Word|PDF|Excel|PowerPoint|HTML)\s*:\s*", "", t, flags=re.I)
+    t = re.sub(r"\*\*|__", "", t)
+    t = re.sub(r"(?m)(^|\s)(\d{1,2})\.\)", r"\1\2)", t)  # "1.)" -> "1)"
+    return t.strip()
+
+
 def request_steps(request: str) -> list[str]:
     """The steps a user wrote ("1) make x, 2) count y, 3) tell me") when they asked for a list or gave 3+ of them."""
+    request = request_core(request)
     parts = [p.strip(" ,;.-") for p in re.split(r"(?:^|\s)(?:\d{1,2}[.)]|[-•])\s+", request) if p.strip(" ,;.-")]
     numbered = len(NUMBERED_STEP.findall(request))
     if numbered < 3 and not (TODO_ASK.search(request) and numbered >= 2):
@@ -540,7 +599,10 @@ def request_parts(request: str) -> list[str]:
     """The parts of a request written as running text ("make X: a, b, c and d. Mobile friendly. Start it, test it,
     report."), for the to-do list when the model never opens one: the listed features, then each later sentence.
     3-10 items or nothing."""
-    text = re.sub(r"\s+", " ", request or "").strip()
+    core = request_core(request or "")
+    if len(NUMBERED_STEP.findall(core)) >= 2:
+        return []  # a numbered request: its own numbers are the steps (request_steps), not its commas
+    text = re.sub(r"\s+", " ", core).strip()
     sentences = [s for s in re.split(r"(?<=[.!?])\s+(?=[^\s])", text) if s.strip()]
     if not sentences:
         return []
@@ -580,6 +642,9 @@ def missing_deliverables(request: str, answer: str, root: Path, since: float) ->
         if rx.search(request) and not workspace.files_since(root, exts, since - 2):
             out.append(f"*.{kind}")
     prose = re.sub(r"https?://\S+", " ", FENCE.sub(" ", answer))
+    # A file the answer says was NOT made ("sahne2 ve sahne3 oluşturulamadı", "failed: x.mp4") is an honest report,
+    # not a claim: the lines that say so are left out (the model was told "your answer is false" for telling the truth).
+    prose = "\n".join(ln for ln in prose.splitlines() if not NOT_MADE.search(ln))
     names = {Path(n.replace("\\", "/")).name: n for n in CLAIMED_FILE.findall(prose)}
     # A file the answer names must exist on disk, also when the request named it (asking for videos/x.mp4 and then
     # claiming it was made, with no such file, was exactly the false claim this check exists for).
@@ -592,22 +657,76 @@ def missing_deliverables(request: str, answer: str, root: Path, since: float) ->
     return out[:4]
 
 
+NOT_MADE = re.compile(r"olu[şs]tur(ul)?ama|olu[şs]turulmad|[üu]retil(e)?me|[üu]retemed|yap[ıi]lamad|ba[şs]ar[ıi]s[ıi]z|"
+                      r"diskte yok|mevcut de[ğg]il|kota|ba[şs]ar[ıi]l[ıi] olmad|haz[ıi]rlanamad|"
+                      r"not (been )?(created|made|generated)|could ?n[o']t (be )?(create|make|generate)|failed|"
+                      r"does not exist|was not (created|made)|unavailable|quota", re.I)
+
+
 REQUESTED_SOURCE = re.compile(r"(?:`|(?<![\w./\\-]))((?:[\w.-]+[/\\])+[\w.-]+\.(?:ts|tsx|js|jsx|py|php|dart|kt|swift|"
                               r"java|go|rs|vue|svelte|css|html?))(?=`|[\s,;:)]|$)", re.I)
 
 
-def _on_disk(root: Path, name: str) -> bool:
+_FOLD = str.maketrans("çğıöşüÇĞİÖŞÜâîûÂÎÛ", "cgiosuCGIOSUaiuAIU")
+
+
+def fold_name(name: str) -> str:
+    """A file name compared without Turkish letters and case: models write alışveriş_tanitim.mp4 for the file the
+    tool saved as alısveris_tanitim.mp4 (and the other way round)."""
+    return name.translate(_FOLD).lower()
+
+
+def real_path(root: Path, name: str) -> str | None:
+    """The path on disk (from the task folder) of a file an answer names, matched exactly, then without Turkish
+    letters / case. None when there is no such file or the match is not unique."""
     rel = name.replace("\\", "/")
     if (root / rel).is_file():
+        return rel
+    want = fold_name(Path(rel).name)
+    parent = root / Path(rel).parent
+    hits: list[Path] = []
+    for d in ([parent] if parent.is_dir() else []) + [root]:
+        try:
+            hits += [p for p in d.iterdir() if p.is_file() and fold_name(p.name) == want]
+        except OSError:
+            pass
+        if hits:
+            break
+    hits = list(dict.fromkeys(hits))
+    if len(hits) != 1:
+        return None
+    try:
+        return hits[0].relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def fix_claimed_names(answer: str, root: Path) -> str:
+    """Names of files in the answer that differ from the real file only in Turkish letters / case: replaced by the
+    real path (outside code fences too: the links in the answer must open)."""
+    out = answer
+    for n in dict.fromkeys(CLAIMED_FILE.findall(answer)):
+        rel = n.replace("\\", "/")
+        if (root / rel).is_file():
+            continue
+        real = real_path(root, rel)
+        if real and real != rel:
+            out = out.replace(n, real if "/" in rel else Path(real).name)
+    return out
+
+
+def _on_disk(root: Path, name: str) -> bool:
+    rel = name.replace("\\", "/")
+    if (root / rel).is_file() or real_path(root, rel):
         return True
-    base = Path(rel).name.lower()
+    base = fold_name(Path(rel).name)
     skip = {"node_modules", ".git", ".venv", "venv", "__pycache__", "vendor", ".expo", "build", "dist"}
     seen = 0
     try:  # by name anywhere in the task folder (a project subfolder), never through dependency trees
         for _d, dirs, files in os.walk(root):
             dirs[:] = [x for x in dirs if x not in skip]
             seen += len(files)
-            if any(f.lower() == base for f in files):
+            if any(fold_name(f) == base for f in files):
                 return True
             if seen > 50_000:
                 return True  # too big to look through: do not accuse
@@ -620,6 +739,13 @@ FOREIGN_SCRIPT = re.compile(r"[\u0370-\u03ff\u0400-\u04ff\u0590-\u06ff\u0900-\u0
                             r"\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
 TRANSLATE_HINT = re.compile(r"çevir|tercüme|translat|übersetz|tradu|翻译|翻訳|перевед", re.I)
 LATIN_LANGS = {"tr", "en", "de", "fr", "es", "it", "pt", "nl"}
+# Words other Latin languages share with Turkish / English (or that are international): never evidence of a drift
+SHARED_WORDS = {"para", "internet", "site", "foto", "test", "com", "web", "online", "video", "radyo", "radio", "hotel",
+                "otel", "menu", "normal", "total", "final", "data", "media", "plan", "program", "sistem", "system",
+                "model", "format", "film", "kredi", "banka", "bank", "euro", "dolar", "dollar", "pdf", "excel", "word",
+                "server", "app", "api", "code", "kod", "link", "blog", "chat", "email", "mail", "post", "start", "stop",
+                "pro", "ana", "son", "her", "bir", "ben", "sen", "biz", "bu", "su", "taksi", "taxi", "bar", "kafe",
+                "cafe", "auto", "oto", "mini", "maxi", "super", "alarm", "global", "lokal", "virtual", "digital"}
 
 # Every pattern above, extended with the other languages' words (see INTENTS).
 SMALL_TALK = _extend(SMALL_TALK, "small_talk", r"^\W*{}[\w\s,.!?'’،؟。！？¡¿]{{0,60}}$")
@@ -653,9 +779,12 @@ def wrong_language(text: str, lang: str, user_text: str = "") -> bool:
         return False
     tr, en = _lang_counts(text)
     # Another Latin-script language altogether (gemma answered a Turkish chat in French): its common words win.
+    # Words of two letters and words Turkish / English use too ("para", "de", "en", "internet", "site", "foto") are
+    # not counted: they sent correct Turkish answers (exchange rates: "para birimi", "doviz.com") to be rewritten.
     own = tr if lang == "tr" else en
-    if any(len(rx.findall(body)) >= 6 and len(rx.findall(body)) > 2 * own
-           for code, rx in LANG_WORD_RX.items() if code not in ("tr", "en")):
+    if own < 40 and any(n >= 8 and n > 2 * own for n in (
+            sum(1 for w in rx.findall(body) if len(w) > 2 and w.lower() not in SHARED_WORDS)
+            for code, rx in LANG_WORD_RX.items() if code not in ("tr", "en"))):
         return True
     return (en >= 5 and en > 2 * tr) if lang == "tr" else (tr >= 8 and tr > 2 * en)
 

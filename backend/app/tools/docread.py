@@ -134,6 +134,100 @@ def ocr_images(images: list, lang: str = "tr") -> tuple[list[str], str]:
 
 
 # --------------------------------------------------------------------------------------------------- formats
+# --------------------------------------------------------------------------------------------------- broken glyphs
+# Some PDF exporters write a font whose character map (ToUnicode) sends a letter to a wrong code: every "i" of a
+# Turkish document came out as "�" (pdfium) or the Sinhala "ඈ" (MuPDF) - "M�llî Eğ�t�m". It happens in every
+# language. The page itself shows the right letters, so the page is read once with OCR and each broken code gets the
+# letter the OCR words vote for (a word pattern with the broken code as a wildcard is matched to OCR words).
+def _script(ch: str) -> str:
+    import unicodedata
+    try:
+        name = unicodedata.name(ch)
+    except ValueError:
+        return "?"
+    head = name.split(" ")[0]
+    return {"CJK": "CJK", "HIRAGANA": "CJK", "KATAKANA": "CJK", "HANGUL": "CJK"}.get(head, head)
+
+
+def broken_chars(text: str) -> set[str]:
+    """Codes that cannot be the real letters: U+FFFD, private-use codes, control codes inside words, and a letter of a
+    script that occurs only inside words of the page's main script (a lone Sinhala letter in Latin words)."""
+    bad = {c for c in set(text) if c == "�" or 0xE000 <= ord(c) <= 0xF8FF or (ord(c) < 32 and c not in "\n\r\t")}
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) < 40:
+        return bad
+    counts: dict[str, int] = {}
+    for c in letters:
+        counts[_script(c)] = counts.get(_script(c), 0) + 1
+    main = max(counts, key=counts.get)
+    for c in set(letters):
+        s = _script(c)
+        if s == main or counts.get(s, 0) > len(letters) * 0.15:
+            continue
+        # every occurrence sits inside a word of the main script: a broken code, not a quoted foreign word
+        idx = [i for i, x in enumerate(text) if x == c]
+        inside = sum(1 for i in idx if any(_script(y) == main for y in text[max(0, i - 2):i] + text[i + 1:i + 3] if y.isalpha()))
+        if idx and inside >= len(idx) * 0.8:
+            bad.add(c)
+    return bad
+
+
+def repair_glyphs(text: str, ocr_text: str, bad: set[str], lang: str = "") -> tuple[str, dict[str, str]]:
+    """Replace each broken code by the letter OCR words vote for. Returns (text, mapping)."""
+    tr = lang in ("tr", "az")
+    import re as _re
+    from collections import Counter
+    ocr_words = set(_re.findall(r"\w+", ocr_text.replace("İ", "i").replace("I", "ı" if tr else "I").lower()))
+    mapping: dict[str, str] = {}
+    for b in bad:
+        votes: Counter = Counter()
+        for w in set(_re.findall(r"[\w" + _re.escape(b) + r"]+", text)):
+            if b not in w or len(w) < 3:
+                continue
+            other = "".join(x for x in bad if x != b)
+            low = (lambda ch: "i" if ch == "İ" else "ı" if (ch == "I" and tr) else ch.lower())
+            pat = "".join("(.)" if x == b else ("." if x in other else _re.escape(low(x))) for x in w)
+            rx = _re.compile(f"^{pat}$")
+            for o in ocr_words:
+                if len(o) == len(w) and (m := rx.match(o)):
+                    letters = set(m.groups())
+                    if len(letters) == 1:
+                        votes[letters.pop()] += 1
+        if votes:
+            letter, n = votes.most_common(1)[0]
+            if n >= 2 or len(votes) == 1:
+                mapping[b] = letter
+    for b, letter in mapping.items():
+        # keep the case of the word around it: an upper-case word gets the upper-case letter
+        up = ("İ" if letter == "i" else "I" if letter == "ı" else letter.upper()) if tr else letter.upper()
+        text = _re.sub(_re.escape(b), lambda m, up=up, letter=letter: up if (m.start() > 0 and text[m.start() - 1].isupper()
+                                                               and (m.end() >= len(text) or not text[m.end()].islower()))
+                       else letter, text)
+    return text, mapping
+
+
+def _guess_lang(text: str, fallback: str) -> str:
+    """The language of the text for the OCR engine (its letters say more than the UI language)."""
+    import re as _re
+    if _re.search(r"[ğşıİĞŞ]", text):
+        return "tr"
+    if _re.search(r"[äöüßÄÖÜ]", text) and not _re.search(r"[çğş]", text):
+        return "de"
+    if _re.search(r"[àâæçéèêëîïôœùûÿ]", text):
+        return "fr"
+    if _re.search(r"[áéíñóúü¿¡]", text):
+        return "es"
+    if _re.search(r"[ąćęłńóśźż]", text):
+        return "pl"
+    if _re.search(r"[а-яА-ЯёЁ]", text):
+        return "ru"
+    if _re.search(r"[α-ωΑ-Ω]", text):
+        return "el"
+    if _re.search(r"[؀-ۿ]", text):
+        return "ar"
+    return fallback
+
+
 def _pdf(data: bytes, lang: str, pages: tuple[int, int] | None) -> Document:
     import pypdfium2 as pdfium
     pdf = pdfium.PdfDocument(data)
@@ -160,6 +254,23 @@ def _pdf(data: bytes, lang: str, pages: tuple[int, int] | None) -> Document:
                              + ("; diacritics may be missing" if engine == "RapidOCR" else ""))
         else:
             doc.notes.append(f"{len(scans)} page(s) are scanned images and no OCR engine is available")
+    joined = "\n".join(texts.values())
+    if bad := broken_chars(joined):
+        # Letters lost to a broken font map: read the affected pages with OCR and vote the right letter per code
+        hit = [i for i in texts if any(b in texts[i] for b in bad)][:3]
+        olang = _guess_lang(joined, lang)
+        found, engine = ocr_images([pdf[i].render(scale=2.5).to_pil() for i in hit], olang)
+        if engine and any(t.strip() for t in found):
+            ocr_all = "\n".join(found)
+            _, mapping = repair_glyphs(joined, ocr_all, bad, olang)
+            if mapping:
+                for i in texts:
+                    if any(b in texts[i] for b in mapping):
+                        texts[i] = repair_glyphs(texts[i], ocr_all, set(mapping), olang)[0]
+                doc.notes.append("broken font map repaired with OCR (" + ", ".join(
+                    f"U+{ord(k):04X}->{v}" for k, v in mapping.items()) + ")")
+        if any(b in "".join(texts.values()) for b in bad):
+            doc.notes.append("some letters could not be read (broken font map in this PDF): read what remains with care")
     for i in range(lo - 1, hi):
         doc.parts.append(Part(f"{unit} {i + 1}", texts.get(i, ""), i in scans))
     if n > hi or lo > 1:

@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from ..config import get_secret
+from ..config import DATA_DIR, get_secret
 
 TIMEOUT = httpx.Timeout(connect=10, read=1800, write=60, pool=10)  # long silent tool-call generation (router heartbeat)
 
@@ -198,7 +198,8 @@ async def _sse(resp: httpx.Response) -> AsyncIterator[dict]:
 def stream_error(err: Any) -> ProviderError:
     """An error object sent inside a running stream (OpenRouter, EVREN, gateways: overloaded, rate limited,
     upstream timeout). Classified like an HTTP error, so busy/overloaded ones are retried instead of ending the task."""
-    text = json.dumps(err, ensure_ascii=False)[:500] if not isinstance(err, str) else err[:500]
+    raw = json.dumps(err, ensure_ascii=False)[:2000] if not isinstance(err, str) else err[:2000]
+    text = message_of(err) or raw[:500]
     if re.search(r"repeat limit|repetition|degenerat", text, re.I):
         # Ollama stopped a reply that repeated one token ("@@@@..."): the model or its runtime backend produced
         # garbage. Asking the same thing again gives the same garbage; the task loop handles it (see 'degenerate').
@@ -207,7 +208,7 @@ def stream_error(err: Any) -> ProviderError:
     if isinstance(err, dict):
         c = err.get("code") or err.get("status")
         status = c if isinstance(c, int) else int(c) if isinstance(c, str) and c.isdigit() else 0
-    code = classify_error(status or 500, text)
+    code = classify_error(status or 500, raw)
     return ProviderError(code if code != "http" else "server", text)
 
 
@@ -234,25 +235,70 @@ BODY_PATTERNS = [  # more specific causes hidden behind generic statuses
     (r"insufficient_quota|exceeded your current quota|quota|credit|balance|kredi|RESOURCE_EXHAUSTED|neurons|"
      r"daily free allocation", "quota"),
     (r"does not support tools|tool(s)? (is|are) not supported|tool_choice|function calling", "no_tools"),
-    (r"model .*not found|model_not_found|no such model|unknown model|does not exist|no longer available|has been deprecated|decommissioned", "model_not_found"),
+    # A model the provider retired ("gemini-2.5-flash is no longer available to new users. Please use ..."): not a typo
+    (r"no longer available|has been deprecated|decommissioned|been retired|is deprecated", "model_retired"),
+    (r"model .*not found|model_not_found|no such model|unknown model|does not exist", "model_not_found"),
     (r"invalid.api.key|incorrect api key|invalid x-api-key|authentication_error|authentication error|authorization failed|unauthorized|geçersiz api", "auth"),
     (r"moderation|flagged|content policy|safety", "moderation"),
     (r"overloaded|capacity|unavailable|no endpoints found|no providers", "overloaded"),
 ]
 
 
+def _parse_any(text: str):
+    """JSON, or the Python repr of it ({'error': {...}} with single quotes, as some SDK messages print it)."""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    s = (text or "").strip()
+    if s[:1] in "[{" and len(s) < 20000:
+        import ast
+        try:
+            return ast.literal_eval(s)
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            pass
+    return None
+
+
+def message_of(obj, depth: int = 0) -> str:
+    """The human sentence inside any error shape: {"error": {"message"}}, [{"error": ...}] (Gemini sends a list),
+    {"errors": [{"message"}]} (Cloudflare), {"detail": ...}, nested strings that are JSON again. Never raw JSON."""
+    if depth > 4:
+        return ""
+    if isinstance(obj, str):
+        inner = _parse_any(obj)
+        if inner is not None and not isinstance(inner, str):
+            return message_of(inner, depth + 1) or obj.strip()[:400]
+        # "prefix: {json}" (a provider name or "HTTP 503" before the body)
+        m = re.search(r"[\[{].*[\]}]\s*$", obj, re.S)
+        if m and (inner := _parse_any(m.group(0))) is not None:
+            found = message_of(inner, depth + 1)
+            if found:
+                head = obj[:m.start()].strip().rstrip(":").strip()
+                return f"{head}: {found}" if head else found
+        return obj.strip()[:400]
+    if isinstance(obj, list):
+        for x in obj:
+            if found := message_of(x, depth + 1):
+                return found
+        return ""
+    if isinstance(obj, dict):
+        for k in ("error", "errors"):
+            if obj.get(k) and (found := message_of(obj[k], depth + 1)):
+                return found
+        for k in ("message", "detail", "msg", "error_description", "title", "status"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return message_of(v, depth + 1) if v.strip()[:1] in "[{" else v.strip()[:400]
+            if isinstance(v, (dict, list)) and (found := message_of(v, depth + 1)):
+                return found
+        return ""
+    return str(obj)[:400] if obj is not None else ""
+
+
 def _error_message(body: str) -> str:
     """Pull the human-readable message out of the common JSON error shapes."""
-    try:
-        d = json.loads(body)
-    except (json.JSONDecodeError, TypeError):
-        return body.strip()[:400]
-    err = d.get("error", d) if isinstance(d, dict) else d
-    if isinstance(err, dict):
-        return str(err.get("message") or err.get("detail") or err.get("status") or err)[:400]
-    if isinstance(d, dict) and d.get("detail"):
-        return str(d["detail"])[:400]
-    return str(err)[:400]
+    return message_of(body) or (body or "").strip()[:400]
 
 
 def _cf_code(body: str) -> str | None:
@@ -420,6 +466,12 @@ class OpenAICompatProvider(Provider):
     native_tools = True
 
     async def list_models(self) -> list[dict]:
+        if "generativelanguage.googleapis.com" in self.base_url:
+            # Gemini's OpenAI-compatible listing has no capabilities and lists image / video / embedding / TTS models
+            # as chat models: the native listing says what each one does (methods, window, thinking).
+            native = await _gemini_native_models(self.cfg, self.headers())
+            if native:
+                return [m for m in native if not retired(self.cfg, m["id"])]
         try:
             async with pooled(timeout=15) as c:
                 r = await c.get(f"{self.base_url}/models", headers=self.headers())
@@ -434,7 +486,19 @@ class OpenAICompatProvider(Provider):
                 continue
             if m.get("task") and m["task"] not in ("chat", "vision_chat"):  # EVREN: skip embedding/ocr/tts models
                 continue
-            out.append({"id": m["id"], "context": _ctx_from(m), **_caps_from(m)})
+            if NOT_CHAT.search(m["id"]) or NOT_CHAT_EXTRA.search(m["id"].split("/")[-1]) or retired(self.cfg, m["id"]):  # embeddings, rerankers, speech, CLIP...
+                continue
+            outs = (m.get("architecture") or {}).get("output_modalities")
+            if isinstance(outs, list) and outs and "text" not in outs:  # OpenRouter: image / audio-only output models
+                continue
+            if not _chat_by_meta(m):  # the listing's own type / capability fields say it is no chat model
+                continue
+            caps = _caps_from(m)
+            # Listings without capabilities (NVIDIA NIM, Groq, Mistral, DeepSeek, Together...): from the model's name
+            for k, v in infer_caps(m["id"]).items():
+                if caps.get(k) is None:
+                    caps[k] = v
+            out.append({"id": m["id"], "context": _ctx_from(m), **caps})
         return out or await super().list_models()
 
     def _root(self) -> str:
@@ -521,6 +585,8 @@ class OpenAICompatProvider(Provider):
         if e := opts.get("effort"):  # reasoning effort: OpenRouter's reasoning object, else OpenAI's field
             if "openrouter" in self.base_url:
                 body["reasoning"] = {"enabled": False} if e == "off" else {"effort": e}
+            elif e == "off" and "generativelanguage.googleapis.com" in self.base_url:
+                body["reasoning_effort"] = "none"  # Gemini: thinking off (Flash models)
             elif e not in ("off", "on"):
                 body["reasoning_effort"] = e
         elif "think" in opts:  # model profile: OpenRouter's reasoning switch, else the OpenAI reasoning_effort field
@@ -796,16 +862,22 @@ class CloudflareProvider(OpenAICompatProvider):
     model search (there is no /models listing). Needs the Account ID (provider setting) and an API token."""
     API = "https://api.cloudflare.com/client/v4/accounts"
 
+    def _acc(self) -> str:
+        """One account id for chat and image generation: the provider's own, else the one typed in the image card."""
+        from ..config import load_settings
+        return (str(self.cfg.get("account_id") or "").strip()
+                or str((load_settings().get("media") or {}).get("cloudflare_account") or "").strip())
+
     @property
     def account(self) -> str:
-        acc = str(self.cfg.get("account_id") or "").strip()
+        acc = self._acc()
         if not re.fullmatch(r"[0-9a-f]{32}", acc):
-            raise ProviderError("missing_credentials", f"{self.name}: Account ID is not set (Settings > Providers)")
+            raise ProviderError("missing_account", f"{self.name}: Account ID is not set (Settings > Providers)")
         return acc
 
     @property
     def base_url(self) -> str:  # never raises (error paths read it too); requests check the account first
-        return f"{self.API}/{str(self.cfg.get('account_id') or '').strip()}/ai/v1"
+        return f"{self.API}/{self._acc()}/ai/v1"
 
     async def stream(self, model, messages, opts):
         self.account  # a clear "Account ID is not set" instead of a routing error from Cloudflare
@@ -825,9 +897,13 @@ class CloudflareProvider(OpenAICompatProvider):
                         p = {x.get("property_id"): str(x.get("value")).lower() for x in m.get("properties") or []}
                         if not m.get("name") or p.get("lora") == "true" and m["name"].endswith("-lora"):
                             continue  # LoRA adapters are not chat models on their own
+                        if NOT_CHAT.search(m["name"]) or (m.get("description") or "").lower().startswith("deprecated"):
+                            continue  # classifiers (llama-guard) and models Cloudflare marks deprecated
+                        guess = infer_caps(m["name"])
                         out.append({"id": m["name"], "context": int(p["context_window"]) if p.get("context_window", "").isdigit() else None,
-                                    "tools": p.get("function_calling") == "true", "vision": None,
-                                    "thinking": p.get("reasoning") == "true"})
+                                    "tools": p.get("function_calling") == "true" or None,
+                                    "vision": p.get("vision") == "true" or guess["vision"],
+                                    "thinking": p.get("reasoning") == "true" or guess["thinking"]})
                     if len(found) < 100:
                         break
         except httpx.HTTPError as e:
@@ -843,3 +919,127 @@ ADAPTERS: dict[str, type[Provider]] = {
     "gemini": GeminiProvider,
 }
 VISION_HINT = ("vl", "vision", "llava", "gpt-4o", "gpt-5", "claude", "gemini", "pixtral", "gemma-4", "qwen3.8")
+
+# Models that are not chat models (an OpenAI-compatible /models lists them too): never offered in the model picker
+NOT_CHAT = re.compile(r"embed|rerank|nvclip|(^|/)clip|parakeet|whisper|canary|(^|[/-])tts|text-to-speech|bge-|e5-|"
+                      r"retriever|nv-embed|arctic-embed|-ocr|paddleocr|cosmos-|imagen|veo-|flux|stable-diffusion|sdxl|"
+                      r"-image-generation|dall-e|gpt-image|aqa$|nemoretriever|gliner|ai-detector|deplot|kosmos|"
+                      # classifiers and agent products: not chat models a task can run on
+                      r"guard|safety|detector|calibration|reward|starcoder2|deep-research|antigravity|"
+                      # speech / music models some listings mix in (Gemini transcribe, Lyria, Groq Orpheus / PlayAI)
+                      r"transcribe|lyria|orpheus|playai|-audio\b|gpt-audio|realtime", re.I)
+_VISION_RE = re.compile(r"(\bvl\b|-vl|vl-|vision|llava|pixtral|multimodal|omni|gpt-4o|gpt-4\.1|gpt-5|(^|/)o[34]\b|"
+                        r"gemini|gemma-?3n?|gemma-?4|llama-4|qwen2\.5-vl|qwen3-vl|qwen3\.[5-9]|kimi-k2\.5|glm-4\.[5-9]v|"
+                        r"phi-4-multimodal|phi-3\.5-vision|mistral-medium|mistral-small-3|nemotron.*vl|claude)", re.I)
+_THINK_RE = re.compile(r"(r1\b|-r1|reason|thinking|qwq|qwen3|gpt-oss|(^|/)o[134]\b|gpt-5|deepseek-v3\.[1-9]|"
+                       r"deepseek-v4|magistral|nemotron|gemini-(2\.5|[3-9])|kimi-k2-thinking|glm-4\.[5-9]|glm-5|"
+                       r"step-[3-9]|grok-[34]|minimax-m\d|seed-oss|hermes-4|phi-4-reasoning|kimi-k[3-9])", re.I)
+_TOOLS_RE = re.compile(r"(llama-3\.[1-3]|llama-4|qwen|mistral|mixtral|nemotron|deepseek|gpt|gemini|glm|kimi|minimax|"
+                       r"granite|command|hermes|devstral|codestral|phi-4|grok|seed-oss|step-|jamba|ling-|ernie)", re.I)
+
+
+def _chat_by_meta(m: dict) -> bool:
+    """What a provider's /models entry itself says about the model (documented fields, checked per provider):
+    Together "type" (chat / language vs image, embedding, rerank, audio, moderation, transcribe), Mistral
+    "capabilities.completion_chat", Fireworks "kind", DeepInfra / some gateways "task" or "model_type", Groq "active".
+    Unknown fields leave the decision to the name filters."""
+    t = str(m.get("type") or m.get("model_type") or m.get("task") or "").lower()
+    if t and t not in ("chat", "language", "llm", "text-generation", "text_generation", "model", "code", "vlm", "multimodal"):
+        if re.search(r"image|embed|rerank|audio|speech|tts|transcri|moderation|video|classif|detect|ocr", t):
+            return False
+    caps = m.get("capabilities")
+    if isinstance(caps, dict) and caps.get("completion_chat") is False:
+        return False
+    if m.get("active") is False:  # Groq: a model taken out of service
+        return False
+    kind = str(m.get("kind") or "").upper()
+    if kind and re.search(r"EMBED|IMAGE|AUDIO|RERANK", kind):
+        return False
+    return True
+
+
+# Old completion-only and non-chat families some OpenAI-compatible listings still return
+NOT_CHAT_EXTRA = re.compile(r"^(babbage|davinci|ada|curie)(-|$)|text-moderation|omni-moderation|-moderation|sora|"
+                            r"dall-e|gpt-image|tts-|whisper|codex-mini|computer-use|-search-preview$|-transcribe", re.I)
+
+
+def infer_caps(model_id: str) -> dict:
+    """Vision / thinking / tool calling from the model's name, for listings that report none. Only True values are
+    inferred from a match; no match leaves the capability unknown (None) instead of claiming it is missing."""
+    n = model_id.lower()
+    return {"vision": True if _VISION_RE.search(n) else None, "thinking": True if _THINK_RE.search(n) else None,
+            "tools": True if _TOOLS_RE.search(n) else None}
+
+
+# Models a provider retired (an answer "no longer available to new users"): hidden from the lists, and requests for
+# them go to the replacement the provider named (see router.stream_chat). Kept in data/retired_models.json.
+_RETIRED_FILE = DATA_DIR / "retired_models.json"
+
+
+def _retired_all() -> dict:
+    try:
+        return json.loads(_RETIRED_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def retired(cfg: dict, model: str) -> str | None:
+    """The replacement of a retired model of this provider ('' if none was named), else None."""
+    key = (cfg.get("base_url") or cfg.get("kind") or "") + "|" + model.removeprefix("models/")
+    return _retired_all().get(key)
+
+
+def mark_retired(cfg: dict, model: str, replacement: str) -> None:
+    data = _retired_all()
+    data[(cfg.get("base_url") or cfg.get("kind") or "") + "|" + model.removeprefix("models/")] = replacement
+    try:
+        _RETIRED_FILE.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+# Gemini chat models follow one naming: gemini-<version>-<pro|flash|flash-lite>[-preview[-date]|-latest|-001], the
+# -latest aliases, and Gemma. Code-named entries the listing also returns (gemini-4-hydrogen, -argon, -neon: early
+# access / experiments) answered after minutes or not at all ("provider slow - model still working" for 4 minutes),
+# so they are not offered as chat models.
+GEMINI_CHAT = re.compile(r"^(gemini-\d+(\.\d+)?-(pro|flash|flash-lite|flash-8b)(-preview(-[\w-]+)?|-latest|-exp(-[\w-]+)?|-\d{3}"
+                         r"|-thinking(-[\w-]+)?)?|gemini-(pro|flash|flash-lite)-latest|gemma-[\w.-]+)$")
+
+
+async def _gemini_native_models(cfg: dict, headers: dict) -> list[dict]:
+    """Gemini models from the native API: only text-generating chat models, with window, thinking, vision, tools."""
+    key = (headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+    if not key:
+        return []
+    out, token = [], ""
+    try:
+        async with pooled(timeout=15) as c:
+            for _ in range(5):
+                r = await c.get("https://generativelanguage.googleapis.com/v1beta/models",
+                                params={"pageSize": 1000, **({"pageToken": token} if token else {})},
+                                headers={"x-goog-api-key": key})
+                if r.status_code != 200:
+                    return []
+                d = r.json()
+                for m in d.get("models") or []:
+                    mid = m["name"].removeprefix("models/")
+                    if "generateContent" not in (m.get("supportedGenerationMethods") or []) or NOT_CHAT.search(mid) \
+                            or re.search(r"-image|tts|native-audio|live|computer-use|robotics|learnlm", mid) \
+                            or not GEMINI_CHAT.match(mid):
+                        continue
+                    gemma = mid.startswith("gemma")
+                    out.append({"id": mid, "context": m.get("inputTokenLimit"), "name": m.get("displayName"),
+                                "thinking": bool(m.get("thinking")) or bool(re.search(r"gemini-(2\.5|[3-9])", mid)),
+                                "vision": not gemma or bool(re.search(r"gemma-?3(?!-1b)|gemma-?3n|gemma-?4", mid)),
+                                "tools": not gemma, "max_output": m.get("outputTokenLimit")})
+                token = d.get("nextPageToken") or ""
+                if not token:
+                    break
+    except httpx.HTTPError:
+        return []
+    # newest first: version, then pro > flash > lite
+    def rank(m):
+        v = re.findall(r"(\d+(?:\.\d+)?)", m["id"])
+        return (m["id"].startswith("gemini"), float(v[0]) if v else 0.0, "pro" in m["id"], "lite" not in m["id"],
+                "preview" not in m["id"])
+    return sorted(out, key=rank, reverse=True)

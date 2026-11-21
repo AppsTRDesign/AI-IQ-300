@@ -16,8 +16,13 @@ from ..workspace import IGNORED
 # Aider-style blocks, which most models already know:  <<<<<<< SEARCH / ======= / >>>>>>> REPLACE. Variants weak
 # models write are accepted too: ORIGINAL / OLD / FIND / BEFORE ... UPDATED / NEW / AFTER, 3-9 marker characters,
 # a block inside a ``` fence.
-BLOCK = re.compile(r"<{3,9} ?(?:SEARCH|ORIGINAL|OLD|FIND|BEFORE)[^\n]*\n(.*?)\n?={3,9}[^\n]*\n(.*?)\n?>{3,9} ?"
+# Every marker must stand on a line of its own: unanchored, the '===' of a JavaScript comparison (if (a === b)) was
+# taken for the divider, the old text ended mid-line and the "new" text carried the real divider into the file
+# (seen live: '=======' lines written into app.js, then a syntax error the model could not find).
+BLOCK = re.compile(r"(?m)^[ \t]*<{3,9} ?(?:SEARCH|ORIGINAL|OLD|FIND|BEFORE)\b[^\n]*\n(.*?)\n?^[ \t]*={3,9}[ \t]*"
+                   r"(?:(?:REPLACE|UPDATED|NEW|AFTER|DIVIDER)\b[^\n]*)?\n(.*?)\n?^[ \t]*>{3,9} ?"
                    r"(?:REPLACE|UPDATED|NEW|AFTER)", re.S | re.I)
+MARKER_LINE = re.compile(r"(?m)^[ \t]*(?:<{7} ?(?:SEARCH|ORIGINAL|HEAD)\b|>{7} ?(?:REPLACE|UPDATED)\b|={7}[ \t]*$)")
 
 
 class EditError(Exception):

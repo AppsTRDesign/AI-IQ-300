@@ -50,8 +50,21 @@ CATALOG: dict[str, dict] = {
     "pollinations": {"kind": "image", "name": "Pollinations (FLUX)", "secret": "pollinations_token", "system": True},
     "openverse": {"kind": "stock", "name": "Openverse", "system": True},
     "commons": {"kind": "stock", "name": "Wikimedia Commons", "system": True},
+    # Image-to-video: paid keyed services first (in this order), then the free Hugging Face GPU Spaces. Each one can
+    # be switched off in Settings; the first usable one makes the clip and the next is tried only if it fails.
+    "veo": {"kind": "video", "name": "Google Veo (Gemini API)", "secret": "gemini_api_key"},
+    "fal": {"kind": "video", "name": "fal.ai (Wan · Kling · Hailuo · Seedance · Veo)", "secret": "fal_api_key"},
+    "replicate": {"kind": "video", "name": "Replicate (Wan · Kling · Hailuo · Seedance)", "secret": "replicate_api_key"},
+    "runway": {"kind": "video", "name": "Runway (Gen-4 Turbo)", "secret": "runway_api_key"},
+    "hf_wan": {"kind": "video", "name": "Wan 2.2 (Hugging Face, free)", "free": True,
+               "space": "zerogpu-aoti/wan2-2-fp8da-aoti-faster", "call": "wan"},
+    "hf_wan2": {"kind": "video", "name": "Wan 2.2 Lightning (Hugging Face, free)", "free": True,
+                "space": "Saravutw/WAN2.2_I2V_LIGHTNING_4-8step_custom", "call": "wan"},
+    "hf_svd": {"kind": "video", "name": "AnimateLCM-SVD (Hugging Face, free)", "free": True,
+               "space": "wangfuyun/AnimateLCM-SVD", "call": "svd"},
 }
-SETTINGS_SECTION = {"image": "media", "stock": "stock"}  # where the on/off switches live (media.disabled, stock.disabled)
+# where the on/off switches live (media.disabled, stock.disabled, video.disabled)
+SETTINGS_SECTION = {"image": "media", "stock": "stock", "video": "video"}
 RETRY_429 = 900  # seconds a 429 without a reset header blocks a service
 _LOCK = threading.Lock()
 _STATE: dict[str, dict] = {}
@@ -184,7 +197,8 @@ def check(sid: str, r) -> None:
     if r.status_code < 400:
         note_headers(sid, r.headers)
         return
-    text = (r.text or "")[:200]
+    from ..llm.providers import message_of  # the sentence inside the JSON, never the JSON itself
+    text = (message_of((r.text or "")[:4000]) or (r.text or ""))[:300]
     retry = None
     for h in ("Retry-After", "X-Ratelimit-Reset"):
         if (v := r.headers.get(h)):
@@ -243,11 +257,16 @@ async def run(kind: str, make: Callable[[str], Awaitable[T]], system: Callable[[
         raise RuntimeError("; ".join(tried)) from e
 
 
+def _model_of(kind: str, sid: str) -> str:
+    from . import mediamodels
+    return mediamodels.current_sync(kind, sid) if sid in mediamodels.MODELS.get(kind, {}) else ""
+
+
 def status() -> list[dict]:
     """Settings view: every user-facing service with its key, switch, block and counters."""
     now = time.time()
     out = []
-    for sid in ordered("image") + ordered("stock"):
+    for sid in ordered("image") + ordered("stock") + ordered("video"):
         spec = CATALOG[sid]
         e = _entry(sid)
         blocked = e["blocked_until"] > now
@@ -258,6 +277,7 @@ def status() -> list[dict]:
                     "reason": e["reason"] if blocked else "", "today": e["today"], "month": e["month_n"],
                     "window_used": window_used, "window_max": spec.get("window_max") or None,
                     "month_max": spec.get("month_max") or None, "remaining": e["remaining"], "limit": e["limit"],
-                    "last_error": e["last_error"], "last_ok": e["last_ok"],
+                    "last_error": e["last_error"], "last_ok": e["last_ok"], "free": bool(spec.get("free")),
+                    "model": _model_of(spec["kind"], sid),
                     "active": sid in usable(spec["kind"])})
     return out

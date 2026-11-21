@@ -211,6 +211,34 @@ def _project_manifests(root) -> list[dict]:
     return out[:12]
 
 
+def _mobile_summary() -> dict | str:
+    """What the app installed for Android / Kotlin apps (read from folders, no tool started). A model asked "can a
+    Kotlin app be built and tested here?" ran 'kotlinc -version' and 'gradle -version', found neither on PATH and
+    reported "no" - while JDK, SDK, Gradle, an emulator and Maestro were all in data/mobile."""
+    from pathlib import Path
+    from . import mobile
+    root = mobile.sdk_root()
+    gradle = mobile.gradle_bin()
+    if not root.is_dir() and not gradle:
+        return ("not set up yet: mobile_env action=setup installs JDK, Android SDK, Gradle, an emulator and Maestro "
+                "into the app's data folder (no admin rights)")
+    inv = mobile.sdk_inventory(root) if root.is_dir() else {}
+    jh = mobile.java_home()
+    maestro = Path.home() / ".maestro" / "bin"
+    return {
+        "android_sdk": str(root) if root.is_dir() else None,
+        "platforms": inv.get("platforms"), "build_tools": inv.get("build_tools"),
+        "emulator": inv.get("emulator"), "system_images": inv.get("system_images"),
+        "avds": sorted(p.stem for p in (Path.home() / ".android" / "avd").glob("*.ini")),
+        "gradle": gradle, "jdk": str(jh) if jh else None, "maestro": maestro.is_dir(),
+        "kotlin": f"through Gradle: the Kotlin Gradle plugin (verified set: AGP {mobile.COMPAT['36']['agp']}, Kotlin "
+                  f"{mobile.COMPAT['36']['kotlin']}, Gradle {mobile.COMPAT['36']['gradle']}); a standalone kotlinc is not "
+                  "needed for an Android app",
+        "note": "These live in the app's data folder, not on the system PATH: the run tool adds them (gradle, adb, "
+                "emulator, sdkmanager, avdmanager, maestro work in run commands; ANDROID_HOME and JAVA_HOME are set). "
+                "mobile_env action=status gives every path, the verified version sets and the running devices."}
+
+
 def environment(work_root=None) -> dict:
     """The software side of this computer and of the app, so a model never has to guess: where it works, which
     runtimes / CLIs / packages exist, which MCP servers, web search engines, media services, skills, agents and
@@ -241,6 +269,10 @@ def environment(work_root=None) -> dict:
                                   "tools": [t["name"] for t in v["tools"]][:40]}
                               for k, v in mcp_client.status().items()} or "none connected (mcp_search finds one, mcp_add connects it)"
     except Exception:  # noqa: BLE001
+        pass
+    try:  # Android / Kotlin: the app keeps this toolchain in its data folder, not on the system PATH
+        env["android_kotlin_toolchain"] = _mobile_summary()
+    except Exception:  # noqa: BLE001 - optional
         pass
     try:  # web research: the configured search APIs first, then the free engines, then the real browser
         from . import web
@@ -287,15 +319,33 @@ def environment(work_root=None) -> dict:
     return env
 
 
+def now_info() -> dict:
+    """The computer's current date and time (local clock and time zone), so a model never guesses today's date."""
+    import datetime as _dt
+    now = _dt.datetime.now().astimezone()
+    days_tr = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    months_tr = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
+    try:
+        from ..hostinfo import clean_text
+    except ImportError:  # an app started before an update (the old module is still loaded): the text as it is
+        clean_text = lambda s: s  # noqa: E731
+    return {"date": now.strftime("%Y-%m-%d"), "time": now.strftime("%H:%M:%S"), "weekday": clean_text(now.strftime("%A")),
+            "day": now.day, "month": now.month, "month_name": clean_text(now.strftime("%B")), "year": now.year,
+            "timezone": clean_text(now.tzname() or ""), "utc_offset": now.strftime("%z"), "iso": now.isoformat(timespec="seconds"),
+            "tr": f"{now.day} {months_tr[now.month - 1]} {now.year} {days_tr[now.weekday()]}, {now.strftime('%H:%M')}"}
+
+
 def report(part: str = "all", work_root=None) -> str:
     part = (part or "all").lower()
-    data: dict = {}
+    data: dict = {"now": now_info()}
     if part in ("all", "hardware", "hw", "donanım"):
         data["hardware"] = _clean(collect())
     if part in ("all", "software", "sw", "environment", "env", "yazılım"):
         data["software"] = environment(work_root)
-    if not data:
-        data = {"hardware": _clean(collect()), "software": environment(work_root)}
+    if part in ("now", "date", "time", "tarih", "saat"):
+        return json.dumps(data, ensure_ascii=False, indent=1)
+    if len(data) == 1:
+        data.update({"hardware": _clean(collect()), "software": environment(work_root)})
     return json.dumps(data, ensure_ascii=False, indent=1, default=str)[:30000]
 
 

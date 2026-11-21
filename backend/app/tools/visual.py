@@ -81,23 +81,34 @@ async def capture_and_review(url: str, criteria: str, root: Path) -> tuple[str, 
     shots.mkdir(parents=True, exist_ok=True)
     out = shots / f"shot-{int(time.time())}.png"
     console: list[str] = []
+    from .browser import AUTO_REQUEST, _page_error
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page(viewport={"width": 1280, "height": 800})
-        page.on("console", lambda m: m.type == "error" and console.append(m.text))
-        page.on("pageerror", lambda e: console.append(str(e)))
-        # failed requests count as page errors too (a 404 bundle, a 500 API call): reported with the console
-        page.on("requestfailed", lambda r: not (r.failure or "").endswith("ERR_ABORTED")
-                and console.append(f"request failed: {r.failure} {r.resource_type} {r.url[-150:]}"))
-        page.on("response", lambda r: r.status >= 400 and not r.url.split("?")[0].endswith("favicon.ico")
-                and console.append(f"HTTP {r.status} {r.request.resource_type} {r.url[-150:]}"))
-        await page.goto(url, wait_until="networkidle", timeout=30000)
-        await page.screenshot(path=str(out), full_page=True)
         try:
-            dom = await page.evaluate(DOM_REPORT)
-        except Exception:
-            dom = None
-        await browser.close()
+            page = await browser.new_page(viewport={"width": 1280, "height": 800})
+            page.on("console", lambda m: m.type == "error" and not (
+                "Failed to load resource" in m.text and AUTO_REQUEST.search((m.location or {}).get("url", "")))
+                and console.append(m.text))
+            page.on("pageerror", lambda e: console.append(_page_error(e)["text"]))
+            # failed requests count as page errors too (a 404 bundle, a 500 API call): reported with the console
+            page.on("requestfailed", lambda r: not (r.failure or "").endswith("ERR_ABORTED") and not AUTO_REQUEST.search(r.url)
+                    and console.append(f"request failed: {r.failure} {r.resource_type} {r.url[-150:]}"))
+            page.on("response", lambda r: r.status >= 400 and not AUTO_REQUEST.search(r.url)
+                    and console.append(f"HTTP {r.status} {r.request.resource_type} {r.url[-150:]}"))
+            # A game / live page never goes network-idle (a socket, a loop of requests): "networkidle" made the whole
+            # check fail with a 30 s timeout. Loaded first, then a short wait for the network to calm down.
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=6000)
+            except Exception:  # noqa: BLE001 - still busy: what has loaded is checked
+                pass
+            await page.screenshot(path=str(out), full_page=True, timeout=20000)
+            try:
+                dom = await page.evaluate(DOM_REPORT)
+            except Exception:
+                dom = None
+        finally:  # a failed load used to leave a headless Chromium running
+            await browser.close()
     vision = load_settings().get("vision_model")
     if not vision:
         # Text-only models get a DOM-based check instead (they cannot see the PNG): enough to judge the page

@@ -1,8 +1,9 @@
 """Speech <-> text for the agent.
 
 speech_to_text: any audio or video file -> a transcript with timestamps and an .srt subtitle file (faster-whisper on
-the CPU, offline; the model downloads once). text_to_speech: text -> an .mp3 read by a natural Microsoft neural voice
-(edge-tts, free, no key), any length (read sentence group by sentence group, joined into one file)."""
+the CPU, offline; the model downloads once). text_to_speech: text -> a finished recording from the voice catalog
+(local Piper / Kokoro / Chatterbox voices, then Microsoft's online voices), with the studio finish, timings and dialogs
+(backend/app/voice)."""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +25,11 @@ def _transcribe(path: Path, size: str, lang: str | None, minutes: float) -> tupl
     size = size if size in SIZES else "base"
     model = _MODELS.get(size) or WhisperModel(size, device="cpu", compute_type="int8")
     _MODELS[size] = model
-    segments, info = model.transcribe(str(path), language=lang or None, vad_filter=True, beam_size=1)
+    # The audio is decoded with ffmpeg (16 kHz mono), not by faster-whisper's own PyAV reader: PyAV 19 dropped the
+    # argument it passes ("open() got an unexpected keyword argument 'metadata_errors'"), so every transcript failed.
+    from ..voice.engines import decode
+    audio, _ = decode(path.read_bytes(), 16000)
+    segments, info = model.transcribe(audio, language=lang or None, vad_filter=True, beam_size=1)
     out = []
     for s in segments:
         if minutes and s.start > minutes * 60:
@@ -72,22 +77,16 @@ def _chunks(text: str, limit: int = 2500) -> list[str]:
 
 
 async def pick_voice(lang: str, voice: str = "", gender: str = "") -> str:
-    from .. import tts
-    if voice and re.fullmatch(r"[a-z]{2,3}-[A-Za-z0-9-]+Neural", voice):
-        return voice
-    found = await tts.voices(lang or "tr")
-    if gender:
-        found = [v for v in found if v["gender"] == gender.lower()] or found
-    if not found:
-        raise ValueError(f"no voice for language {lang!r}")
-    return found[0]["id"]
+    """The voice that will be used first (the catalog of Settings > Voices: local voices, then Microsoft's)."""
+    from ..voice import render
+    return (await render.chain_for(voice, lang or "tr", (gender or "").lower()))[0]
 
 
 async def text_to_speech(text: str, target: Path, lang: str = "tr", voice: str = "", gender: str = "",
-                         rate: float = 1.0) -> dict:
-    from .. import tts
-    v = await pick_voice(lang, voice, gender)
-    audio = b"".join([await tts.synthesize(part, v, rate) for part in _chunks(text)])  # MP3 frames join cleanly
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(audio)
-    return {"path": target, "voice": v, "bytes": len(audio), "chars": len(text)}
+                         rate: float | None = None, **tone) -> dict:
+    """Any length, any voice of the catalog, the studio finish; tone: pitch, emotion, pause, preset, room,
+    speakers ({name: voice id | female | male} for 'Name: line' dialogs), srt (write subtitles next to it)."""
+    from ..voice import render
+    voice = (voice or "").strip()
+    return await render.render(text, target, voice=voice, lang=(lang or "")[:3], gender=(gender or "").lower(),
+                               rate=rate, **{k: v for k, v in tone.items() if v is not None})

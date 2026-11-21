@@ -66,7 +66,9 @@ async def _english(q: str) -> str:
 
 
 async def _openverse(c: httpx.AsyncClient, q: str, n: int, wide: bool) -> list[dict]:
-    params = {"q": q, "page_size": 20,  # the most an anonymous request may ask for "license_type": "commercial,modification", "mature": "false",
+    # page_size 20: the most an anonymous request may ask for. The license filter had slipped into this comment, so
+    # non-commercial / no-derivatives photos (CC BY-NC-ND) were downloaded for sites.
+    params = {"q": q, "page_size": 20, "license_type": "commercial,modification", "mature": "false",
               "category": "photograph"}
     if wide:
         params["aspect_ratio"] = "wide"

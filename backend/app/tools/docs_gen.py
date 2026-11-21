@@ -140,7 +140,16 @@ class Source:
         return re.sub(r"<[^>]+>", "", m.group(1)).strip() if m else ""
 
 
+TEMPLATE_CSS: dict[str, str] = {}  # extra CSS of a document template (doc_templates.py registers it with its colors)
+TEMPLATE_SPEC: dict[str, dict] = {}  # the whole template (layout, fonts, margins, header / footer, logo) per theme id
+SERIF_STACK = 'Georgia, "Times New Roman", "Noto Serif", "DejaVu Serif", serif'
+
+
 def _css(theme: str) -> str:
+    return _base_css(theme) + TEMPLATE_CSS.get(theme, "")
+
+
+def _base_css(theme: str) -> str:
     a, d, t = THEMES.get(theme, THEMES[DEFAULT_THEME])
     return f"""
 @page {{ size: A4; margin: 18mm 16mm 20mm 16mm; }}
@@ -171,6 +180,7 @@ li::marker {{ color: {a}; font-weight: 600; }}
 table {{ width: 100%; border-collapse: separate; border-spacing: 0; margin: 6pt 0 12pt; font-size: 9.5pt;
   border: 0.75pt solid #d9e2ec; border-radius: 4pt; overflow: hidden; break-inside: auto; }}
 thead {{ display: table-header-group; }}
+table.keep {{ break-inside: avoid; page-break-inside: avoid; }}
 tr {{ break-inside: avoid; page-break-inside: avoid; }}
 th {{ background: {d}; color: #fff; font-weight: 600; text-align: left; padding: 7pt 9pt; border: none; font-size: 9pt;
   letter-spacing: .2pt; }}
@@ -192,11 +202,16 @@ p > img:only-child {{ display: block; margin: 6pt auto; }}
 .katex {{ font-size: 1.08em; }}
 .page-break {{ break-after: page; page-break-after: always; }}
 /* Ready-made components for HTML content: KPI cards, a bar chart, a callout, badges, two columns. */
-.kpis {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(110pt, 1fr)); gap: 8pt; margin: 8pt 0 12pt; break-inside: avoid; }}
-.kpi {{ border: 0.75pt solid #d9e2ec; border-top: 3pt solid {a}; border-radius: 8pt; padding: 9pt 11pt; background: #fff; }}
-.kpi b {{ display: block; font-size: 17pt; line-height: 1.15; color: {d}; }}
-.kpi span {{ display: block; font-size: 8pt; color: #627d98; text-transform: uppercase; letter-spacing: .4pt; margin-bottom: 2pt; }}
-.kpi em {{ font-style: normal; font-size: 9pt; font-weight: 600; }}
+.kpis {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 104pt), 1fr)); gap: 8pt; margin: 8pt 0 12pt;
+  break-inside: avoid; width: 100%; box-sizing: border-box; }}
+.kpi {{ border: 0.75pt solid #d9e2ec; border-top: 3pt solid {a}; border-radius: 8pt; padding: 8pt 10pt; background: #fff;
+  min-width: 0; overflow: hidden; box-sizing: border-box; display: flex; flex-direction: column; gap: 1pt; }}
+.kpi b {{ display: block; font-size: 15.5pt; line-height: 1.15; color: {d}; overflow-wrap: anywhere; word-break: break-word;
+  hyphens: auto; }}
+.kpi span {{ display: block; font-size: 7.5pt; color: #627d98; text-transform: uppercase; letter-spacing: .3pt; margin-bottom: 2pt;
+  overflow-wrap: anywhere; }}
+.kpi em {{ display: block; font-style: normal; font-size: 8.5pt; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }}
+.kpi b.long {{ font-size: 12pt; }}
 .up {{ color: #059669; }} .down {{ color: #dc2626; }}
 .bars {{ display: grid; gap: 6pt; margin: 8pt 0 12pt; padding: 10pt 12pt; border: 0.75pt solid #d9e2ec; border-radius: 8pt; break-inside: avoid; }}
 .bars > div {{ display: grid; grid-template-columns: 120pt 1fr 70pt; align-items: center; gap: 8pt; font-size: 9.5pt; }}
@@ -242,9 +257,33 @@ def _page(src: Source, theme: str, lang: str, title: str) -> str:
             return re.sub(r"(<head[^>]*>)", lambda m: m.group(1) + '<meta charset="utf-8">' + head_extra, html, count=1, flags=re.I)
         return head_extra + html
     from html import escape
+    body = _num_cells(_kpi_fit(src.html))
+    spec = TEMPLATE_SPEC.get(theme)
+    if spec:  # the template's own layout (letter, memo, academic, magazine...) instead of the coloured cover
+        from .doc_templates import layout_body
+        body = layout_body(spec, body, lang, _hero)
+        lay = spec.get("layout") or "report"
+    else:
+        body, lay = _hero(body, lang), "report"
     return (f'<!doctype html><html lang="{lang}" dir="{"rtl" if src.rtl else "ltr"}"><head><meta charset="utf-8">'
             f"<title>{escape(title)}</title>{head_extra}<style>{_css(theme)}</style></head>"
-            f'<body><main class="doc">{_hero(_num_cells(src.html), lang)}</main></body></html>')
+            f'<body class="layout-{lay}"><main class="doc">{body}</main></body></html>')
+
+
+def _kpi_fit(html: str) -> str:
+    """A long KPI value ("i5-12400F / 6C-12T", "1.840.000 TL") gets a smaller size, so 4 cards in a row never overflow.
+    A short table (up to 14 rows) is kept on one page: its header row was left alone at the foot of a page."""
+    if "<table" in html:
+        def keep(m: re.Match) -> str:
+            attrs = m.group(1) or ""
+            if m.group(0).count("<tr") > 14 or "class=" in attrs:
+                return m.group(0)
+            return f'<table class="keep"{attrs}>' + m.group(0)[m.group(0).index(">") + 1:]
+        html = re.sub(r"<table(\s[^>]*)?>.*?</table>", keep, html, flags=re.S | re.I)
+    if "kpi" not in html:
+        return html
+    return re.sub(r"(<div class=[\"']kpi[\"'][^>]*>(?:(?!</div>).)*?)<b>([^<]{11,})</b>",
+                  lambda m: f'{m.group(1)}<b class="long">{m.group(2)}</b>', html, flags=re.S)
 
 
 NUM_CELL = re.compile(r"^\s*[%₺$€£¥]?\s*[-+]?[\d.,\s%₺$€£¥]+(?:\s?(?:TL|USD|EUR|GBP|%))?\s*$")
@@ -318,24 +357,37 @@ class _Browser:
         return page, tmp
 
 
-def _footer(title: str) -> str:
+def _footer(title: str, lines: list[str] | None = None, side: str = "16mm") -> str:
     from html import escape
     t = escape(title[:90])
-    return ('<div style="width:100%;font-size:7.5pt;color:#829ab1;padding:0 16mm;display:flex;'
+    if lines:  # a template's own footer (an institution's name and address): centred lines, the page number apart
+        body = "".join(f'<div style="font-weight:700;color:#111">{x[2:-2]}</div>' if x.startswith("**") and x.endswith("**")
+                       else f"<div>{x}</div>" for x in lines)
+        return (f'<div style="width:calc(100% - {side} - {side});font-size:7.5pt;color:#333;margin:0 {side};font-family:Arial,sans-serif;'
+                f'position:relative;text-align:center;line-height:1.35;border-top:0.75pt solid #333;padding-top:4pt">{body}<span style="position:absolute;right:0;'
+                'bottom:0;color:#829ab1"><span class="pageNumber"></span>/<span class="totalPages"></span></span></div>')
+    return (f'<div style="width:100%;font-size:7.5pt;color:#829ab1;padding:0 {side};display:flex;'
             f'justify-content:space-between;font-family:Segoe UI,Arial,sans-serif"><span>{t}</span>'
             '<span><span class="pageNumber"></span> / <span class="totalPages"></span></span></div>')
 
 
 async def _pdf(src: Source, target: Path, theme: str, lang: str, landscape: bool) -> dict:
     title = src.title() or target.stem
+    opts: dict = {}
+    if spec := TEMPLATE_SPEC.get(theme):
+        from .doc_templates import page_options
+        opts = page_options(spec)
+    margin = opts.get("margin") or {"top": "18mm", "bottom": "20mm", "left": "16mm", "right": "16mm"}
     async with _Browser() as b:
         page, tmp = await b.open(_page(src, theme, lang, title), src.maths)
         try:
             await page.emulate_media(media="print")
+            if landscape:  # the template's @page { size: A4 } wins over the pdf() option: say it in CSS too
+                await page.add_style_tag(content="@page { size: A4 landscape; }")
             await page.pdf(path=str(target), format="A4", landscape=landscape, print_background=True,
                            display_header_footer=not src.full_page, header_template="<div></div>",
-                           footer_template=_footer(title), prefer_css_page_size=True,
-                           margin=None if src.full_page else {"top": "18mm", "bottom": "20mm", "left": "16mm", "right": "16mm"})
+                           footer_template=_footer(title, opts.get("footer_lines"), margin["left"]),
+                           prefer_css_page_size=True, margin=None if src.full_page else margin)
         finally:
             await page.close()
             _rm(tmp)
@@ -529,12 +581,24 @@ def _docx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
 
     accent, dark, tint = (c.lstrip("#") for c in THEMES.get(theme, THEMES[DEFAULT_THEME]))
     rgb = lambda h: RGBColor.from_string(h.upper())  # noqa: E731
+    spec = TEMPLATE_SPEC.get(theme) or {}  # a document template: its layout, type, margins, letterhead, footer
+    lay = spec.get("layout") or "report"
+    BASE = spec.get("font_family") or ("Georgia" if spec.get("font") == "serif" else "Calibri")
+    h2style, tstyle = spec.get("h2") or "bar", spec.get("table") or "solid"
+    page_opt = {}
+    if spec:
+        from .doc_templates import page_options
+        page_opt = page_options(spec)
     doc = Document()
     for s in doc.sections:
         s.top_margin = s.bottom_margin = Cm(2)
         s.left_margin = s.right_margin = Cm(2.2)
+        if mg := page_opt.get("margin"):
+            s.top_margin, s.right_margin = Cm(float(mg["top"][:-2]) / 10), Cm(float(mg["right"][:-2]) / 10)
+            s.bottom_margin, s.left_margin = Cm(float(mg["bottom"][:-2]) / 10), Cm(float(mg["left"][:-2]) / 10)
 
-    def fonts(style, name="Calibri", size=None, color=None, bold=None):
+    def fonts(style, name=None, size=None, color=None, bold=None):
+        name = name or BASE
         style.font.name = name
         rpr = style.element.get_or_add_rPr()
         rf = rpr.find(qn("w:rFonts"))
@@ -554,14 +618,14 @@ def _docx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
     fonts(st["Normal"], size=10.5, color="1F2933")
     st["Normal"].paragraph_format.space_after = Pt(6)
     st["Normal"].paragraph_format.line_spacing = 1.2
-    fonts(st["Title"], "Calibri Light", 30, "FFFFFF", False)
+    fonts(st["Title"], BASE if BASE != "Calibri" else "Calibri Light", 30, "FFFFFF", False)
     st["Title"].paragraph_format.space_before = Pt(0)
     st["Title"].paragraph_format.space_after = Pt(0)
     st["Title"].paragraph_format.line_spacing = 1.05
     # Headings: clear sizes and spacing, the theme's dark colour, the accent for the third level.
     for i, (sz, col, before, after) in enumerate([(20, dark, 20, 6), (15.5, dark, 18, 6), (12.5, accent, 12, 4),
                                                    (11, dark, 10, 3), (10.5, dark, 8, 2), (10.5, dark, 8, 2)], 1):
-        fonts(st[f"Heading {i}"], "Calibri", sz, col, True)
+        fonts(st[f"Heading {i}"], None, sz, col, True)
         st[f"Heading {i}"].paragraph_format.space_before = Pt(before)
         st[f"Heading {i}"].paragraph_format.space_after = Pt(after)
         st[f"Heading {i}"].paragraph_format.keep_with_next = True
@@ -736,6 +800,78 @@ def _docx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
     skip: set = set()  # elements already placed (the cover's lead paragraph)
     doc_title = [""]
 
+    h2_no = [0]
+
+    def plain_cover(ch):
+        """The first title in a template's own layout (letter, memo, academic, magazine, invoice, resume, minimal):
+        no coloured block - a letterhead with the logo, or the title in the layout's own place and type."""
+        date = time.strftime("%d.%m.%Y")
+        if lay == "letter":
+            logo = None
+            if spec.get("logo"):
+                from .doc_templates import asset_dir
+                lp = asset_dir() / Path(str(spec["logo"])).name
+                logo = lp.read_bytes() if lp.is_file() else None
+            if logo:
+                lpar = doc.add_paragraph()
+                lpar.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                picture(lpar, logo, 0, 0, max_w_cm=5.5)
+            for k, line in enumerate(spec.get("header") or []):
+                hp = doc.add_paragraph()
+                hp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                hp.paragraph_format.space_after = Pt(0)
+                hr = hp.add_run(line)
+                hr.font.bold, hr.font.size, hr.font.color.rgb = True, Pt(11 if k == 0 else 10.5), rgb("111111")
+            rule = doc.add_paragraph()
+            border(rule, "bottom", "333333", 6)
+            dp = doc.add_paragraph()
+            dp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            dr = dp.add_run(date)
+            dr.font.size = Pt(10)
+            tp = doc.add_paragraph()
+            tp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            tp.paragraph_format.space_before, tp.paragraph_format.space_after = Pt(10), Pt(14)
+            inline(tp, ch)
+            for r in tp.runs:
+                r.font.bold, r.font.size, r.font.all_caps, r.font.color.rgb = True, Pt(13), True, rgb("111111")
+        else:
+            centred = lay in ("academic",)
+            if lay in ("minimal", "magazine", "memo"):
+                kp = doc.add_paragraph()
+                kr = kp.add_run({"memo": "NOT" if re.search("[çğışöüİ]", src.html[:3000]) else "MEMO"}.get(lay, date))
+                kr.font.size, kr.font.bold, kr.font.color.rgb = Pt(9 if lay != "memo" else 22), True, rgb(accent)
+            tp = doc.add_paragraph()
+            if centred:
+                tp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            tp.paragraph_format.space_after = Pt(4)
+            inline(tp, ch)
+            size = {"magazine": 30, "minimal": 28, "resume": 26, "invoice": 22, "memo": 17, "academic": 20}.get(lay, 24)
+            for r in tp.runs:
+                r.font.size, r.font.color.rgb = Pt(size), rgb(dark)
+                r.font.bold = lay != "minimal"
+            nxt = ch.find_next_sibling()
+            if nxt is not None and nxt.name == "p" and not nxt.find("img") and len(nxt.get_text(strip=True)) < 400:
+                lp_ = doc.add_paragraph()
+                if centred:
+                    lp_.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                inline(lp_, nxt)
+                for r in lp_.runs:
+                    r.font.italic = lay in ("academic", "magazine")
+                    r.font.color.rgb = rgb(accent if lay == "resume" else "475569")
+                    r.font.size = Pt(12 if lay == "resume" else 11)
+                skip.add(id(nxt))
+            if lay not in ("minimal", "magazine", "memo"):
+                mp = doc.add_paragraph()
+                if centred:
+                    mp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                mr = mp.add_run(date)
+                mr.font.size, mr.font.color.rgb = Pt(9), rgb("64748B")
+            rule = doc.add_paragraph()
+            rule.paragraph_format.space_after = Pt(10)
+            border(rule, "top", accent if lay in ("resume", "minimal") else dark, 18 if lay in ("memo", "invoice", "magazine") else 8)
+        doc_title[0] = ch.get_text(" ", strip=True)
+        first_h1[0] = False
+
     def block(node, level=0, quote=False):
         for ch in node.children:
             if id(ch) in skip:
@@ -751,7 +887,10 @@ def _docx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
             cls = " ".join(ch.get("class") or [])
             if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
                 lvl = int(name[1])
-                if lvl == 1 and first_h1[0] and not doc.paragraphs:
+                if lvl == 1 and first_h1[0] and not doc.paragraphs and lay != "report":
+                    plain_cover(ch)
+                    p = doc.paragraphs[-1]
+                elif lvl == 1 and first_h1[0] and not doc.paragraphs:
                     # Cover block: one full-width cell on the theme's dark colour with real padding - the title,
                     # the lead paragraph under it (if the document starts with one) and the date - then an accent rule.
                     cover = doc.add_table(rows=1, cols=1)
@@ -795,7 +934,16 @@ def _docx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
                     first_h1[0] = False
                 else:
                     p = doc.add_paragraph(style=f"Heading {min(lvl, 6)}")
+                    if lvl == 2 and h2style == "number":
+                        h2_no[0] += 1
+                        nr = p.add_run(f"{h2_no[0]:02d}  ")
+                        nr.font.color.rgb, nr.font.bold = rgb(accent), True
                     inline(p, ch)
+                    if lvl == 2 and h2style in ("underline", "caps"):
+                        border(p, "bottom", accent if h2style == "underline" else "D9E2EC", 12 if h2style == "underline" else 4)
+                    if lvl == 2 and h2style == "caps":
+                        for r in p.runs:
+                            r.font.all_caps, r.font.size, r.font.color.rgb = True, Pt(11), rgb(accent)
                     if lvl in (1, 2):  # section headings: a thin accent rule under the whole line
                         border(p, "bottom", accent if lvl == 1 else "C7D2E0", 8 if lvl == 1 else 6)
                 rtl(p)
@@ -878,10 +1026,14 @@ def _docx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
                             txt = cells[ci].get_text(" ", strip=True)
                             if re.fullmatch(r"[-+]?[\d.,\s%₺$€£¥]+(\s?(TL|USD|EUR|GBP|%))?", txt) and re.search(r"\d", txt):
                                 par.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                            inline(par, cells[ci], {"b": True, "color": "FFFFFF"} if head else None)
-                        if head:
+                            inline(par, cells[ci], {"b": True, "color": "FFFFFF" if tstyle == "solid" else dark} if head else None)
+                        if head and tstyle == "solid":
                             shade(cell._tc, accent)
-                        elif ri % 2 == 0:
+                        elif head and tstyle == "soft":
+                            shade(cell._tc, tint)
+                        elif head:  # lines: no fill, a strong rule under the header
+                            border(par, "bottom", dark, 12)
+                        elif ri % 2 == 0 and tstyle == "solid":
                             shade(cell._tc, tint)
                 tbl_pr = t._tbl.tblPr
                 borders = OxmlElement("w:tblBorders")
@@ -942,6 +1094,18 @@ def _docx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
         border(hp, "bottom", "D9E2EC", 4)
         for footer in (sec.footer, sec.first_page_footer):
             p = footer.paragraphs[0]
+            if spec.get("footer"):  # the institution's footer lines, centred, a rule above
+                fp = p
+                border(fp, "top", "333333", 6)
+                for k, line in enumerate(spec["footer"][:5]):
+                    if k:
+                        fp = footer.add_paragraph()
+                    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    fp.paragraph_format.space_after = Pt(0)
+                    bold = line.startswith("**") and line.endswith("**")
+                    fr = fp.add_run(line.strip("*"))
+                    fr.font.size, fr.font.bold, fr.font.color.rgb = Pt(7.5), bold, rgb("111111" if bold else "444444")
+                p = footer.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             field(p, "PAGE")
             sep = p.add_run(" / ")
@@ -967,7 +1131,9 @@ def _pptx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
     prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
     W, H = prs.slide_width, prs.slide_height
     blank = prs.slide_layouts[6]
-    FONT = "Segoe UI"
+    spec = TEMPLATE_SPEC.get(theme) or {}
+    FONT = spec.get("font_family") or ("Georgia" if spec.get("font") == "serif" else "Segoe UI")
+    look = spec.get("cover") or "dark"  # the template's slide look: dark | hero | minimal | split | band ...
 
     def rect(slide, x, y, w, h, color, shape=MSO_SHAPE.RECTANGLE):
         s = slide.shapes.add_shape(shape, x, y, w, h)
@@ -1055,8 +1221,10 @@ def _pptx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
         r.font.size, r.font.color.rgb, r.font.name = Pt(10), muted, FONT
 
     def title_slide(title: str, subtitle: str):
+        if look in ("minimal", "split", "editorial", "corner"):
+            return light_title(title, subtitle)
         s = prs.slides.add_slide(blank)
-        rect(s, 0, 0, W, H, dark)
+        rect(s, 0, 0, W, H, RGBColor(0x0B, 0x12, 0x20) if look == "dark" and spec else accent if look == "hero" else dark)
         c1 = rect(s, W - Inches(5.2), Inches(-2.2), Inches(7.5), Inches(7.5), accent, MSO_SHAPE.OVAL)
         c1.fill.transparency = 0.0
         c2 = rect(s, W - Inches(3.2), Inches(3.9), Inches(4.6), Inches(4.6), tint, MSO_SHAPE.OVAL)
@@ -1087,10 +1255,44 @@ def _pptx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
             r.font.size, r.font.color.rgb, r.font.name = Pt(18), RGBColor(0xCB, 0xD5, 0xE1), FONT
         count[0] += 1
 
+    def light_title(title: str, subtitle: str):
+        """A light title slide: a white page with an accent column (split), a top rule (minimal / editorial) or a
+        dark corner (corner) - the template's own look instead of the dark default."""
+        s = prs.slides.add_slide(blank)
+        rect(s, 0, 0, W, H, RGBColor(0xFF, 0xFF, 0xFF))
+        x = Inches(0.9)
+        if look == "split":
+            rect(s, 0, 0, Inches(4.6), H, accent)
+            rect(s, Inches(4.6), 0, Inches(0.12), H, dark)
+            x = Inches(5.3)
+        elif look == "corner":
+            tri = rect(s, W - Inches(3.2), 0, Inches(3.2), Inches(3.2), dark, MSO_SHAPE.RIGHT_TRIANGLE)
+            tri.rotation = 180
+        else:
+            rect(s, x, Inches(1.3), Inches(1.6), Emu(Inches(0.08)), accent)
+        tb = s.shapes.add_textbox(x, Inches(1.7), W - x - Inches(0.9), Inches(2.2))
+        tb.text_frame.word_wrap = True
+        tb.text_frame.vertical_anchor = MSO_ANCHOR.BOTTOM
+        r = tb.text_frame.paragraphs[0].add_run()
+        r.text = title
+        r.font.size, r.font.bold, r.font.color.rgb, r.font.name = Pt(40 if len(title) < 50 else 30), look != "minimal", dark, FONT
+        if subtitle:
+            tb2 = s.shapes.add_textbox(x, Inches(4.05), W - x - Inches(0.9), Inches(1.6))
+            tb2.text_frame.word_wrap = True
+            r = tb2.text_frame.paragraphs[0].add_run()
+            r.text = subtitle[:300]
+            r.font.size, r.font.color.rgb, r.font.name = Pt(18), muted, FONT
+        tb_date = s.shapes.add_textbox(x, H - Inches(1.0), Inches(5), Inches(0.4))
+        rd = tb_date.text_frame.paragraphs[0].add_run()
+        rd.text = time.strftime("%d.%m.%Y")
+        rd.font.size, rd.font.color.rgb, rd.font.name, rd.font.bold = Pt(12), accent, FONT, True
+        count[0] += 1
+
     def content_slide(title: str, cont: bool = False):
         s = prs.slides.add_slide(blank)
-        rect(s, 0, 0, W, H, RGBColor(0xFA, 0xFB, 0xFD))
-        rect(s, 0, 0, Inches(0.18), H, accent)
+        rect(s, 0, 0, W, H, RGBColor(0xFA, 0xFB, 0xFD) if look not in ("minimal", "editorial") else RGBColor(0xFF, 0xFF, 0xFF))
+        if look not in ("minimal", "editorial"):
+            rect(s, 0, 0, Inches(0.18), H, accent)
         rect(s, Inches(0.18), H - Inches(0.08), W, Inches(0.08), tint)
         ft = s.shapes.add_textbox(Inches(0.7), H - Inches(0.5), Inches(8), Inches(0.3))
         fr = ft.text_frame.paragraphs[0].add_run()
@@ -1099,7 +1301,7 @@ def _pptx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
         if not cont:
             section_no[0] += 1
         # Title band: a section number in an accent chip, the title beside it, a thin rule under the band.
-        rect(s, Inches(0.18), 0, W, Inches(1.35), RGBColor(0xFF, 0xFF, 0xFF))
+        rect(s, Inches(0.18), 0, W, Inches(1.35), dark if look == "band" else RGBColor(0xFF, 0xFF, 0xFF))
         chip = rect(s, Inches(0.7), Inches(0.5), Inches(0.62), Inches(0.42), accent, MSO_SHAPE.ROUNDED_RECTANGLE)
         chip.adjustments[0] = 0.3
         cf = chip.text_frame
@@ -1115,8 +1317,10 @@ def _pptx(src: Source, target: Path, imgs: dict, theme: str) -> dict:
         tb.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
         r = tb.text_frame.paragraphs[0].add_run()
         r.text = (title or "") + (" (…)" if cont else "")
-        r.font.size, r.font.bold, r.font.color.rgb, r.font.name = Pt(28 if len(title or "") < 50 else 22), True, dark, FONT
-        rect(s, Inches(0.7), Inches(1.32), W - Inches(1.4), Emu(Inches(0.02)), RGBColor(0xD9, 0xE2, 0xEC))
+        r.font.size, r.font.bold, r.font.color.rgb, r.font.name = (Pt(28 if len(title or "") < 50 else 22), True,
+                                                                  white if look == "band" else dark, FONT)
+        rect(s, Inches(0.7), Inches(1.32), W - Inches(1.4), Emu(Inches(0.02 if look != "minimal" else 0.04)),
+             accent if look in ("minimal", "editorial") else RGBColor(0xD9, 0xE2, 0xEC))
         footer(s)
         return s
 
@@ -1342,7 +1546,7 @@ def _sheets_from(content: str) -> list[tuple[str, list[list]]]:
     if isinstance(data, list):
         out.append(("Sheet1", rows_of(data)))
     elif isinstance(data, dict):
-        sheets = data.get("sheets", data)
+        sheets = data.get("sheets", {k: v for k, v in data.items() if k not in ("title", "subtitle")})
         if isinstance(sheets, list):
             for i, s in enumerate(sheets, 1):
                 out.append((str(s.get("name") or f"Sheet{i}"), rows_of(s)))
@@ -1363,7 +1567,13 @@ def _xlsx(content: str, target: Path, theme: str) -> dict:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
-    accent, _, tint = (c.lstrip("#") for c in THEMES.get(theme, THEMES[DEFAULT_THEME]))
+    accent, dark, tint = (c.lstrip("#") for c in THEMES.get(theme, THEMES[DEFAULT_THEME]))
+    spec = TEMPLATE_SPEC.get(theme) or {}
+    # The template's sheet look: dark (a dark header and tab), band (the dark colour), soft (tint header, dark text),
+    # lines (no fill, a strong rule) - the default an accent header with zebra rows.
+    look = ("dark" if spec.get("cover") == "dark" else "band" if spec.get("cover") == "band" else
+            spec.get("table") if spec.get("table") in ("soft", "lines") else "solid")
+    font_name = spec.get("font_family") or ("Georgia" if spec.get("font") == "serif" else "Calibri")
     sheets = _sheets_from(content)
     if not sheets:
         raise ValueError("xlsx needs JSON rows/sheets or Markdown tables")
@@ -1379,20 +1589,27 @@ def _xlsx(content: str, target: Path, theme: str) -> dict:
             n += 1
         used.add(clean.lower())
         ws = wb.create_sheet(clean)
+        ws.sheet_properties.tabColor = dark if look in ("dark", "band") else accent
         for r in rows:
             ws.append([_cell_value(v) for v in r])
         if not rows:
             continue
         ncols = max(len(r) for r in rows)
+        strong = Side(style="medium", color=dark)
         for c in ws[1]:
-            c.font = Font(bold=True, color="FFFFFF")
-            c.fill = PatternFill("solid", fgColor=accent)
+            c.font = Font(bold=True, name=font_name, color="FFFFFF" if look in ("solid", "dark", "band") else dark)
+            if look in ("solid", "dark", "band"):
+                c.fill = PatternFill("solid", fgColor={"dark": "0B1220", "band": dark}.get(look, accent))
+            elif look == "soft":
+                c.fill = PatternFill("solid", fgColor=tint)
             c.alignment = Alignment(vertical="center", wrap_text=True)
-            c.border = Border(top=thin, bottom=thin, left=thin, right=thin)
+            c.border = (Border(bottom=strong) if look == "lines" else Border(top=thin, bottom=thin, left=thin, right=thin))
         for ri, row in enumerate(ws.iter_rows(min_row=2), 2):
             for c in row:
-                c.border = Border(top=thin, bottom=thin, left=thin, right=thin)
-                if ri % 2 == 1:
+                c.font = Font(name=font_name)
+                c.border = (Border(bottom=Side(style="hair", color="CBD5E1")) if look == "lines"
+                            else Border(top=thin, bottom=thin, left=thin, right=thin))
+                if ri % 2 == 1 and look in ("solid", "dark", "band"):
                     c.fill = PatternFill("solid", fgColor=tint)
                 if isinstance(c.value, float) and isinstance(rows[ri - 1][c.column - 1] if c.column - 1 < len(rows[ri - 1]) else None, str) \
                         and str(rows[ri - 1][c.column - 1]).strip().endswith("%"):
@@ -1408,6 +1625,21 @@ def _xlsx(content: str, target: Path, theme: str) -> dict:
         if ws.max_row > 1:
             ws.auto_filter.ref = f"A1:{get_column_letter(ncols)}{ws.max_row}"
         ws.row_dimensions[1].height = 22
+    if spec:  # the template's sheet design: title band, KPI boxes, chart, Gantt, calendar... (xlsx_design.py)
+        from . import xlsx_design
+        title = ""
+        try:
+            d = json.loads(content)
+            title = str(d.get("title") or "") if isinstance(d, dict) else ""
+        except (ValueError, TypeError):
+            m = re.search(r"^#\s+(.+)$|<h1[^>]*>(.*?)</h1>", content or "", re.M)
+            title = (m.group(1) or m.group(2)) if m else ""
+        title = re.sub(r"<[^>]+>", "", title).strip() or target.stem.replace("_", " ").replace("-", " ").title()
+        lang = "tr" if re.search(r"[çğışöüİ]", content or "") else "en"
+        try:
+            xlsx_design.apply(wb, {**spec, "id": theme}, title[:80], (accent, dark, tint), lang)
+        except Exception as e:  # noqa: BLE001 - the plain table is still written
+            print(f"xlsx design skipped: {e}")
     wb.save(target)
     return {"engine": "openpyxl", "sheets": [s for s, _ in sheets]}
 
