@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/sürüm-0.18.5-2563eb" alt="sürüm">
+  <img src="https://img.shields.io/badge/sürüm-0.18.6-2563eb" alt="sürüm">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -334,7 +334,7 @@ Ayrıntılı kullanım için uygulamadaki **Rehber** bölümüne bakın.
 
 ## 🏗️ Mimari
 
-> Klasör yapısı ve tam özellik geçmişi: [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md) · [English](../PROJECT_STATE.md)
+> Klasör yapısı ve tam özellik geçmişi: [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md) · [English](PROJECT_STATE.md)
 
 ```
 backend/   FastAPI · ajan orkestratörü · ajan takımları · sağlayıcı adaptörleri · MCP istemcisi · Tree-sitter · süreç yöneticisi · politika
@@ -343,8 +343,48 @@ frontend/  React + Vite + Tailwind · Monaco · Zustand · SheetJS · docx-previ
 agents/    Ajan rolleri (Markdown)        skills/    Yetenekler (Markdown)
 languages/ tr.json · en.json
 chat/      Her sohbete bir klasör: chat/<sohbet kimliği>/ (dosyaları) + .session/ (kaydı); chat/projects/ (klasör seçilmeden açılan projeler)
-tanitim/   Banner, ekran görüntüleri ve tanıtım metinleri
+screenshots/ Bu README'deki banner ve ekran görüntüleri
 ```
+
+## 🧩 Başka araçların komutlarıyla beceri ekleme (npx skills, hf skills, gradio skills)
+
+Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasörüne kopyalayıp kapanır; bunlar **MCP sunucusu değildir**, o yüzden sunucu olarak başlatılamaz. AI IQ 300 bu komutları tanır ve **Beceriler** olarak içe aktarır:
+
+| Komut | Ne içe aktarılır |
+|---|---|
+| `npx skills add sahip/depo` (`npx -y`, `bunx`, `pnpm dlx`, `yarn dlx` da olur) | O GitHub deposundaki tüm `SKILL.md` dosyaları, seçmeniz için (`--skill ad` seçili gelir) |
+| `sahip/depo`, `https://github.com/sahip/depo`, `…/tree/main/klasor` | Aynısı: tüm depo ya da bir klasörü |
+| `hf skills add [ad]` | Hugging Face beceri pazaryeri (25 beceri); ad yoksa `hf` komutundaki gibi `hf-cli` |
+| `gradio skills add` | Gradio'nun kendi becerisi (Gradio arayüzleri kurmak) |
+| `gradio skills add kullanici/space` | O Hugging Face Space'in API'sinden üretilen beceri: her uç nokta, parametreleri ve hazır Python çağrısı |
+
+**Nerede:** Komutu **Beceriler** sayfasındaki içe aktarma kutusuna ya da MCP sunucu formuna yapıştırın; formda Kaydet yerine **Becerileri içe aktar** düğmesi çıkar. Böyle bir komutla "Başlatılamadı" olan sunucu kartında da aynı düğme vardır (içe aktarmadan sonra işe yaramayan sunucu kaydı silinebilir).
+
+**Nasıl çalışır:** Bir seçim penceresi becerileri listeler (gruplu, aranabilir, açıklamalı; daha önce aktarılanlar işaretli). Seçilen her beceri kaynağıyla kaydedilir; tekrar içe aktarmak kopya oluşturmaz, günceller. Aynı adlı yerleşik bir beceri asla ezilmez (yenisinin önüne sahibinin adı eklenir). Becerinin yanındaki dosyalar (referanslar, betikler) bağlantı olarak eklenir; beceri onlara yönlendirince model açar. Her beceri modelin istemine kısa bir satır ekler (~40 token); pencere toplamı gösterir ve tek seferde en fazla 60 beceriye izin verir - yalnızca kullanacaklarınızı seçin. `--global`, `--force`, `--cursor`, `--claude`, `--dest` gibi bayraklar yok sayılır: beceriler her zaman uygulamanın kendi Beceriler bölümüne gider.
+
+## 🆕 v0.18.6 ile gelenler (Google ve GitHub araçları, Drive'a yükleme, bitince bitmiş kalan yanıtlar)
+
+- **Bağlı hesabınızla Google:** Yerleşik `google` aracı Gmail (taslaklar dahil), Drive, Sheets, Docs, Calendar ve Contacts'ı kapsar. Google MCP sunucuları yanıt verirse onlar kullanılır; reddederlerse (Developer Preview) yerleşik araç devreye girer. "API'leri etkinleştirin" uyarısı gerçek bir kontrolden gelir.
+- **Drive'a gerçek yükleme:** `google file=` yerel bir dosyayı yükler. 5 MB'a kadar dosyalar tek istekte gider, daha büyükleri 8 MB'lık devam ettirilebilir parçalarla. Drive'ın bildirdiği boyut kontrol edilir. İndirme sırasında gelen JSON yanıtı bir PDF'in üzerine asla yazılmaz; bir web sayfası da .pdf, .zip ya da resim adıyla kaydedilmez. Canlı test: 3 sayfalık donanım raporu PDF'i Drive'a sağlam ulaştı (NVIDIA Nemotron'da 24 sn, evren:auto'da da).
+- **GitHub MCP:**
+  - Issue, PR, commit ve depo istekleri bağlı GitHub sunucusuna gider.
+  - Sahip adı yanlışsa kendi kullanıcı adınızı bulma ipucu verilir.
+  - Yanlış yazılmış araç adı için "Bunu mu demek istediniz…" önerisi çıkar.
+- **Başka araçların komutlarından beceri:** `npx skills add`, `hf skills add` ve `gradio skills add` desteklenir (yukarıya bakın).
+- **Biten yanıt bitmiş kalır:**
+  - Geçmiş işle ilgili bir soru ("test ettin mi?") artık bitmiş yanıtı "bir komut yazılmış ama çalıştırılmamıştı" diyerek silmez.
+  - Birkaç kez tekrarlanan bir durum sorgusu başarısız komut sayılmaz.
+  - Bir adımın başarısız olduğunu zaten söyleyen yanıt, tekrar tekrar yeniden yazılmak yerine korunur.
+- **Kaldırma ve temizlik bir dizi hata değil:**
+  - `-ErrorAction SilentlyContinue` ve `2>$null` kullanan komutlar başarılı sayılır.
+  - Hiçbir şey bulamayan "kurulu mu?" kontrolleri (`Get-Command`, `where`, `npm ls -g`, `pip show`, `Test-Path`) hata değil, cevap sayılır.
+  - Arka planda daemon başlatan komut hemen döner.
+- **Temiz çıktı:**
+  - Her biçimdeki araç çağrısı parçaları gizlenir; model akışı onları ikiye bölse bile. Buna `</minimax:tool_call>`, `<invoke>`, DSML ve Kimi işaretleri de dahildir.
+  - PowerShell'de `head` ve `tail` çalışır.
+  - Uzun Linear ve Notion metinleri MCP argümanı olarak geçer.
+  - Tarayıcıda en üstte `return` olan JavaScript çalışır.
+  - Çalışma klasörü dışındaki dosya konsol hatası yerine mesaj gösterir.
 
 ## 🆕 v0.18.5 ile gelenler (kopmadan dev dosyalar, daha güçlü tarayıcı testi, kendini öldürme koruması)
 
@@ -1211,8 +1251,8 @@ v0.6: kesintisiz orkestrasyon, canlı yapılacaklar listesi, hedef modu, otomati
 
 Projenin tam durumu iki dilde tutuluyor: vizyon, mimari ve klasör yapısı, sürüm sürüm tamamlanan tüm özellikler, açık görevler, önemli kararlar ve sonraki adım.
 
-- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md)
-- 🇬🇧 **English:** [PROJECT_STATE.md](../PROJECT_STATE.md)
+- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md)
+- 🇬🇧 **English:** [PROJECT_STATE.md](PROJECT_STATE.md)
 
 **Şu an:** v0.14.1 tamamlandı (Android emülatörü ve Maestro ile mobil uygulama testi, yazıdan / resimden AI klip, HTML öncelikli belgeler, pro PowerPoint / Excel önizleme, daha sağlam araçlar: .venv'e pip, döngü yok, sıralı yapılacaklar; büyük görev düzeltmeleri: devir teslimli dikkatli model değişimi, görev ortasında kota geçişi, döngü ve üzerine yazma koruması, bütün dosya okuma, çevrilmiş hatalar). v0.13.0 tamamlandı (sürüklenip biçimlendirilen yazılarla Video Stüdyosu, canlı AI düzenleme, efektler, AI ile resimden video, özgün ve kütüphane müziği, mobil düzen; logo yapıcı; yazıdan ses ve sesten yazıyla ses kütüphanesi; kota yedekli anahtarlı görsel ve fotoğraf servisleri; MCP OAuth ve kendi kendine kurulum; `localhost-project` yeteneği). v0.12.0 tamamlandı (yalan "bitti" yok: düz metin araç çağrıları çalıştırılır, istenen dosya diskte denetlenir; zayıf modellere `system_info` ve doğru araç ipucu; sohbetlerde tam metin araması; model karnesi; LM Studio bellek koruması; depoda test paketi). v0.11.0 tamamlandı (kapsamlı tarama: tıkanma yok, kopma ve model değişiminde unutma yok, yarı boyutta ilk istem, modeli kapatmayan RAM / VRAM koruması, eksiksiz yeniden bağlanma). v0.10.7 tamamlandı (toplu seçme ve silme, ilk mesajda tüm yetenekler, 14 dilde araç algılama, bölmeden yazım). v0.10.6 tamamlandı (gerçek stok fotoğraflarla profesyonel web tasarımı, JS hatası ve kırık görsel için test edilen sayfalar, sağlayıcının gerçek sayılarına çapalı bağlam sayacı, yerel pencerede taşma yok, Markdown olarak akan canlı yanıt). v0.10.5: gerçek token verisiyle bağlam, ekran görüntülerinde görsel model, ayar denetimi. v0.10.4: Ayarlar, yerel GPU ayarları, canlı senkron, npm / PyPI / GitHub'dan MCP, otomatik araç kurulumu ve sekiz yeni beceri canlı test edildi.
 

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle, AlertTriangle, Bot, Check, CheckCircle2, ChevronDown, Cloud, Cpu, Eye, EyeOff, FileText, Gauge, Globe,
   Info, KeyRound, Languages, Loader2, Monitor, Moon, Palette, Plus, RefreshCw, Save, Search, Server, ShieldCheck, Sun,
-  Trash2, X, Zap, Network, Plug, Volume2, Pencil, HardDrive, Power, LogIn, LogOut, Film, AudioLines, MessageSquarePlus, Play,
+  Trash2, X, Zap, Network, Plug, Volume2, Pencil, HardDrive, Power, LogIn, LogOut, Film, AudioLines, MessageSquarePlus, Play, Link2, Sparkles,
 } from "lucide-react";
 import VoicesPane from "./VoicesPane";
+import ConnectionsPane from "./ConnectionsPane";
 import { GenderIcon } from "./VoiceLibrary";
 import { edgeVoices, speak, speechOpts, speechSupported, voicesFor } from "../lib/speech";
 import { useStore, useT } from "../lib/store";
@@ -13,6 +14,7 @@ import { formatTokens } from "../lib/fileTypes";
 import { errorText, serviceError } from "../lib/errors";
 import { Button, Modal, Toggle, inputCls } from "./ui";
 import Select from "./Select";
+import RepoSkillsModal, { SKILLS_CMD } from "./RepoSkillsModal";
 import Markdown from "./Markdown";
 import { CapBadges, CapIcons, capsHint } from "./Caps";
 import RangeField from "./RangeField";
@@ -26,6 +28,7 @@ const TABS = [
   { id: "context", icon: Gauge, key: "context" },
   { id: "web", icon: Globe, key: "set_web" },
   { id: "voices", icon: AudioLines, key: "set_voices" },
+  { id: "connections", icon: Link2, key: "set_connections" },
   { id: "mcp", icon: Plug, key: "set_mcp" },
   { id: "security", icon: ShieldCheck, key: "set_security" },
   { id: "languages", icon: Languages, key: "set_languages" },
@@ -594,6 +597,70 @@ function LocalRuntime({ id, cfg }) {
   );
 }
 
+// The RAM / VRAM guard for local models: what this computer has (as the guard measures it), whether the chosen
+// local model fits, and the guard's settings. Shown under each local provider and in Settings > Security.
+function MemoryGuard() {
+  const t = useT();
+  const st = useStore.getState();
+  const g = useStore((s) => s.settings?.local_guard) || {};
+  const [d, setD] = useState(null);
+  const load = () => api.get("/api/system/memory").then(setD).catch(() => setD({ error: true }));
+  useEffect(() => { load(); const i = setInterval(load, 8000); return () => clearInterval(i); }, [g.reserve_gb, g.load_check]);
+  const save = (p) => st.updateSettings({ local_guard: p });
+  const m = d?.machine || {};
+  const md = d?.model;
+  const fmt = (x) => (x == null ? "—" : `${x} GB`);
+  const Stat = ({ label, value, sub }) => (
+    <div className="min-w-0 rounded-lg bg-hover px-2.5 py-1.5">
+      <div className="truncate text-[10.5px] text-subtle">{label}</div>
+      <div className="font-mono text-[12.5px] font-medium">{value}</div>
+      {sub && <div className="truncate text-[10.5px] text-subtle">{sub}</div>}
+    </div>
+  );
+  return (
+    <div className="rounded-xl border border-line p-3">
+      <div className="flex items-center gap-2 text-[13px] font-semibold"><Gauge size={14} className="text-accent" />{t("guard_card")}</div>
+      <p className="mt-0.5 text-[11px] leading-snug text-subtle">{t("guard_card_desc")}</p>
+      {!d ? <div className="mt-2 flex items-center gap-2 text-xs text-muted"><Loader2 size={13} className="animate-spin" />{t("loading")}</div> : !d.error && (
+        <>
+          <div className="mt-2 grid grid-cols-2 gap-1.5 @lg:grid-cols-4">
+            <Stat label={t("guard_ram")} value={`${fmt(m.ram_free_gb)} / ${fmt(m.ram_total_gb)}`} sub={t("guard_free_of_total")} />
+            <Stat label={t("guard_usable")} value={fmt(m.usable_gb)} sub={m.commit_free_gb != null ? t("guard_commit", { v: m.commit_free_gb }) : t("guard_usable_sub")} />
+            <Stat label="VRAM" value={m.vram_total_gb ? `${fmt(m.vram_free_gb)} / ${fmt(m.vram_total_gb)}` : t("guard_no_vram")}
+              sub={m.vram_total_gb ? m.vram_source : t("guard_no_vram_sub")} />
+            <Stat label={t("guard_cpu")} value={t("guard_threads", { n: m.threads })} sub={t("guard_cores", { c: m.cores, l: m.logical })} />
+          </div>
+          {md && (
+            <div className={`mt-2 flex items-start gap-1.5 rounded-lg px-2.5 py-1.5 text-[11.5px] ${md.fits ? "bg-ok/10 text-ok" : "bg-warn/10 text-warn"}`}>
+              {!md.fits && <AlertTriangle size={12} className="mt-0.5 shrink-0" />}
+              <span>{t(md.fits ? "guard_model_fits" : "guard_model_short", { model: md.id.split(":").slice(1).join(":"), need: md.need_gb, free: md.free_gb, ctx: md.max_ctx })}</span>
+            </div>
+          )}
+        </>
+      )}
+      <div className="mt-1 divide-y divide-line">
+        <RtRow label={t("guard_load_check")} desc={t("guard_load_check_desc")}>
+          <Segmented value={g.load_check === "warn" ? "warn" : "block"} onChange={(v) => {
+            if (v === "warn" && !window.confirm(t("guard_warn_confirm"))) return;
+            save({ load_check: v });
+          }} options={[{ id: "block", label: t("guard_block") }, { id: "warn", label: t("guard_warn_only") }]} />
+        </RtRow>
+        <RtRow label={t("guard_reserve")} desc={t("guard_reserve_desc", { auto: m.reserve_auto_gb ?? "?" })}>
+          <RangeField value={g.reserve_gb ? +g.reserve_gb : null} min={0.5} max={16} step={0.5} unit=" GB"
+            auto={t("guard_reserve_auto", { v: m.reserve_auto_gb ?? "?" })} autoAt={m.reserve_auto_gb || 3}
+            onCommit={(v) => save({ reserve_gb: v ?? 0 })} />
+        </RtRow>
+        <RtRow label={t("guard_enabled")} desc={t("guard_enabled_desc")}>
+          <Toggle checked={g.enabled !== false} onChange={(v) => save({ enabled: v })} />
+        </RtRow>
+        <RtRow label={t("guard_emergency")} desc={t("guard_emergency_desc")}>
+          <Toggle checked={!!g.emergency_unload} onChange={(v) => save({ emergency_unload: v })} />
+        </RtRow>
+      </div>
+    </div>
+  );
+}
+
 function ProviderCard({ id, cfg, hasKey }) {
   const t = useT();
   const st = useStore.getState();
@@ -709,6 +776,7 @@ function ProviderCard({ id, cfg, hasKey }) {
             </div>
           )}
           {cfg.local && <LocalRuntime id={id} cfg={cfg} />}
+          {cfg.local && <MemoryGuard />}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
             {["anthropic", "gemini"].includes(cfg.kind)  /* these APIs are always used streaming */
               ? <span className="flex items-center gap-1.5 text-subtle" title={t("streaming_always_desc")}><Check size={13} className="text-ok" /> {t("streaming_always")}</span>
@@ -1217,7 +1285,7 @@ function Security() {
           <Toggle checked={!!s.agent.unlimited_debug} onChange={agent("unlimited_debug")} />
         </Row>
         {!s.agent.unlimited_debug && <SliderRow label={t("max_debug")} value={s.agent.max_debug_attempts} min={0} max={50} onCommit={agent("max_debug_attempts")} />}
-        <SliderRow label={t("command_timeout")} value={s.agent.command_timeout} min={10} max={3600} step={10} unit="s" onCommit={agent("command_timeout")} />
+        <SliderRow label={t("command_timeout")} desc={t("command_timeout_desc")} value={s.agent.command_timeout} min={10} max={3600} step={10} unit="s" onCommit={agent("command_timeout")} />
         <SliderRow label={t("server_ttl")} desc={t("server_ttl_desc")} value={s.agent.server_ttl_minutes ?? 10} min={0} max={120} unit={t("unit_m")} zeroLabel={t("vs_off")}
           onCommit={agent("server_ttl_minutes")} />
         <Row label={t("split_write")} desc={t("split_write_desc")}>
@@ -1235,19 +1303,31 @@ function Security() {
         <SliderRow label={t("provider_retries")} desc={t("provider_retries_desc")} value={s.agent.provider_retries ?? 5} min={1} max={10}
           onCommit={agent("provider_retries")} />
       </Card>
+      <Card title={t("watchdogs")} desc={t("watchdogs_desc")}>
+        <SliderRow label={t("probe_after")} desc={t("probe_after_desc")} value={s.agent.probe_after ?? 30} min={5} max={300} step={5} unit="s"
+          onCommit={agent("probe_after")} />
+        <SliderRow label={t("probe_first")} desc={t("probe_first_desc")} value={s.agent.probe_first ?? 45} min={10} max={600} step={5} unit="s"
+          onCommit={agent("probe_first")} />
+        <SliderRow label={t("probe_cut")} desc={t("probe_cut_desc")} value={s.agent.probe_cut ?? 90} min={10} max={600} step={10} unit="s"
+          onCommit={agent("probe_cut")} />
+        <SliderRow label={t("stall_floor")} desc={t("stall_floor_desc")} value={s.agent.stall_floor ?? 90} min={30} max={900} step={10} unit="s"
+          onCommit={agent("stall_floor")} />
+        <SliderRow label={t("midcall_stall")} desc={t("midcall_stall_desc")} value={s.agent.midcall_stall ?? 150} min={30} max={900} step={10} unit="s"
+          onCommit={agent("midcall_stall")} />
+        <SliderRow label={t("silent_tool_limit")} desc={t("silent_tool_limit_desc")} value={s.agent.silent_tool_limit ?? 75} min={20} max={600} step={5} unit="s"
+          onCommit={agent("silent_tool_limit")} />
+      </Card>
       <Card title={t("prompt_mode")} desc={t("prompt_mode_desc")}>
         <div className="px-5 py-3.5">
           <Segmented value={s.agent.prompt_mode || "auto"} onChange={agent("prompt_mode")}
             options={[{ id: "auto", label: t("prompt_auto") }, { id: "lean", label: t("prompt_lean") }, { id: "full", label: t("prompt_full") }]} />
         </div>
       </Card>
-      <Card title={t("guard_card")} desc={t("guard_card_desc")}>
-        <Row tight label={t("guard_enabled")} desc={t("guard_enabled_desc")}>
-          <Toggle checked={s.local_guard?.enabled !== false} onChange={(v) => st.updateSettings({ local_guard: { enabled: v } })} />
-        </Row>
-        <Row tight label={t("guard_emergency")} desc={t("guard_emergency_desc")}>
-          <Toggle checked={!!s.local_guard?.emergency_unload} onChange={(v) => st.updateSettings({ local_guard: { emergency_unload: v } })} />
-        </Row>
+      <div className="@container"><MemoryGuard /></div>
+      <Card title={t("allowed_origins")} desc={t("allowed_origins_desc")}>
+        <div className="flex flex-wrap gap-1.5 px-5 py-3.5">
+          {(s.allowed_origins || []).map((o) => <code key={o} className="rounded bg-hover px-1.5 py-0.5 font-mono text-[11.5px] text-subtle">{o}</code>)}
+        </div>
       </Card>
       <p className="px-1 text-xs leading-relaxed text-muted">{t("security_note")}</p>
     </div>
@@ -1685,7 +1765,9 @@ function McpForm({ init, onClose, onSaved }) {
   const t = useT();
   const [f, setF] = useState(init);
   const [busy, setBusy] = useState(false);
+  const [repo, setRepo] = useState("");
   const isNew = !init.id;
+  const skillsCmd = f.transport === "stdio" && SKILLS_CMD.test(`${f.command} ${f.args}`) ? `${f.command} ${f.args}`.trim() : "";
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const save = async () => {
     const id = (f.id || f.name).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
@@ -1704,7 +1786,7 @@ function McpForm({ init, onClose, onSaved }) {
   return (
     <Modal title={t(isNew ? "mcp_add" : "mcp_edit")} onClose={onClose} width="max-w-xl"
       footer={<><Button variant="ghost" onClick={onClose}>{t("cancel")}</Button>
-        <Button variant="primary" disabled={busy || !(f.id || f.name) || (f.transport === "stdio" ? !f.command : !f.url)} onClick={save}>
+        <Button variant="primary" disabled={busy || !!skillsCmd || !(f.id || f.name) || (f.transport === "stdio" ? !f.command : !f.url)} onClick={save}>
           {busy ? <Loader2 size={14} className="animate-spin" /> : t(isNew ? "mcp_connect" : "save")}</Button></>}>
       <div className="space-y-3 text-[13px]">
         <label className="block"><span className="mb-1 block font-medium">{t("name")}</span>
@@ -1730,9 +1812,16 @@ function McpForm({ init, onClose, onSaved }) {
                 placeholder={isNew ? "Authorization=Bearer ..." : t("mcp_secret_keep", { keys: (init.header_keys || []).join(", ") || "—" })} /></label>
           </>
         )}
+        {skillsCmd && (
+          <div className="rounded-xl border border-accent/40 bg-accent-soft px-3 py-2.5 text-xs leading-snug">
+            <p>{t("mcp_is_skills")}</p>
+            <Button className="mt-2" variant="primary" onClick={() => setRepo(skillsCmd)}><Sparkles size={14} /> {t("mcp_import_skills")}</Button>
+          </div>
+        )}
         <p className="text-xs leading-snug text-muted">{t(f.transport === "stdio" ? "mcp_cmd_note" : "mcp_http_note")}</p>
         <p className="text-xs leading-snug text-muted">{t("mcp_secret_note")}</p>
       </div>
+      {repo && <RepoSkillsModal spec={repo} onClose={() => setRepo("")} onDone={onClose} />}
     </Modal>
   );
 }
@@ -1742,6 +1831,7 @@ function McpServers() {
   const [servers, setServers] = useState(null);
   const [form, setForm] = useState(null);
   const [busy, setBusy] = useState("");
+  const [repoFor, setRepoFor] = useState(null);
   const load = () => api.get("/api/mcp").then(setServers).catch(() => setServers({}));
   useEffect(() => { load(); }, []);
   const restart = async (id) => { setBusy(id); try { await api.post(`/api/mcp/${id}/restart`); } finally { setBusy(""); load(); } };
@@ -1892,6 +1982,13 @@ function McpServers() {
               </div>
             )}
             {s.error && !s.needs_auth && <div className="rounded-lg bg-danger/10 px-2.5 py-1.5 text-xs text-danger">{s.error}</div>}
+            {s.transport !== "http" && SKILLS_CMD.test([s.command, ...(s.args || [])].join(" ")) && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-xs">
+                <span className="flex-1">{t("mcp_is_skills")}</span>
+                <Button variant="primary" className="!py-1 text-xs" onClick={() => setRepoFor({ id, spec: [s.command, ...(s.args || [])].join(" ") })}>
+                  <Sparkles size={13} /> {t("mcp_import_skills")}</Button>
+              </div>
+            )}
             {s.tools?.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {s.tools.map((tl) => <button key={tl.name} title={`${tl.description || tl.name}\n\n${t("mcp_try_hint")}`} onClick={() => setTrying({ sid: id, tool: tl.name })}
@@ -1904,6 +2001,7 @@ function McpServers() {
       </Card>}
       <div className="flex gap-2 px-1 text-xs leading-snug text-muted"><Info size={14} className="mt-0.5 shrink-0" />{t("mcp_safety")}</div>
       {form && <McpForm init={form} onClose={() => setForm(null)} onSaved={() => { setForm(null); load(); }} />}
+      {repoFor && <RepoSkillsModal spec={repoFor.spec} onClose={() => setRepoFor(null)} onDone={() => remove(repoFor.id)} />}
       {trying && servers?.[trying.sid] && <McpTry sid={trying.sid} server={servers[trying.sid]} init={trying.tool} onClose={() => setTrying(null)} />}
     </div>
   );
@@ -1911,7 +2009,7 @@ function McpServers() {
 
 
 
-const PANES = { general: General, models: Models, multi: MultiModel, providers: Providers, context: Context, web: Web, voices: VoicesPane, mcp: McpServers, security: Security, languages: LanguagesTab };
+const PANES = { general: General, models: Models, multi: MultiModel, providers: Providers, context: Context, web: Web, voices: VoicesPane, connections: ConnectionsPane, mcp: McpServers, security: Security, languages: LanguagesTab };
 
 export default function SettingsView() {
   const t = useT();

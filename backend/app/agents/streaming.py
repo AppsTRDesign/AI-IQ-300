@@ -192,7 +192,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
             probe.update(task=None, res=None)
         probe["idle"] = secs
         if probe["task"] is None:
-            if secs >= (PROBE_AFTER if got_output else PROBE_FIRST):
+            if secs >= (wd("probe_after") if got_output else wd("probe_first")):
                 probe["task"] = asyncio.create_task(router.ping(model))
                 run.probe = {"state": "checking", "ms": 0}
             return
@@ -221,15 +221,16 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
             return
         # A live stream's own pace decides: EVREN sends a file's arguments in batches 5-12 s apart and pauses longer
         # under load; 4 x the longest gap (48 s) cut healthy streams, and every retry re-read the whole prompt.
-        cut = max(PROBE_CUT, min(240.0, probe["gap"] * 8)) if got_output else PROBE_CUT_FIRST
+        pcut = wd("probe_cut")
+        cut = max(pcut, min(240.0, probe["gap"] * 8)) if got_output else max(pcut, PROBE_CUT_FIRST)
         if got_output and probe.get("kind") == "thinking":
             # Reasoning arrives token by token: a thought frozen mid-sentence for a minute while a new request is
             # answered has lost its stream (90 s of a frozen half sentence looked like a crashed app).
-            cut = max(min(60.0, PROBE_CUT), min(120.0, probe.get("tgap", 0.0) * 6))
+            cut = max(min(60.0, pcut), min(120.0, probe.get("tgap", 0.0) * 6))
         elif got_output and probe.get("kind") == "text":
             # The final answer: EVREN pauses 45 s+ in the middle of an answer and then goes on (a 45 s cut showed
             # "the stream stopped, continuing" twice on one answer). Its own pace x 6, at least PROBE_CUT (90 s).
-            cut = max(PROBE_CUT, min(150.0, probe.get("tgap", 0.0) * 6))
+            cut = max(pcut, min(150.0, probe.get("tgap", 0.0) * 6))
         # A provider that sends a tool call whole may be silent while it writes one: it gets 3 x longer (at most
         # 90 s, not the 300 s stream timeout) before the lost stream is continued.
         if res["state"] == "alive" and secs >= (cut if streams_all else min(cut * 3, 240)):
@@ -283,7 +284,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                         prepare(last.get("name"), out["tool"], seconds=evt["seconds"], force=True)
                     else:
                         prepare("tool" if got_output else "model", seconds=evt["seconds"], force=True)
-                if (got_output and evt["seconds"] >= SILENT_TOOL_LIMIT and opts.get("tools") and not _call_open(run)
+                if (got_output and evt["seconds"] >= wd("silent_tool_limit") and opts.get("tools") and not _call_open(run)
                         and not router.is_local(model) and not router.streams_tool_args(model)):
                     # A cloud provider that sends a tool call only when it is complete. The turn is NOT cut here any
                     # more: cutting it threw away the call that was being generated (minutes of work), the retry
@@ -293,7 +294,7 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                     # if the provider does drop, the switch happens at the retry (silent_writer).
                     run.silent_writer = True
                 ka = evt.get("keepalive")
-                if (got_output and evt["seconds"] >= MIDCALL_STALL and (_call_open(run) or run.partial_tag)
+                if (got_output and evt["seconds"] >= wd("midcall_stall") and (_call_open(run) or run.partial_tag)
                         and not router.is_local(model) and not (ka is not None and ka < 30)):
                     # The file was streaming and the provider stopped in the middle of it (evren/deepseek waited
                     # 300 s for the general timeout). What was written is kept and the model continues from there.
@@ -332,7 +333,13 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                 gen["t1"] = gen["t1"] or time.monotonic()
             elif t in ("tool_call_start", "tool_call_progress"):
                 gen["chars"] += len(evt.get("delta") or "")
+                gen["streamed"] = gen.get("streamed") or bool(evt.get("delta"))
                 gen["t1"] = gen["t1"] or time.monotonic()
+            elif t == "tool_call" and not gen.get("streamed"):
+                # A provider that sends the call whole at the end (EVREN): its arguments are output too, or the speed
+                # of a turn that only wrote a file showed nothing (or only the speed of its few words of text).
+                gen["chars"] += len(json.dumps(evt.get("arguments") or {}, ensure_ascii=False))
+                gen["t1"] = gen["t1"] or turn.get("t_first") or time.monotonic()
             if t == "thinking_blocks":
                 run.thinking_blocks = evt["blocks"]
             elif t == "truncated":
@@ -530,6 +537,25 @@ PROBE_AFTER = int(__import__("os").environ.get("AIIQ_PROBE_AFTER") or 30)  # sil
 PROBE_FIRST = 45  # before the first token (the provider may still be reading a long prompt)
 PROBE_CUT = int(__import__("os").environ.get("AIIQ_PROBE_CUT") or 90)
 PROBE_CUT_FIRST = 90
+
+# The defaults above; Settings > Agent > model connection overrides them (an AIIQ_PROBE_* variable wins, for tests).
+_WD = {"silent_tool_limit": ("SILENT_TOOL_LIMIT", 20), "midcall_stall": ("MIDCALL_STALL", 30),
+       "probe_after": ("PROBE_AFTER", 5), "probe_first": ("PROBE_FIRST", 10), "probe_cut": ("PROBE_CUT", 10)}
+
+
+def wd(key: str) -> float:
+    """A silence watchdog in seconds: the setting (agent.<key>), else the module default."""
+    name, floor = _WD[key]
+    default = float(globals()[name])
+    env = {"probe_after": "AIIQ_PROBE_AFTER", "probe_cut": "AIIQ_PROBE_CUT"}.get(key)
+    if env and __import__("os").environ.get(env):
+        return default
+    try:
+        from ..config import load_settings
+        v = (load_settings().get("agent") or {}).get(key)
+        return max(float(floor), float(v)) if v not in (None, "", 0) else default
+    except Exception:  # noqa: BLE001 - a broken setting never stops a stream
+        return default
 
 
 def _mid_sentence(text: str) -> bool:

@@ -635,7 +635,15 @@ export const useStore = create((set, get) => ({
       window.open(get().fileApi(`/fs/raw?path=${encodeURIComponent(path)}`) + "&download=true");
       return;
     }
-    const { content } = await api.get(get().fileApi(`/file?path=${encodeURIComponent(path)}`));
+    // A link to a file outside the working folder (~/.claude-flow/config.json written by a command) is refused by the
+    // server (403): say so instead of an uncaught promise error in the console on every click.
+    let content;
+    try {
+      ({ content } = await api.get(get().fileApi(`/file?path=${encodeURIComponent(path)}`)));
+    } catch (e) {
+      get().notify(e.message || get().t("save_failed"), "error", path);
+      return;
+    }
     get().openBuffer({ id: path, path, content, saved: content });
   },
   openBuffer(tab) {

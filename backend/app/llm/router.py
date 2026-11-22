@@ -158,6 +158,10 @@ def profile_opts(model_id: str, opts: dict) -> dict:
     p = profile(model_id)
     if p.get("temperature") is not None:
         opts.setdefault("temperature", p["temperature"])
+    from . import families
+    for k, v in families.sampling(split_model_id(model_id)[1]).items():
+        # the model card's sampling when nothing else set one (provider rules still drop what a server rejects)
+        opts.setdefault(k, v)
     if p.get("max_tokens"):
         opts.setdefault("max_tokens", p["max_tokens"])
     if p.get("thinking") in ("on", "off"):
@@ -189,6 +193,14 @@ def silence_limits(local: bool) -> tuple[float | None, float | None]:
     mid = float(a.get("stream_timeout") or CLOUD_SILENCE)
     first = float(a.get("first_token_timeout") or max(mid, 300))
     return max(30.0, first), max(30.0, mid)
+
+
+def stall_floor() -> float:
+    """Settings > Agent > stall_floor: the lowest stall limit of a steady stream that suddenly stops (default 90 s)."""
+    try:
+        return max(30.0, float((load_settings().get("agent") or {}).get("stall_floor") or 90))
+    except (TypeError, ValueError):
+        return 90.0
 
 
 async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | None = None,
@@ -228,8 +240,9 @@ async def _heartbeat(gen: AsyncIterator[dict], name: str, max_silence: float | N
                     # Not after reasoning: a provider that sends a tool call only when it is complete (EVREN) is
                     # silent between the last thought and the call, and that silence was cut as a stall at 46 s.
                     # (EVREN sends file arguments in batches 5-12 s apart, more under load: at least 90 s.)
-                    paced = max(90.0, max_gap * 10) < limit
-                    limit = min(limit, max(90.0, max_gap * 10))
+                    floor = stall_floor()
+                    paced = max(floor, max_gap * 10) < limit
+                    limit = min(limit, max(floor, max_gap * 10))
                 if limit and idle >= limit:
                     # Mid-answer it is a stalled stream (what was written is kept and continued), not a busy provider
                     raise ProviderError("stalled" if started else "timeout", f"{name}: no data for {int(idle)} s "
@@ -601,11 +614,11 @@ async def context_info(model_id: str) -> dict:
     override = settings["context"]["num_ctx"].get(model_id)
     current = min(override or info.get("default_ctx") or (LOCAL_DEFAULT_CTX if local else max_ctx), max_ctx)
     ram = None
-    if local and info.get("kv_per_token"):
+    if local:
         # RAM guard: the window (and any automatic growth) stays within what the free memory can hold, so a big
         # local model never pushes the computer into swapping or a crash.
         from . import memguard
-        ram = await asyncio.to_thread(memguard.safe_window, get_provider(pname).base_url, model, info["kv_per_token"])
+        ram = await asyncio.to_thread(memguard.safe_window, get_provider(pname).base_url, model, info.get("kv_per_token"))
         if ram and not ram["short"]:
             binding = current > ram["max"]
             max_ctx = max(2048, min(max_ctx, ram["max"]))
@@ -614,6 +627,10 @@ async def context_info(model_id: str) -> dict:
             # change num_ctx, because every other size makes the server reload the whole model.
             current = memguard.steady(model, current, ram["max"], binding)
             max_ctx = max(max_ctx, current)
+        elif ram and memguard.load_check() == "warn":
+            # The weights do not fit and the user chose "load with a warning": at least the KV cache stays small.
+            max_ctx = min(max_ctx, 4096)
+            current = min(current, max_ctx)
     if local:
         from . import memguard
         if (cap := memguard.cap(model)) and cap < max_ctx:
@@ -623,7 +640,8 @@ async def context_info(model_id: str) -> dict:
     out = with_profile(model_id, {
         "model": model_id, "max": max_ctx, "current": current, "local": local, "adjustable": local, "ram": ram,
         "threshold": settings["context"]["compress_threshold"], "tools": info.get("tools"),
-        "vision": info.get("vision"), "thinking": info.get("thinking"), "native_tools": native_tools(model_id, info)})
+        "vision": info.get("vision"), "thinking": info.get("thinking"), "native_tools": native_tools(model_id, info),
+        "family": __import__("app.llm.families", fromlist=["family"]).family(model)[0]})
     return {**out, **effort_spec(model_id, {**out, "thinking": info.get("thinking")})}
 
 
@@ -636,6 +654,11 @@ def native_tools(model_id: str, info: dict) -> bool:
         return False
     forced = profile(model_id).get("tools")
     if forced == "tags":
+        return False
+    from . import families
+    if forced != "native" and families.native_ok(split_model_id(model_id)[1]) is False:
+        # The model family has no reliable function calling (R1, Gemma, small Llama, Phi) on any provider: the
+        # text protocol, which every model can write and which streams live (model profile "native" overrides)
         return False
     if forced != "native" and is_local(model_id):
         # Local servers (Ollama) send a native tool call only when the whole call is generated: a page written by a
@@ -820,6 +843,11 @@ def _forget_ctx(model_id: str) -> None:
     _INFO_CACHE.pop(model_id, None)
 
 
+NO_RAM_WARN = ("{model} needs about {need} GB of RAM for its weights, but only {free} GB is free (of {total} GB, after "
+               "the reserve). It is loaded anyway because the memory guard is set to warn only: the computer may slow "
+               "down a lot or freeze. The window is kept at 4K.")
+
+
 async def activate(model_id: str) -> None:
     """Local models: unload every other local model (Ollama + LM Studio) and preload the selected one,
     so VRAM/RAM is not shared between idle models. Progress is published as 'model' events."""
@@ -830,7 +858,25 @@ async def activate(model_id: str) -> None:
         return
     emit = lambda state, msg="": bus.publish("model", state, {"model": model_id, "message": msg})
     emit("switching")
-    num_ctx = (await context_info(model_id))["current"]
+    info = await context_info(model_id)
+    num_ctx = info["current"]
+    from . import memguard
+    if (ram := info.get("ram") or {}).get("short") and memguard.load_check() == "warn":
+        # The user chose "load with a warning" (Settings > Providers > local model memory): say it, then load.
+        from ..agents.checks import ui_text
+        emit("memory", ui_text(settings.get("language") or "tr", "ai_warn_no_ram", NO_RAM_WARN, model=model,
+                               need=ram["weights_gb"], free=ram["free_gb"], total=ram["total_gb"]))
+    elif (ram := info.get("ram") or {}).get("short"):
+        # The weights alone do not fit in the free RAM. Ollama reads a CPU model fully into memory (mmap off), so
+        # loading it anyway pushed the computer into heavy paging and a blue screen (0xBE while a 21.8 GB model
+        # loaded with 17.2 GB free). Selecting the model never loads it then; the task start says the same.
+        from ..agents.checks import ui_text
+        emit("memory", ui_text(
+            settings.get("language") or "tr", "ai_err_no_ram", "{model} needs about {need} GB of RAM for its weights "
+            "alone, but only {free} GB is free (of {total} GB, with a safety reserve). It was not loaded, to protect "
+            "the computer. Close other programs, or pick a smaller local model or a cloud model.", model=model,
+            need=ram["weights_gb"], free=ram["free_gb"], total=ram["total_gb"], parallel=ram["parallel"]))
+        return
     try:
         for name, c in settings["providers"].items():
             if not (c.get("local") and c.get("enabled")):

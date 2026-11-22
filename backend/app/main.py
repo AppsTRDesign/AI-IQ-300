@@ -2096,6 +2096,26 @@ async def _health_now() -> dict:
             "settings_rev": str(rev)}
 
 
+@app.get("/api/system/memory")
+async def system_memory():
+    """Settings > local model memory: this computer's RAM / VRAM as the guard sees it, and for the chosen local model
+    whether its weights fit (and the largest window that does)."""
+    from .llm import memguard
+    out = {"machine": await asyncio.to_thread(memguard.machine), "guard": load_settings().get("local_guard") or {},
+           "model": None}
+    active = load_settings().get("active_model") or ""
+    pname = active.partition(":")[0]
+    if (load_settings()["providers"].get(pname) or {}).get("local"):
+        try:
+            info = await router.context_info(active)
+            if ram := info.get("ram"):
+                out["model"] = {"id": active, "need_gb": ram.get("weights_gb"), "free_gb": ram.get("free_gb"),
+                                "fits": not ram.get("short"), "max_ctx": ram.get("max"), "window": info.get("current")}
+        except Exception:  # noqa: BLE001 - the server may be off: the machine part is still useful
+            pass
+    return out
+
+
 @app.get("/api/local/{pid}/runtime")
 async def local_runtime_get(pid: str):
     from .llm import local_runtime
@@ -2297,6 +2317,144 @@ async def mcp_oauth_callback(state: str = "", code: str = "", error: str = "", e
     return HTMLResponse(page, status_code=200 if ok else 400)
 
 
+# ---------- Connections (Settings > Connections: GitHub, Google, Microsoft) ----------
+class ConnIn(BaseModel):
+    token: str | None = None
+    client_id: str = ""
+    client_secret: str = ""
+    services: list[str] = []
+    org: bool = False
+    forget_client: bool = False
+    full_name: str = ""
+    branch: str = ""
+    stash: bool = False
+
+
+async def _conn(coro):
+    from . import connections
+    try:
+        return await coro if asyncio.iscoroutine(coro) else coro
+    except connections.ConnError as e:
+        raise fail(400, e.code, str(e)) from None
+
+
+@app.get("/api/connections")
+def connections_status():
+    from . import connections
+    return connections.status()
+
+
+@app.post("/api/connections/github")
+async def connections_github(body: ConnIn):
+    from . import connections
+    return await _conn(connections.github_connect(body.token))
+
+
+@app.delete("/api/connections/github")
+async def connections_github_off():
+    from . import connections
+    await connections.github_disconnect()
+    return connections.status()
+
+
+@app.get("/api/connections/github/repos")
+async def connections_github_repos(q: str = ""):
+    from . import connections
+    return await _conn(connections.github_repos(q))
+
+
+@app.post("/api/connections/github/import")
+async def connections_github_import(body: ConnIn):
+    from . import connections
+    return await _conn(connections.github_import(body.full_name, body.branch))
+
+
+@app.get("/api/connections/github/projects")
+def connections_github_projects():
+    from . import connections
+    return connections._github_projects()
+
+
+@app.get("/api/projects/{pid}/git")
+async def project_git_status(pid: str, fetch: bool = True):
+    from . import connections
+    return await _conn(connections.project_git(pid, fetch))
+
+
+@app.post("/api/projects/{pid}/git/pull")
+async def project_git_pull(pid: str, body: ConnIn):
+    from . import connections
+    return await _conn(connections.project_pull(pid, body.stash))
+
+
+@app.get("/api/connections/google/apis")
+async def connections_google_apis(force: bool = False):
+    from . import connections
+    return await connections.google_api_check(force)
+
+
+@app.put("/api/connections/google/client")
+def connections_google_client(body: ConnIn):
+    from . import connections
+    try:
+        return connections.google_client(body.client_id, body.client_secret)
+    except connections.ConnError as e:
+        raise fail(400, e.code, str(e)) from None
+
+
+@app.post("/api/connections/google")
+def connections_google(body: ConnIn, request: Request):
+    from . import connections
+    redirect = str(request.base_url).rstrip("/") + "/api/connections/google/callback"
+    try:
+        return {"url": connections.google_start(redirect, body.services)}
+    except connections.ConnError as e:
+        raise fail(400, e.code, str(e)) from None
+
+
+@app.get("/api/connections/google/callback")
+async def connections_google_callback(state: str = "", code: str = "", error: str = ""):
+    from html import escape
+
+    from . import connections
+    tr = (load_settings().get("language") or "tr") == "tr"
+    ok, msg = True, ("Google bağlandı. Bu sekmeyi kapatabilirsiniz." if tr else "Google is connected. You can close this tab.")
+    if error or not code:
+        ok, msg = False, error or "no code"
+    else:
+        try:
+            await connections.google_finish(state, code)
+        except Exception as e:  # noqa: BLE001
+            ok, msg = False, str(e)[:300]
+    color = "#16a34a" if ok else "#dc2626"
+    page = (f"<!doctype html><meta charset=utf-8><title>AI IQ 300 · Google</title><body style=\"font-family:system-ui;"
+            f"display:grid;place-items:center;height:100vh;margin:0;background:#f7f7f8\"><div style=\"max-width:460px;"
+            f"padding:28px;border-radius:16px;background:#fff;box-shadow:0 8px 30px #0001;text-align:center\">"
+            f"<div style=\"font-size:40px;color:{color}\">{'✓' if ok else '✕'}</div><p>{escape(msg)}</p></div>"
+            f"<script>setTimeout(()=>window.close(),{2500 if ok else 60000})</script>")
+    return HTMLResponse(page, status_code=200 if ok else 400)
+
+
+@app.delete("/api/connections/google")
+async def connections_google_off(forget_client: bool = False):
+    from . import connections
+    await connections.google_disconnect(forget_client)
+    return connections.status()
+
+
+@app.post("/api/connections/microsoft")
+async def connections_microsoft(body: ConnIn):
+    from . import connections
+    return await _conn(connections.microsoft_connect(body.org))
+
+
+@app.delete("/api/connections/microsoft")
+async def connections_microsoft_off():
+    from . import connections
+    await connections.microsoft_disconnect()
+    return connections.status()
+
+
 @app.delete("/api/mcp/{sid}/oauth")
 async def mcp_oauth_signout(sid: str):
     from . import mcp_client
@@ -2479,6 +2637,31 @@ async def catalog_import(kind: str, body: ImportIn):
         raise to_http(e, 400)
     _localize_later(kind, name)
     return {"name": name}
+
+
+class RepoSkillsIn(BaseModel):
+    spec: str
+    paths: list[str] = []
+
+
+@app.post("/api/skills/repo")
+async def skills_repo_list(body: RepoSkillsIn):
+    """The SKILL.md files of a GitHub repository ('npx skills add owner/repo', owner/repo or its URL)."""
+    try:
+        return await catalog.repo_skills(body.spec)
+    except Exception as e:
+        raise to_http(e, 400)
+
+
+@app.post("/api/skills/repo/import")
+async def skills_repo_import(body: RepoSkillsIn):
+    try:
+        names = await catalog.import_repo_skills(body.spec, body.paths)
+    except Exception as e:
+        raise to_http(e, 400)
+    for n in names:
+        _localize_later("skills", n)
+    return {"names": names}
 
 
 @app.post("/api/catalog/{kind}/upload")

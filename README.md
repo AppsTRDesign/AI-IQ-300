@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.18.5-2563eb" alt="version">
+  <img src="https://img.shields.io/badge/version-0.18.6-2563eb" alt="version">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -334,7 +334,7 @@ See the in-app **Guide** for details.
 
 ## 🏗️ Architecture
 
-> Folder layout and the full feature history: [PROJECT_STATE.md](../PROJECT_STATE.md) · [Türkçe](../PROJECT_STATE.tr.md)
+> Folder layout and the full feature history: [PROJECT_STATE.md](PROJECT_STATE.md) · [Türkçe](PROJECT_STATE.tr.md)
 
 ```
 backend/   FastAPI · agent orchestrator · agent teams · provider adapters · MCP client · Tree-sitter · process manager · policy
@@ -343,8 +343,48 @@ frontend/  React + Vite + Tailwind · Monaco · Zustand · SheetJS · docx-previ
 agents/    Agent roles (Markdown)          skills/    Skills (Markdown)
 languages/ tr.json · en.json
 chat/      One folder per chat: chat/<chat id>/ (its files) + .session/ (its record); chat/projects/ (projects without a chosen folder)
-tanitim/   Banners, screenshots and promo texts
+screenshots/ Banners and screenshots used by this README
 ```
+
+## 🧩 Skills from other tools' commands (npx skills, hf skills, gradio skills)
+
+A skills install command copies `SKILL.md` instructions into an agent's skills folder and exits - it is **not an MCP server**, so it cannot be started as one. AI IQ 300 recognizes these commands and imports them as **Skills** instead:
+
+| Command | What is imported |
+|---|---|
+| `npx skills add owner/repo` (also `npx -y`, `bunx`, `pnpm dlx`, `yarn dlx`) | Every `SKILL.md` in that GitHub repository, to pick from (`--skill name` comes pre-selected) |
+| `owner/repo`, `https://github.com/owner/repo`, `…/tree/main/folder` | The same, the whole repository or one folder of it |
+| `hf skills add [name]` | The Hugging Face skills marketplace (25 skills); no name = `hf-cli`, as the `hf` command does |
+| `gradio skills add` | Gradio's own skill (building Gradio UIs) |
+| `gradio skills add user/space` | A skill generated from that Hugging Face Space's API: every endpoint, its parameters and a ready Python call |
+
+**Where:** paste the command into the import box on the **Skills** page, or into the MCP server form - there the Save button is replaced by **Import skills**. A server card that failed with such a command gets the same button (and the useless server entry can be removed after the import).
+
+**How it works:** a picker lists the skills (grouped, searchable, with descriptions; already imported ones are marked). Each picked skill is saved with its source, so importing again updates it instead of making a copy; a built-in skill with the same name is never overwritten (the new one gets the owner's name in front). Files next to a skill (references, scripts) are listed as links the model opens when the skill points to them. Every skill adds a short line (~40 tokens) to the model's prompt, so the picker shows the total and allows at most 60 at once - pick only what you will use. Flags such as `--global`, `--force`, `--cursor`, `--claude` or `--dest` are ignored: skills always go to the app's own Skills.
+
+## 🆕 New in v0.18.6 (Google and GitHub tools, Drive uploads, finished answers that stay finished)
+
+- **Google with your connected account:** a built-in `google` tool covers Gmail (drafts too), Drive, Sheets, Docs, Calendar and Contacts. Google MCP servers are used when they answer; if they refuse (Developer Preview), the built-in tool takes over. The "enable the APIs" warning comes from a real check.
+- **Real Drive uploads:** `google file=` uploads a local file. Files up to 5 MB go in one request; larger ones go in 8 MB resumable chunks. The size Drive reports back is checked. A download never overwrites a PDF with a JSON reply, and a web page is never saved under a .pdf, .zip or image name. Live test: a 3-page hardware-report PDF reached Drive intact, on NVIDIA Nemotron in 24 s and on evren:auto.
+- **GitHub MCP:**
+  - Issue, PR, commit and repository requests go to the connected GitHub server.
+  - A wrong owner gets a hint to look up your login.
+  - A misspelled tool name gets "Did you mean…".
+- **Skills from other tools' commands:** `npx skills add`, `hf skills add` and `gradio skills add` (see above).
+- **Finished answers stay finished:**
+  - A question about past work ("did you test it?") no longer erases a finished answer with "a command was written but not run".
+  - A status check repeated a few times is not called a failed command.
+  - An answer that already says a step failed is kept instead of being rewritten again and again.
+- **Removing or cleaning up is not a string of errors:**
+  - `-ErrorAction SilentlyContinue` and `2>$null` commands count as succeeded.
+  - "Is it installed?" checks that find nothing (`Get-Command`, `where`, `npm ls -g`, `pip show`, `Test-Path`) count as an answer.
+  - A command that starts a background daemon returns at once.
+- **Clean output:**
+  - Tool-call fragments of every format are hidden, even when the model's stream splits them in two. This covers `</minimax:tool_call>`, `<invoke>`, DSML and Kimi markers.
+  - `head` and `tail` work in PowerShell.
+  - Long Linear and Notion texts pass as MCP arguments.
+  - Browser JavaScript with a top-level `return` runs.
+  - A file outside the work folder shows a message instead of a console error.
 
 ## 🆕 New in v0.18.5 (huge files without breaks, stronger browser testing, self-kill guard)
 
@@ -1211,8 +1251,8 @@ v0.6: uninterrupted orchestration, live to-do list, goal mode, automatic skill d
 
 The full project state (vision, architecture and folder layout, every completed feature by version, open tasks, key decisions, next step) is kept in two languages:
 
-- 🇬🇧 **English:** [PROJECT_STATE.md](../PROJECT_STATE.md)
-- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](../PROJECT_STATE.tr.md)
+- 🇬🇧 **English:** [PROJECT_STATE.md](PROJECT_STATE.md)
+- 🇹🇷 **Türkçe:** [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md)
 
 **Now:** v0.14.1 is complete (mobile app testing with the Android emulator and Maestro, AI clips from text or images, HTML-first documents, pro PowerPoint / Excel previews, sturdier tools: pip into .venv, no loops, ordered to-do lists; big-task fixes: careful model switching with handover, quota switch mid-task, loop and overwrite protection, whole-file reads, translated errors). v0.13.0 is complete (Video Studio with draggable styled texts, live AI edits, effects, AI image-to-video, original and library music, mobile layout; logo maker; voice library with text to speech and speech to text; keyed image and photo services with quota fallback; MCP OAuth and self-install; `localhost-project` skill). v0.12.0 is complete (no false "done": plain-text tool calls are run, the requested file is checked on disk; `system_info` and the right-tool hint for weak models; full-text chat search; model report card; LM Studio memory guard; a test suite in the repo). v0.11.0 is complete (full audit: no stalls, nothing forgotten after drops and model switches, half-size first prompt, RAM / VRAM guard that keeps the model loaded, exact reconnects). v0.10.7 is complete (bulk select and delete, every ability from the first message, tool detection in 14 languages, no-split writing). v0.10.6 is complete (professional web design with real stock photos, pages tested for JS errors and broken images, a context meter anchored on the provider's real counts, no local-window overflow, Markdown-rendered live answers). v0.10.5: context from real token counts, vision model on screenshots, settings audit. v0.10.4: Settings, local GPU tuning, live sync, MCP from npm / PyPI / GitHub, automatic tool setup and eight new skills were all tested live.
 

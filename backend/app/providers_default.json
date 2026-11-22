@@ -172,6 +172,13 @@
     "enabled": false,
     "local": false
   },
+  "qwen": {
+    "name": "Alibaba Qwen (Model Studio)",
+    "kind": "openai",
+    "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "enabled": false,
+    "local": false
+  },
   "poe": {
     "name": "Poe",
     "kind": "openai",

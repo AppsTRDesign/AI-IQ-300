@@ -7,6 +7,7 @@ import { loc, useStore, useT } from "../lib/store";
 const PAGE = 24;
 import { api } from "../lib/api";
 import { Button, Modal, inputCls } from "./ui";
+import RepoSkillsModal, { isRepoSpec } from "./RepoSkillsModal";
 
 function EditorModal({ kind, name, isNew, onClose, onSaved }) {
   const t = useT();
@@ -69,8 +70,10 @@ export default function CatalogView() {
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 300 && shown < found.length) setShown((n) => n + PAGE);
   };
 
+  const [repo, setRepo] = useState("");
   const importUrl = async (e) => {
     e.preventDefault();
+    if (kind === "skills" && isRepoSpec(url)) { setRepo(url.trim()); return; }  // a repository of skills: pick from it
     setBusy(true); setMsg(null);
     try { const r = await api.post(`/api/catalog/${kind}/import`, { url }); setUrl(""); setMsg({ ok: t("imported", { name: prefix + r.name }) }); refresh(); }
     catch (x) { setMsg({ error: x.message }); }
@@ -150,6 +153,7 @@ export default function CatalogView() {
         {found.length === 0 && <div className="py-10 text-center text-[13px] text-subtle">{t("no_results")}</div>}
       </div>
       {edit && <EditorModal kind={kind} {...edit} onClose={() => setEdit(null)} onSaved={refresh} />}
+      {repo && <RepoSkillsModal spec={repo} onClose={() => setRepo("")} onDone={() => { setUrl(""); refresh(); }} />}
     </div>
   );
 }

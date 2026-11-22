@@ -16,3 +16,7 @@ def pytest_sessionstart(session):
     real = (Path(__file__).resolve().parents[1] / "data").resolve()
     if Path(config.DATA_DIR).resolve() == real:
         raise SystemExit("tests must not run on the real data/ folder (AIIQ_DATA was not honoured)")
+    # Local model servers of this machine are never reached by a test: a test that called the real Ollama loaded a
+    # big model on the CPU (a 21.8 GB model with 17 GB free ended in a blue screen). Port 9 (discard) refuses at once.
+    config.save_settings({"providers": {"ollama": {"base_url": "http://127.0.0.1:9"},
+                                        "lmstudio": {"base_url": "http://127.0.0.1:9/v1"}}})

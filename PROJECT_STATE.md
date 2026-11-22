@@ -29,6 +29,61 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
 
+## v0.18.6 (2026-11-22): Google / GitHub integration, skills from other tools' commands
+Real-model tested (NVIDIA Nemotron, temp AIIQ_DATA instance). pytest 284.
+- **Google:** built-in `google` tool (Google REST APIs with the connected account: Gmail incl. drafts, Drive, Sheets,
+  Docs, Calendar, Contacts); google-* MCP servers used when they answer, Developer Preview refusals fall back to it;
+  the "enable the APIs" warning comes from a real probe.
+- **GitHub MCP:** issue / PR / commit / repo words point at the connected github server; wrong owner -> get_me hint;
+  "Did you mean" for missing tool names; an enum value sent to the wrong key is moved to its key.
+- **Weak-model guards:** `<arguments>{...}</arguments>` / `<argument name="body">` wrappers unwrapped for every tool;
+  unquoted `argv=[...]` / `arguments={...}` attributes read; a nested tool tag in an mcp body reported; google / mcp
+  calls over 24K characters cut as a generation loop; account answers without the account tool nudged once; to-do
+  no-op loop closed.
+- **Skills from commands** (`catalog.skill_source`): `npx skills add owner/repo`, owner/repo, a GitHub URL,
+  `hf skills add [name]` (Hugging Face marketplace bucket), `gradio skills add [user/space]` (gradio's skill or one
+  generated from a Space's API) open a picker (RepoSkillsModal) on the Skills page or in the MCP form instead of
+  failing as an MCP server. `source:` frontmatter makes re-imports update; built-ins never overwritten; files next
+  to a skill become fetch_url links; at most 60 at once (each costs ~40 prompt tokens). YAML block descriptions
+  (`description: >-`) are parsed.
+- **Hardware report -> Drive run (fixed for every model):** `google file=` really uploads a local file (multipart up
+  to 5 MB, resumable 8 MB chunks above; plain Drive URL turned into the upload one; /files/<id> = PATCH; the size
+  Drive reports is checked). `save=` is download-only and a JSON answer never overwrites a .pdf (the earlier run
+  replaced a good PDF with 128 bytes of JSON). fetch_url save= refuses a web page under a .pdf / .zip / image name.
+  Skill `tools:` lists no longer block the basic tools (run, list_dir, read/write/edit_file, system_info...).
+  Parser: an unclosed opening tag ends at the first `<`, `<parameter name=…>` / `<parameter=…>` / `<path>` /
+  `<arguments>` blocks become arguments (the step label leaked "…Raporu</h1>"). Appended markup: an orphan closing
+  fragment at the seam is dropped and an open table / list is closed. make_doc without a path names the file from
+  its title. use_skill takes the name from any argument. Live: NVIDIA Nemotron did it in 4 turns / 24 s, a valid
+  3-page PDF uploaded with a matching size; evren:auto too (446 s, one provider stall recovered by continuing the
+  saved part). pytest 291.
+- **No more thrown-away answers on questions about past work:** "…test ettin?" / "çalıştırdın mı" / "did you run
+  it" matched the run-request words, so a finished answer that reported earlier commands in code blocks was erased
+  with "a command was written but not run". `checks.asks_for` ignores past-tense / perfect forms (also Turkish
+  "test et-" tenses) in every answer-rewriting guard (printed code, command not run, change claims, missing
+  deliverables, code not written); the "printed only" guard needs real code (a source block or a command line), not
+  pasted output. pytest 294.
+- **Final answers no longer stopped by a status poll:** the loop guard turns the 3rd identical result into a failure
+  so the model changes course; a poll that exited 0 (`ruflo task status`, 6 times) then counted as "the last command
+  failed", the finished answer was erased ("…model bitti diyordu; önce düzeltmesi isteniyor") and the debugger role
+  started. Such results carry `repeat_ok`: still a loop note for the model, never an unresolved failure or a debug
+  turn. An answer that itself says a step failed / did not finish (`admits_failure`) is kept by the unresolved,
+  not-delivered (after one retry) and open-to-do (after one reminder) guards.
+- **Commands that leave a background child return at once:** `ruflo daemon start` (a daemon holding the inherited
+  pipes) waited the full 10 s after exit each time; the pipes are now read only while output still comes (1.2 s
+  quiet). pytest 297.
+- **Removing a tool is no longer a string of "errors":** `Remove-Item … -ErrorAction SilentlyContinue` / `2>$null`
+  as the last statement exits 0 (PowerShell still set `$?` false); lookups that find nothing (`Get-Command x`,
+  `where`, `npm ls -g x`, `pip show`, `Test-Path`, `grep` …) are a result, not a failure; another state-changing
+  call between two polls resets the loop count; an app tool typed as a command (`run list_dir`) runs the tool. The
+  error playbook covers paths with spaces split into two arguments and npm EUSAGE from `@latest`. Opening a file
+  outside the work folder shows a toast instead of an uncaught 403 in the console.
+- **From the 8300 history scan:** MCP arguments with raw line breaks / a sentence after the object (long Linear /
+  Notion bodies) are parsed; `head` / `tail` work in PowerShell; browser js code with a top-level `return` or an
+  IIFE runs. A vendor call wrapper split between two stream chunks (`</minimax:` + `tool_call>`, nemotron on NVIDIA)
+  showed as a note: every short tag-shaped tail is now held until whole and `<x:tool_call>` wrappers are dropped.
+  pytest 305.
+
 ## Project Status: v0.18.5
 Huge files and what comes after them (2026-11-21), for every provider, not per model. Live: NVIDIA Nemotron 3 Ultra
 wrote a 152,690-character game in one call (660 s, no break, one doctype), tested it in the browser, fixed its one bug

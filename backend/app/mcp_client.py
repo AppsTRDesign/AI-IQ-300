@@ -121,6 +121,10 @@ class Server:
         cmd, args = split_command(self.cfg.get("command") or "", self.cfg.get("args") or [])
         if not cmd:
             raise MCPError("no command")
+        if re.search(r"\bskills(@[\w.-]+)?\s+(add|install)\b", " ".join([cmd, *args]), re.I):
+            raise MCPError(f"'{' '.join([cmd, *args])}' installs skills (SKILL.md instructions), not an MCP server. "
+                           "Import them in the Skills page: paste the same command into its import box and pick "
+                           "the skills you want.")
         if INSTALLER.search(" ".join([cmd, *args])):
             raise MCPError(f"'{' '.join([cmd, *args])}' installs something and exits; it is not an MCP server. "
                            "An MCP server command keeps running (e.g. npx -y @modelcontextprotocol/server-filesystem "
@@ -247,10 +251,24 @@ class Server:
             headers["Authorization"] = f"Bearer {tok}"  # signed in with the server's own OAuth (Settings > MCP)
         async with pooled(timeout=CALL_TIMEOUT) as c, c.stream("POST", self.cfg["url"], json=msg, headers=headers) as r:
             if r.status_code >= 400:
-                body = (await r.aread()).decode(errors="replace")[:300]
+                raw = await r.aread()
+                body = raw.decode(errors="replace")[:300]
                 if r.status_code in (401, 403) and "resource_metadata" in r.headers.get("www-authenticate", ""):
                     raise MCPError(f"SIGN_IN_REQUIRED: HTTP {r.status_code} - this server needs you to sign in: use "
                                    "the Sign in button (or add its API key as an Authorization header)")
+                # Google's Workspace MCP servers answer tools/list with HTTP 403 and the full, valid tool list in the
+                # body: the list was thrown away, so 8 of 9 Google servers showed no tools and the model only knew
+                # Contacts. A JSON-RPC answer to this request is used whatever the status says.
+                try:
+                    d = json.loads(raw) if expect else None
+                except ValueError:
+                    d = None
+                if isinstance(d, dict) and d.get("id") == msg.get("id") and ("result" in d or "error" in d):
+                    self.session = r.headers.get("mcp-session-id") or self.session
+                    if d.get("error"):
+                        err = d["error"]
+                        raise MCPError(f"HTTP {r.status_code}: " + str(err.get("message") or err if isinstance(err, dict) else err))
+                    return d.get("result") or {}
                 raise MCPError(f"HTTP {r.status_code}: {body}")
             self.session = r.headers.get("mcp-session-id") or self.session
             if not expect:
@@ -372,9 +390,46 @@ def picked_tools(request: str) -> list[tuple[str, str]]:
     return list(dict.fromkeys(out))
 
 
+def hidden_servers() -> set[str]:
+    """Servers the model is not shown: the google-* ones while Google's Workspace MCP refuses this Cloud project
+    ("enrolled in the Google Workspace Developer Preview Program"). They list tools but refuse every call, and a model
+    that saw them kept calling them and told the user to fix scopes; the built-in google tool does that work. Once a
+    check finds them working (the project was accepted), they are shown again - both ways stay integrated."""
+    from . import connections
+    if not connections.google_mcp_blocked():
+        return set()
+    return {k for k, s in _servers.items() if s.cfg.get("managed") == "google"}
+
+
+def named_servers(request: str) -> list[str]:
+    """Running servers the request names ("GitHub depolarımı listele" -> github; "notion'a yaz" -> notion)."""
+    low = (request or "").lower()
+    hide = hidden_servers()
+    out = [k for k, s in _servers.items() if s.alive and k not in hide and len(k) >= 4
+           and re.search(rf"(?<![\w-]){re.escape(k)}(?![\w-])", low)]
+    # "AI-IQ-300 deposundaki 1 numaralı issue" names no server: nemotron took the local git server and then gh with no
+    # sign-in. Issues, pull requests and the user's repositories live on the connected GitHub account.
+    gh = _servers.get("github")
+    if "github" not in out and gh and gh.alive and SERVER_WORDS["github"].search(low):
+        out.append("github")
+    return out
+
+
+SERVER_WORDS = {"github": re.compile(r"\bissue|pull\s*request|\bpr\b|\bpr'|depo(?:su|lar|m|n|da)|\brepo(?:s|su|lar|m)?\b"
+                                     r"|repositor|\bcommit|\bstar(?:red|lar)", re.I)}
+
+
 def prompt_section(request: str = "") -> str:
-    tools = available_tools()
     picked = picked_tools(request)
+    hide = hidden_servers() - {s for s, _ in picked}  # a server the user picked by name stays visible
+    tools = [(k, t) for k, t in available_tools() if k not in hide]
+    # A server the request names comes first, its tools in full: "GitHub depolarımı listele" was answered with a web
+    # search ("no GitHub server connected") while github sat among 280 tools listed by name only.
+    user_picked = list(picked)
+    named = [k for k in named_servers(request) if k not in {s for s, _ in picked}]
+    if named:
+        lead = [(k, t) for k, t in tools if k in named][:DETAILED_MAX]
+        picked = picked + [(k, t["name"]) for k, t in lead]
     # the tool the user picked goes first (never cut by the 80-tool limit) with its whole argument list
     first = [(k, t) for k, t in tools if (k, t["name"]) in picked]
     tools = first + [x for x in tools if x not in first]
@@ -396,20 +451,57 @@ def prompt_section(request: str = "") -> str:
                    "can without it."))
     if not tools:
         return ("# MCP tools" + note) if note else ""
-    lines = [f"- {k}/{t['name']}: {(t.get('description') or '').strip().splitlines()[0][:200] if t.get('description') else ''} "
-             f"args {_schema_hint(t.get('inputSchema') or {})}" for k, t in tools[:80]]
+    # Every connected server is visible: the picked tools and a fair share of each server's tools in full (round
+    # robin), every other tool by name under its server. A flat first-80 cut hid whole servers (github alone has 80+
+    # tools) and the model never knew they were there.
+    detailed = list(first)
+    by_srv: dict[str, list[dict]] = {}
+    for k, t in tools:
+        if (k, t) not in first:
+            by_srv.setdefault(k, []).append(t)
+    i = 0
+    while len(detailed) < DETAILED_MAX and any(i < len(v) for v in by_srv.values()):
+        for k, v in by_srv.items():
+            if i < len(v) and len(detailed) < DETAILED_MAX:
+                detailed.append((k, v[i]))
+        i += 1
+    lines = [f"- {k}/{t['name']}: {(t.get('description') or '').strip().splitlines()[0][:160] if t.get('description') else ''} "
+             f"args {_schema_hint(t.get('inputSchema') or {})}" for k, t in detailed]
+    shown = {(k, t["name"]) for k, t in detailed}
+    rest = [f"- {k}: " + ", ".join(t["name"] for t in v if (k, t["name"]) not in shown)
+            for k, v in by_srv.items() if any((k, t["name"]) not in shown for t in v)]
     s0, t0 = tools[0]
     ex = {k: "..." for k in ((t0.get("inputSchema") or {}).get("required") or [])[:3]}
-    return ("# MCP tools (external servers the user connected)\nCall them with the mcp tool: server, tool and EVERY "
-            "required argument (no ?) inside arguments, e.g. mcp {\"server\": \"" + s0 + "\", \"tool\": \"" + t0["name"]
-            + "\", \"arguments\": " + json.dumps(ex) + "}. Prefer them over improvised scripts when they fit the "
-            "task." + (" The user picked " + ", ".join(f"{k}/{t['name']}" for k, t in first) + ": call it." if first else "")
-            + note + "\n" + "\n".join(lines))
+    return ("# MCP tools (external servers the user connected)\nCall any of them whenever it helps the task, with the "
+            "mcp tool: server, tool and EVERY required argument (no ?) inside arguments, e.g. mcp {\"server\": \"" + s0
+            + "\", \"tool\": \"" + t0["name"] + "\", \"arguments\": " + json.dumps(ex) + "}. Prefer them over improvised "
+            "scripts when they fit the task. mcp with tool=\"list\" returns a server's tools with all their arguments."
+            + (" The user picked " + ", ".join(f"{k}/{t['name']}" for k, t in first if (k, t["name"]) in user_picked)
+               + ": call it." if any((k, t["name"]) in user_picked for k, t in first) else "")
+            + (" The request is about " + ", ".join(named) + ": that is the user's own connected account - use its "
+               "tools with mcp (server=" + named[0] + "), never a web search for it." if named else "")
+            + (" playwright is a second browser (its own window, Playwright's accessibility snapshot and refs): use it "
+               "when a browser_* tool keeps failing on a page, or when the user asks for Playwright MCP."
+               if any(s == "playwright" for s in by_srv) or any(k == "playwright" for k, _ in first) else "")
+            + note + "\n" + "\n".join(lines)
+            + ("\nMore tools (names; tool=\"list\" shows their arguments):\n" + "\n".join(rest) if rest else ""))
+
+
+DETAILED_MAX = 40  # MCP tools listed with their arguments in the prompt; the rest by name
 
 
 def find_tool(server: str, tool: str) -> dict | None:
     s = _servers.get(server)
     return next((t for t in s.tools if t["name"] == tool), None) if s else None
+
+
+def server_dir(server: str) -> str | None:
+    """The folder a stdio server runs in: relative paths it reports (Playwright's .playwright-mcp\\page-....png) are
+    relative to this, not to the chat's working folder."""
+    s = _servers.get(server)
+    if not s or s.cfg.get("transport", "stdio") != "stdio":
+        return None
+    return os.path.abspath(s.cfg.get("cwd") or os.getcwd())
 
 
 async def call(server: str, tool: str, arguments: dict) -> tuple[bool, str]:

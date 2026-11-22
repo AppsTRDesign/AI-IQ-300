@@ -82,9 +82,17 @@ def _match(patterns: list[str], text: str) -> list[str]:
     return [p for p in patterns if re.search(p, text, re.IGNORECASE)]
 
 
+# The app's own key store and chat database: a command naming them (type data\secrets.json, sqlite3 aiiq.db) would
+# hand the user's API keys or every chat to the model and its provider. The file tools refuse them (resolve_in); a
+# command did not, so it is refused in every mode too.
+PROTECTED = [r"secrets\.json", r"aiiq\.db"]
+
+
 def classify_command(text: str) -> tuple[str, list[str]]:
     if hits := _match(FORBIDDEN, text):
         return "forbidden", hits
+    if hits := _match(PROTECTED, text):
+        return "protected", hits
     if hits := kills_app(text):
         return "kills_app", hits
     if hits := _match(DANGEROUS, text):
@@ -98,7 +106,7 @@ def classify_command(text: str) -> tuple[str, list[str]]:
 
 def decide_command(text: str, mode: str) -> Decision:
     cat, reasons = classify_command(text)
-    if cat in ("forbidden", "kills_app"):
+    if cat in ("forbidden", "kills_app", "protected"):
         return Decision("deny", cat, reasons)
     if cat == "dangerous":
         # 'full' (Tam erişim) means the user does not want to be asked. Only the system-breaking commands
@@ -113,6 +121,10 @@ def decide_command(text: str, mode: str) -> Decision:
 def resolve_in(base: Path, rel: str, allow_outside: bool = False) -> Path:
     """Resolve a path (following symlinks/junctions) and reject escapes from base unless allowed."""
     base = base.resolve()
+    # The home folder as a shell writes it (~\.claude, $HOME\.claude\skills\x\SKILL.md, %USERPROFILE%): a file tool
+    # took it for a folder named "$HOME" in the workspace and reported "not found".
+    if m := re.match(r"(~|\$HOME|\$env:(?:USERPROFILE|HOME)|%USERPROFILE%|%HOME%)(?=[\\/]|$)", str(rel or ""), re.I):
+        rel = str(Path.home()) + str(rel)[m.end():]
     p = Path(rel)
     target = (p if p.is_absolute() else base / p).resolve()
     if not allow_outside and target != base and base not in target.parents:

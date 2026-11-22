@@ -24,7 +24,7 @@ const KIND = {
   delete: [Trash2, "step_delete"], stop: [Square, "step_stop"], fallback: [Cloud, "step_fallback"],
   budget: [AlertTriangle, "step_budget"], skill: [Sparkles, "step_skill"], retry: [RotateCw, "step_retry"],
   edit: [FilePen, "step_edit"], grep: [FileSearch, "step_grep"], delegate: [Users, "step_delegate"], memory: [BookMarked, "step_memory"],
-  mcp: [Plug, "step_mcp"], team: [Users, "step_team"], screenshot: [Camera, "step_screenshot"], catalog: [Sparkles, "step_catalog"],
+  mcp: [Plug, "step_mcp"], google: [Cloud, "step_google"], team: [Users, "step_team"], screenshot: [Camera, "step_screenshot"], catalog: [Sparkles, "step_catalog"],
   places: [MapPin, "step_places"], photo: [Image, "step_photo"], system: [Cpu, "step_system"], system_info: [Cpu, "step_system"],
   // made, not searched: a picture or a clip the AI generates, a video cut together, a voice-over, a check of a file
   image_gen: [Wand2, "step_image_gen"], video_gen: [Clapperboard, "step_video_gen"], video_edit: [Film, "step_video_edit"],
@@ -299,6 +299,9 @@ function Elapsed({ since }) {
 
 // What the model is doing while a "preparing" step shows: waiting for the first token, writing the answer or a tool
 // call (streamed or sent at the end by the provider).
+// A tool's label; a tool without one in the language file shows its name ("my location"), never the raw key.
+const toolLabel = (t, name) => { const k = `tool_${name}`; const v = t(k); return v && v !== k ? v : String(name || "").replace(/_/g, " "); };
+
 function prepareLabel(t, d, title) {
   const tok = d.prompt_tokens ? (d.prompt_tokens >= 1000 ? `${(d.prompt_tokens / 1000).toFixed(1)}K` : d.prompt_tokens) : "?";
   // The model only while waiting for its first answer (which one is slow to start); while it writes, the file and
@@ -310,7 +313,7 @@ function prepareLabel(t, d, title) {
   const fileTool = ["write_file", "edit_file", "make_doc", "read_file"].includes(d.tool || title);
   const target = d.target ? ` · ${d.target}` : (fileTool && d.phase === "tool_stream" ? ` · ${t("prep_target_pending")}` : "");
   const text = d.phase === "first" ? t("prep_first", { tok })
-    : d.phase === "tool_stream" ? `${t("prep_tool_stream")}: ${t(`tool_${title}`)}${target} · ${t("prep_chars", { n: kb(d.chars || 0) })}`
+    : d.phase === "tool_stream" ? `${t("prep_tool_stream")}: ${toolLabel(t, title)}${target} · ${t("prep_chars", { n: kb(d.chars || 0) })}`
       : d.phase === "tool_silent"
         ? (d.local ? t("prep_tool_silent_local", { s: d.idle || 0 })
           : d.switch_in != null ? t("prep_tool_silent_switch", { s: d.idle || 0, left: d.switch_in })
@@ -318,7 +321,7 @@ function prepareLabel(t, d, title) {
         : d.phase === "after_think" ? t("prep_after_think", { s: d.idle || 0 })
         : d.phase === "think_stalled" ? t("prep_think_stalled", { s: d.idle || 0 })
         : d.phase === "stalled" ? (d.stall_in != null ? t("prep_stalled", { s: d.idle || 0, left: d.stall_in }) : t("prep_stalled_local", { s: d.idle || 0 }))
-          : d.phase === "writing" ? t("prep_writing") : t(`tool_${title}`);
+          : d.phase === "writing" ? t("prep_writing") : toolLabel(t, title);
   // The connection check of a silent stream: checking / provider answers (the stream is lost: resuming) / slow (the
   // model is still working) - so "is it working or did it drop?" is answered on screen.
   const probe = d.probe?.state ? ` · ${t(`probe_${d.probe.state}`, { s: ((d.probe.ms || 0) / 1000).toFixed(1) })}` : "";

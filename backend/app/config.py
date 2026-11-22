@@ -39,6 +39,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # provider_retries: retries of a stalled/busy request before the task stops (the work done so far is kept).
     "agent": {"max_iterations": 60, "max_debug_attempts": 3, "command_timeout": 300, "server_ttl_minutes": 10,
               "stream_timeout": 300, "first_token_timeout": 300, "local_stream_timeout": 0, "provider_retries": 5,
+              # Silence watchdogs of a cloud stream (seconds; Settings > Agent > model connection):
+              # silent_tool_limit: silence after visible output while no tool call is open, then the turn is redone
+              # with the streamed text protocol; midcall_stall: a tool call (a file) that stopped mid-way is salvaged
+              # and continued; probe_after / probe_first: a silent stream's connection is checked (after / before
+              # the first token); probe_cut: a stream that stays silent while the provider answers a new request is
+              # continued after this; stall_floor: the lowest stall limit of a steady stream that suddenly stops.
+              "silent_tool_limit": 75, "midcall_stall": 150, "probe_after": 30, "probe_first": 45, "probe_cut": 90,
+              "stall_floor": 90,
               # parallel_tools: independent read/lookup calls of one turn run at the same time; unlimited_*: no step /
               # debug-attempt cap (identical repeated failures still stop the loop).
               "parallel_tools": True, "unlimited_iterations": False, "unlimited_debug": False,
@@ -51,7 +59,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # unused models and makes the window of the model in use smaller - the model itself stays loaded. Only with
     # emergency_unload does it unload the model in use as the very last step (the task keeps its checkpoint).
     # low / critical: free memory in percent of the total (kept inside absolute bounds, see memguard.limits).
-    "local_guard": {"enabled": True, "emergency_unload": False, "low": 12, "critical": 6},
+    # reserve_gb: memory left to the system before a model is loaded (0 = automatic, a tenth of the RAM, 1.5-4 GB).
+    # load_check: "block" (a model whose weights do not fit is not loaded) or "warn" (it is loaded with a warning and
+    # a small window - the user's choice, for tests on a machine just short of memory).
+    "local_guard": {"enabled": True, "emergency_unload": False, "low": 12, "critical": 6, "reserve_gb": 0,
+                    "load_check": "block"},
     # Browser agent (browser_* tools): a real, visible Chromium window with its own lasting profile, so sign-ins
     # the user makes in it stay for later tasks. channel: "" (bundled Chromium), "chrome" or "msedge".
     "browser": {"visible": True, "channel": "", "dismiss_popups": True},
@@ -109,7 +121,7 @@ def _read(path: Path) -> dict:
         return {}
 
 
-DIRECT_NOW = {"minimax", "moonshot", "zai", "requesty", "vercel", "poe", "baseten"}
+DIRECT_NOW = {"minimax", "moonshot", "zai", "requesty", "vercel", "poe", "baseten", "qwen"}
 
 
 def _clean(s: dict) -> dict:

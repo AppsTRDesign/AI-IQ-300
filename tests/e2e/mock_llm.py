@@ -100,6 +100,13 @@ async def chat(req: Request):
                 '<tool name="run" shell="python">hesap.py</tool>')
     elif "NOFILE" in whole:
         text = "Sonuc 55."
+    elif "HELDANS" in whole and "[App note]" in last:
+        # the model judges the app's check not to apply and writes a short note instead of the answer
+        text = "Bu gorevde test edilecek bir sunucu yok."
+    elif "HELDANS" in whole and not any(m["role"] == "tool" for m in msgs) and "Tool results:" not in whole:
+        text = '<tool name="write_file" path="liste.md"># Liste</tool>'
+    elif "HELDANS" in whole:
+        text = "TAM CEVAP: " + "Proje listesi ve aciklamalari burada. " * 12
     elif "FAKEPDF" in whole:
         text = "Rapor hazir. Raporu gormek icin `donanim_raporu.pdf` dosyasini acin."
     else:

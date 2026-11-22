@@ -24,12 +24,35 @@ from .registry import S, ToolResult, _network_gate, _path, _rel, clip, gate, too
 from .shell_tools import _port_busy
 
 
+def clean_query(args: dict, body: str) -> str:
+    """The search words of a call, never pieces of the protocol: a query that ran into the next tag
+    (tahmini">\\n<tool name="todo), a todo list given as the body ([{"content": ...}]) or stray quotes and '>'.
+    Empty when nothing usable is left (the caller refuses the call instead of searching for garbage)."""
+    for cand in (body or "", str(args.get("query") or ""), str(args.get("q") or "")):
+        q = re.split(r'["\']?\s*/?>?\s*</?tools?\b', cand, maxsplit=1)[0]
+        q = q.strip()
+        if not q or q[:1] in "[{" and re.search(r'"\w+"\s*:', q[:200]):
+            continue  # a JSON value (a todo list, the arguments object) is not a query
+        q = re.sub(r"^[>\s]+|[>\s/]+$", "", q)
+        if q.count('"') % 2:  # a lone quote is the tag's, "exact phrase" quotes stay
+            q = q[:-1] if q.endswith('"') else q[1:] if q.startswith('"') else q.replace('"', "")
+        q = re.sub(r"\s+", " ", q)[:300].strip()
+        if len(q) >= 2:
+            return q
+    return ""
+
+
+NO_QUERY = ("Not searched: the call has no search words (its value was a piece of another call or a JSON list). "
+            "Call it again with only the words to search between the tags, and close every call with </tool>.")
+
+
 @tool("web_search", '<tool name="web_search">query</tool>',
       "Search the web (several engines merged). Returns titles, URLs and snippets. Use research for reading sources.",
       {"query": S("Search query")}, main="query", required=("query",))
 async def web_search(ctx, args, body):
     from . import web
-    q = body.strip()
+    if not (q := clean_query(args, body)):
+        return ToolResult(False, NO_QUERY)
     if msg := await registry._network_gate(ctx, {"tool": "web_search", "query": q}):
         return ToolResult(False, msg)
     results, engines = await web.search(q)
@@ -92,6 +115,10 @@ def _github_repo(url: str) -> str:
     return m.group(1) if m else ""
 
 
+BINARY_SAVE = re.compile(r"\.(pdf|zip|7z|rar|gz|tgz|tar|exe|msi|dmg|apk|whl|jar|png|jpe?g|gif|webp|mp[34]|wav|"
+                         r"ogg|webm|mov|docx|xlsx|pptx|onnx|gguf|bin|safetensors|ttf|otf|woff2?)$", re.I)
+
+
 async def _download(ctx, url: str, save: str) -> ToolResult:
     """fetch_url save=...: the file at the URL into the working folder (streamed, 500 MB at most)."""
     import httpx
@@ -108,6 +135,12 @@ async def _download(ctx, url: str, save: str) -> ToolResult:
             async with c.stream("GET", url) as r:
                 if r.status_code >= 400:
                     return ToolResult(False, f"download failed: HTTP {r.status_code} for {url}")
+                ctype = r.headers.get("content-type", "").lower()
+                if (ctype.startswith(("text/html", "application/json")) and BINARY_SAVE.search(target.name)):
+                    # a sign-in / error page saved under a .pdf / .zip name would replace a good file with junk
+                    head = (await r.aread())[:400].decode("utf-8", "replace")
+                    return ToolResult(False, f"download failed: {url} answered a web page ({ctype.split(';')[0]}), not "
+                                             f"the {target.suffix} file - nothing was saved. Start of the answer: {head}")
                 with open(tmp, "wb") as f:
                     async for chunk in r.aiter_bytes(1 << 16):
                         size += len(chunk)
@@ -138,7 +171,8 @@ async def _download(ctx, url: str, save: str) -> ToolResult:
       {"query": S("What to research")}, main="query", required=("query",))
 async def research(ctx, args, body):
     from . import web
-    q = body.strip()
+    if not (q := clean_query(args, body)):
+        return ToolResult(False, NO_QUERY)
     if msg := await registry._network_gate(ctx, {"tool": "research", "query": q}):
         return ToolResult(False, msg)
     r = await web.research(q)

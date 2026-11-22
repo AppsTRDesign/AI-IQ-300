@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -406,13 +407,19 @@ class OllamaProvider(Provider):
                 msg["images"] = m["images"]
             if m.get("tool_calls"):
                 msg["tool_calls"] = [{"function": {"name": c["name"], "arguments": c["arguments"]}} for c in m["tool_calls"]]
+                if m.get("reasoning"):
+                    # Ollama docs: a tool turn goes back with its thinking (the model continues its own reasoning)
+                    msg["thinking"] = m["reasoning"]
             out.append(msg)
         return out
 
     async def stream(self, model, messages, opts):
         options = {k: v for k, v in opts.items() if k in ("temperature", "num_ctx", "top_p", "repeat_penalty", "repeat_last_n")}
-        from .memguard import threads
-        options.setdefault("num_thread", threads())  # one core left free: no overheating, the PC stays usable
+        if self.local or not self.base_url.startswith("https://ollama.com"):
+            from .memguard import threads
+            options.setdefault("num_thread", threads())  # one core left free: no overheating, the PC stays usable
+        else:  # Ollama Cloud: its own hardware and window - no local CPU threads, no local num_ctx limit
+            options.pop("num_ctx", None)
         if opts.get("max_tokens"):
             options["num_predict"] = opts["max_tokens"]
         body: dict = {"model": model, "messages": self._messages(messages), "stream": opts.get("stream", self.cfg.get("streaming", True)),
@@ -549,6 +556,13 @@ class OpenAICompatProvider(Provider):
             await _raise_for(r, self.name)
             return r.json()
 
+    def _tool_stream_failed(self, model: str, opts: dict, err: ProviderError) -> ProviderError:
+        """A streamed tool request that the server's tool parser broke: the next try of this model's tool requests
+        goes without streaming (NIM's documented workaround), the error is retried as usual."""
+        if opts.get("tools") and "nvidia" in self.base_url and TOOL_PARSER_ERROR.search(str(err)):
+            NO_TOOL_STREAM.add(f"{self.name}:{model}")
+        return err
+
     @staticmethod
     def _messages(messages: list[dict]) -> list[dict]:
         out = []
@@ -557,7 +571,8 @@ class OpenAICompatProvider(Provider):
                 out.append({"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["content"]})
                 continue
             if m.get("tool_calls"):
-                out.append({"role": "assistant", "content": m.get("content") or None, "tool_calls": [
+                out.append({"role": "assistant", "content": m.get("content") or None,
+                            **({"_reasoning": m["reasoning"]} if m.get("reasoning") else {}), "tool_calls": [
                     {"id": c["id"], "type": "function",
                      "function": {"name": c["name"], "arguments": json.dumps(c["arguments"], ensure_ascii=False)},
                      # Gemini: the call's thought signature must come back with it, or the next request fails (400)
@@ -574,14 +589,31 @@ class OpenAICompatProvider(Provider):
 
     async def stream(self, model, messages, opts):
         streaming = opts.get("stream", self.cfg.get("streaming", True))
+        if streaming and opts.get("tools") and f"{self.name}:{model}" in NO_TOOL_STREAM:
+            streaming = False  # this model's tool parser broke while streaming (see _tool_stream_failed)
         body: dict = {"model": model, "messages": self._messages(messages), "stream": streaming}
+        if "mistral.ai" in self.base_url:
+            body["messages"] = _mistral_ids(body["messages"])
+        for m in body["messages"]:
+            # Only DeepSeek's own API takes the reasoning back (required with tools in thinking mode); any other
+            # server gets the message without it.
+            if (r := m.pop("_reasoning", None)) and "api.deepseek.com" in self.base_url:
+                m["reasoning_content"] = r
         if "temperature" in opts:
             body["temperature"] = opts["temperature"]
-        if opts.get("repeat_penalty"):
+        if opts.get("repeat_penalty") and not _no_penalty(self.base_url, model):
             # The OpenAI-style counterpart of a repeat penalty: after a generation loop the next try repeats less.
             body["frequency_penalty"] = round(min(1.0, (float(opts["repeat_penalty"]) - 1) * 2.5), 2)
         if opts.get("max_tokens"):
             body["max_tokens"] = opts["max_tokens"]
+        if _openai_reasoning(self.base_url, model):
+            # o-series / gpt-5: the limit counts reasoning + answer and has its own name; sampling is fixed
+            if "max_tokens" in body:
+                body["max_completion_tokens"] = body.pop("max_tokens")
+            body.pop("temperature", None)
+        if _fixed_sampling(self.base_url, model):
+            body.pop("temperature", None)
+            body.pop("top_p", None)
         if e := opts.get("effort"):  # reasoning effort: OpenRouter's reasoning object, else OpenAI's field
             if "openrouter" in self.base_url:
                 body["reasoning"] = {"enabled": False} if e == "off" else {"effort": e}
@@ -596,10 +628,36 @@ class OpenAICompatProvider(Provider):
                 body["reasoning_effort"] = "medium"
         if opts.get("tools"):
             body["tools"] = [{"type": "function", "function": t} for t in opts["tools"]]
-        if (opts.get("no_think") or opts.get("think") is False or opts.get("effort") == "off") and self.is_evren:
-            # EVREN (vLLM) ignores reasoning_effort; the chat template switch really turns reasoning off (checked:
-            # 0 reasoning tokens). Used for the request after a break, which acts on the plan already reasoned out.
-            body["chat_template_kwargs"] = {"enable_thinking": False}
+        off = opts.get("no_think") or opts.get("think") is False or opts.get("effort") == "off"
+        if off and "api.cerebras.ai" in self.base_url:
+            body["reasoning_effort"] = "none"  # Cerebras: "none" turns reasoning off (disable_reasoning was removed)
+        if opts.get("tools") and "api.groq.com" in self.base_url and re.search(r"qwen", model, re.I):
+            # Groq: with tools a reasoning model's format must be parsed or hidden ("raw" is a 400). Only its Qwen
+            # reasoning models take the field (gpt-oss uses include_reasoning, other models reject it).
+            body["reasoning_format"] = "hidden" if off else "parsed"
+        if (sw := _thinking_switch(self.base_url, model, opts)) is not None:
+            body.update(sw)
+            body.pop("reasoning_effort", None)  # Kimi K2.x / GLM take their own switch, not this field (Kimi docs)
+        template_server = self.is_evren or "integrate.api.nvidia.com" in self.base_url
+        if (opts.get("no_think") or opts.get("think") is False or opts.get("effort") == "off") and template_server:
+            # vLLM / NIM ignore reasoning_effort; the chat template switch really turns reasoning off (checked on
+            # EVREN: 0 reasoning tokens). The key depends on the model's template (vLLM docs): Qwen / Nemotron / GLM
+            # read enable_thinking, DeepSeek V3.1+ reads thinking - a key the template does not use is ignored, so
+            # both are sent (before, DeepSeek on EVREN kept reasoning for 190 s with "off").
+            from . import families
+            key = families.think_key(model)
+            # the family's own key when known (models.families); both when not - a key the template does not use
+            # is ignored. A model that always reasons gets nothing (its template has no switch).
+            if not families.always_thinks(model):
+                body["chat_template_kwargs"] = {key: False} if key else {"enable_thinking": False, "thinking": False}
+        elif self.is_evren and opts.get("tools"):  # thinking on too: past the cap nothing is written; vLLM ignores unknown fields
+            # A provider that ends every request after a fixed time (EVREN ~194 s, measured): reasoning that takes
+            # most of it leaves no time to write (every turn of a game "broke off after thinking"). The reasoning is
+            # given a budget that fits the cap at this model's speed (NIM / vLLM thinking_token_budget).
+            from . import router as _router
+            if cap := _router.request_cap(f"{self.name}:{model}"):
+                tps = float(opts.get("tps") or 15)
+                body["thinking_token_budget"] = int(max(1024, min(8192, cap * 0.45 * tps)))
         if streaming:
             body["stream_options"] = {"include_usage": True}
         url = f"{self.base_url}/chat/completions"
@@ -612,8 +670,11 @@ class OpenAICompatProvider(Provider):
                     for ch in d.get("choices", []):
                         msg = ch.get("message") or {}
                         if t := msg.get("reasoning_content") or msg.get("reasoning"):
-                            yield {"type": "thinking", "text": t}
-                        if t := msg.get("content"):
+                            yield {"type": "thinking", "text": t if isinstance(t, str) else split_content(t)[0] or split_content(t)[1]}
+                        th, t = split_content(msg.get("content"))
+                        if th:
+                            yield {"type": "thinking", "text": th}
+                        if t:
                             yield {"type": "text", "text": t}
                         for call in msg.get("tool_calls") or []:
                             fn = call.get("function", {})
@@ -634,24 +695,39 @@ class OpenAICompatProvider(Provider):
                                 yield {"type": "ping"}
                                 continue
                             if d.get("error"):
-                                raise stream_error(d["error"])
+                                raise self._tool_stream_failed(model, opts, stream_error(d["error"]))
                             for ch in d.get("choices") or []:
                                 finish = ch.get("finish_reason") or finish
                                 if ch.get("error"):
-                                    raise stream_error(ch["error"])
+                                    raise self._tool_stream_failed(model, opts, stream_error(ch["error"]))
                                 delta = ch.get("delta") or {}
                                 if t := delta.get("reasoning_content") or delta.get("reasoning"):
-                                    yield {"type": "thinking", "text": t}
-                                if t := delta.get("content"):
+                                    yield {"type": "thinking", "text": t if isinstance(t, str) else split_content(t)[0] or split_content(t)[1]}
+                                th, t = split_content(delta.get("content"))
+                                if th:
+                                    yield {"type": "thinking", "text": th}
+                                if t:
                                     yield {"type": "text", "text": t}
                                 for tc in delta.get("tool_calls") or []:  # arguments arrive in fragments
-                                    idx = tc.get("index", len(calls))
+                                    if "index" in tc:
+                                        idx = tc["index"]
+                                    else:
+                                        # No index (SambaNova, Gemini): a fragment without its own id/name belongs
+                                        # to the call before it; one with a new id or a name starts the next call.
+                                        last = max(calls) if calls else None
+                                        tid, tname = tc.get("id"), (tc.get("function") or {}).get("name")
+                                        fresh = (last is None or bool(tid and tid != calls[last]["id"])
+                                                 or bool(tname and not tid))
+                                        idx = len(calls) if fresh else last
                                     new = idx not in calls
                                     slot = calls.setdefault(idx, {"id": None, "name": "", "args": "", "extra": None})
                                     slot["id"] = tc.get("id") or slot["id"]
                                     slot["extra"] = tc.get("extra_content") or slot["extra"]
                                     fn = tc.get("function") or {}
-                                    slot["name"] += fn.get("name") or ""
+                                    # Some OpenAI-compatible servers repeat the whole name on every fragment
+                                    # (the spec sends it once): joined, my_location became my_locationmy_location...
+                                    if (n := fn.get("name") or "") and n != slot["name"]:
+                                        slot["name"] += n
                                     slot["args"] += fn.get("arguments") or ""
                                     yield {"type": "tool_call_start" if new else "tool_call_progress",
                                            "name": slot["name"], "chars": len(slot["args"]), "index": idx,
@@ -681,7 +757,132 @@ class OpenAICompatProvider(Provider):
         yield {"type": "done"}
 
 
+# Models whose tool calls fail while streaming (NIM release notes: the tool parser errors intermittently with
+# stream=true; their workaround is stream=false for tool requests). Filled at run time, per provider:model.
+NO_TOOL_STREAM: set[str] = set()
+TOOL_PARSER_ERROR = re.compile(r"pars(e|er|ing)|harmony|tool[_ ]?call|function[_ ]?call|invalid json", re.I)
+
+
+def _thinking_switch(base_url: str, model: str, opts: dict) -> dict | None:
+    """The request field that turns reasoning on/off where a provider has its own (None: no own switch or no
+    choice made). Kimi K2.5/K2.6 and Z.ai GLM: thinking={"type": ...}. kimi-k2-thinking cannot turn it off, Kimi
+    K3 uses reasoning_effort, GLM-5.3 rejects "disabled" - nothing is sent for those."""
+    off = opts.get("no_think") or opts.get("think") is False or opts.get("effort") == "off"
+    on = opts.get("think") is True or opts.get("effort") in ("low", "medium", "high")
+    if not (off or on):
+        return None
+    m = model.lower()
+    if "moonshot" in base_url or "kimi.com" in base_url:
+        if re.search(r"k2[.-]?[56]", m) and "k2-thinking" not in m:
+            return {"thinking": {"type": "disabled" if off else "enabled"}}
+        return None
+    if "api.z.ai" in base_url or "bigmodel.cn" in base_url:
+        if off and re.search(r"glm-5\.3", m):
+            return None
+        return {"thinking": {"type": "disabled" if off else "enabled"}}
+    if "dashscope" in base_url or "aliyuncs.com" in base_url:
+        # Alibaba Model Studio: hybrid Qwen models switch per request with enable_thinking (top level in the JSON
+        # body = the SDK's extra_body); thinking-only models (qwq, *-thinking) always reason - nothing is sent
+        if re.search(r"qwq|thinking", m):
+            return None
+        return {"enable_thinking": not off}
+    return None
+
+
+def _openai_reasoning(base_url: str, model: str) -> bool:
+    """OpenAI's own reasoning models (o-series, gpt-5 but -chat): max_completion_tokens instead of max_tokens (400),
+    no temperature / top_p (400 'Unsupported parameter')."""
+    m = model.lower().split("/")[-1]
+    own = "api.openai.com" in base_url or "openai.azure.com" in base_url
+    return own and bool(re.match(r"(o\d|gpt-5)", m)) and "chat" not in m
+
+
+def _fixed_sampling(base_url: str, model: str) -> bool:
+    """Moonshot's Kimi K2.5+ fix temperature and top_p: any value sent is an error (Kimi docs: 'cannot be
+    modified', do not pass it)."""
+    return ("moonshot" in base_url or "kimi.com" in base_url) and bool(
+        re.search(r"k2[.-]?[5-9]|k[3-9]\b|k[3-9][.-]", model.lower()))
+
+
+def split_content(c) -> tuple[str, str]:
+    """(thinking, text) of a message / delta content: a plain string, or Mistral's list of chunks
+    ({"type": "thinking", "thinking": [{"type": "text", "text": ...}]}, {"type": "text", "text": ...}) that Magistral
+    and reasoning_effort="high" return - a list used to be passed on as the answer text and broke the stream."""
+    if isinstance(c, str) or c is None:
+        return "", c or ""
+    if isinstance(c, dict):
+        c = [c]
+    think, text = [], []
+    for ch in c if isinstance(c, list) else []:
+        if not isinstance(ch, dict):
+            text.append(str(ch))
+            continue
+        kind = ch.get("type")
+        if kind == "thinking":
+            inner = ch.get("thinking")
+            if isinstance(inner, list):
+                think += [x.get("text", "") for x in inner if isinstance(x, dict)]
+            elif isinstance(inner, str):
+                think.append(inner)
+        elif kind in ("text", None) and isinstance(ch.get("text"), str):
+            text.append(ch["text"])
+    return "".join(think), "".join(text)
+
+
+def _no_penalty(base_url: str, model: str) -> bool:
+    """Servers that reject frequency_penalty (400): xAI reasoning models (every grok-4* but -non-reasoning, xAI docs),
+    SambaNova, OpenAI reasoning models (o-series, gpt-5)."""
+    m = model.lower()
+    if "api.x.ai" in base_url:
+        return "grok-4" in m and "non-reasoning" not in m or "grok-3-mini" in m
+    if "sambanova" in base_url:
+        return True
+    return "api.openai.com" in base_url and bool(re.match(r"(o\d|gpt-5)", m))
+
+
+def _mistral_id(cid: str) -> str:
+    """Mistral accepts only tool-call ids of exactly 9 letters/digits (HTTP 422 otherwise): ids made by the app or by
+    another provider before a model switch are mapped, the same way in the call and in its result."""
+    if re.fullmatch(r"[A-Za-z0-9]{9}", cid or ""):
+        return cid
+    return hashlib.sha1((cid or "").encode()).hexdigest()[:9]
+
+
+def _mistral_ids(msgs: list[dict]) -> list[dict]:
+    out = []
+    for m in msgs:
+        if m.get("role") == "tool":
+            m = {**m, "tool_call_id": _mistral_id(m.get("tool_call_id", ""))}
+        elif m.get("tool_calls"):
+            m = {**m, "tool_calls": [{**c, "id": _mistral_id(c.get("id", ""))} for c in m["tool_calls"]]}
+        out.append(m)
+    return out
+
+
 # ---------------------------------------------------------------- Anthropic
+def claude_gen(model: str) -> str:
+    """Which thinking / sampling rules a Claude model follows:
+    legacy (before 4.6: budget_tokens, temperature), 4.6 (adaptive, temperature still allowed), new (4.7+: adaptive,
+    no sampling params), between_tools (Sonnet 5.5: off = between_tools), always_on (Opus 5.5, Fable, Mythos: thinking
+    cannot be turned off)."""
+    m = (model or "").lower().split("/")[-1]
+    if re.search(r"fable|mythos|opus-5-5", m):
+        return "always_on"
+    if "sonnet-5-5" in m:
+        return "between_tools"
+    if re.search(r"claude-[23]\b|claude-[23]-|claude-instant", m):
+        return "legacy"
+    v = re.search(r"(?:opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?!\d))?", m)
+    if not v:
+        return "new"
+    major, minor = int(v.group(1)), int(v.group(2) or 0)
+    if major < 4 or (major == 4 and minor < 6):
+        return "legacy"
+    if major == 4 and minor == 6:
+        return "4.6"
+    return "new"
+
+
 class AnthropicProvider(Provider):
     native_tools = True
 
@@ -733,22 +934,47 @@ class AnthropicProvider(Provider):
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         body: dict = {"model": model, "max_tokens": opts.get("max_tokens", 8192), "messages": self._messages(messages),
                       "stream": True}
-        budget = {"low": 2048, "medium": 8192, "high": 24576}.get(opts.get("effort"))
-        if (budget or opts.get("think")) and opts.get("effort") != "off":
-            # Extended thinking, also with tools: the thinking blocks of a tool turn are returned with the
-            # tool results (see _messages and the 'thinking_blocks' event below).
-            budget = budget or max(1024, min(16_000, body["max_tokens"] // 2))
-            body["max_tokens"] = max(body["max_tokens"], budget + 4096)
-            body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-        elif "temperature" in opts:
-            body["temperature"] = opts["temperature"]
+        gen = claude_gen(model)
+        effort = opts.get("effort")
+        want = (bool(effort) or bool(opts.get("think"))) and effort != "off" and opts.get("think") is not False
+        level = effort if effort in ("low", "medium", "high", "xhigh", "max") else None
+        if gen == "legacy":
+            # Claude before 4.6: a fixed thinking budget (min 1024, below max_tokens)
+            if want:
+                budget = {"low": 2048, "medium": 8192, "high": 24576, "xhigh": 32000, "max": 32000}.get(
+                    level or "", max(1024, min(16_000, body["max_tokens"] // 2)))
+                body["max_tokens"] = max(body["max_tokens"], budget + 4096)
+                body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            elif "temperature" in opts:
+                body["temperature"] = opts["temperature"]
+        else:
+            # 4.6+: adaptive thinking and output_config.effort (budget_tokens is a 400 from 4.7 on; temperature is
+            # a 400 from 4.7 on). Opus 5.5 / Fable / Mythos cannot turn thinking off (lowest effort instead);
+            # Sonnet 5.5 turns it off with between_tools.
+            if want:
+                body["thinking"] = {"type": "adaptive", "display": "summarized"}
+            elif gen == "always_on":
+                level = "low"
+            elif gen == "between_tools":
+                body["thinking"] = {"type": "between_tools"}
+                level = level if level in ("low", "medium", "high") else None
+            else:
+                body["thinking"] = {"type": "disabled"}
+                if level in ("xhigh", "max"):  # disabled thinking is accepted only at effort high or below
+                    level = "high"
+                if gen == "4.6" and "temperature" in opts:
+                    body["temperature"] = opts["temperature"]
+            if level and not (gen == "4.6" and level == "xhigh"):
+                body["output_config"] = {"effort": level}
         if system:
             # Prompt caching: tools + system prompt stay the same for a whole task (the orchestrator keeps
             # them stable), so every later turn reads them from cache: faster first token, lower cost.
             body["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         if opts.get("tools"):
-            body["tools"] = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
-                             for t in opts["tools"]]
+            # eager_input_streaming: a tool's arguments (a whole file) stream as they are written instead of arriving
+            # in one burst at the end - live progress, and no long silence the watchdog takes for a stall
+            body["tools"] = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"],
+                              "eager_input_streaming": True} for t in opts["tools"]]
         blocks: dict[int, dict] = {}
         thinking: dict[int, dict] = {}  # index -> thinking / redacted_thinking block being received
         try:
@@ -789,8 +1015,21 @@ class AnthropicProvider(Provider):
                         # cached prompt parts are counted separately; the context still holds them
                         yield {"type": "usage", "input": (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
                                + (u.get("cache_creation_input_tokens") or 0)}
-                    elif t == "message_delta" and (u := d.get("usage")):
-                        yield {"type": "usage", "output": u.get("output_tokens")}
+                    elif t == "message_delta":
+                        stop = (d.get("delta") or {}).get("stop_reason")
+                        if u := d.get("usage"):
+                            yield {"type": "usage", "output": u.get("output_tokens")}
+                        if stop in ("max_tokens", "model_context_window_exceeded"):
+                            # cut by the output limit / the window: kept and continued, never taken as finished
+                            for b in blocks.values():  # a tool call cut mid-way: its partial arguments are salvaged
+                                yield {"type": "truncated", "name": b["name"], "chars": len(b["json"]), "reason": "length"}
+                            if not blocks:
+                                yield {"type": "truncated", "name": None, "chars": 0, "reason": "length"}
+                        elif stop == "refusal":
+                            det = (d.get("delta") or {}).get("stop_details") or {}
+                            raise ProviderError("refused", "The model declined this request"
+                                                + (f" ({det.get('category')})" if det.get("category") else "")
+                                                + (f": {det.get('explanation')}" if det.get("explanation") else ""))
                     elif t == "error":
                         raise stream_error(d.get("error"))
         except httpx.ConnectError as e:

@@ -39,6 +39,15 @@ PLACEHOLDER = re.compile(
     r"|lorem ipsum[\s,.]+dolor", re.I)
 
 
+_CDATA = re.compile(r"<!\[CDATA\[(.*?)(?:\]\]>|$)", re.S)
+
+
+def _strip_cdata(content: str) -> str:
+    """<![CDATA[ ... ]]> around the text (weak models wrap a tag's body in it, XML style): the wrapper became text on
+    the first page of the PDF and in the source."""
+    return _CDATA.sub(lambda m: m.group(1), content) if "<![CDATA[" in content else content
+
+
 def placeholder_marks(content: str) -> list[str]:
     """Placeholder stand-ins in a document's content (outside code blocks and inline code), each once."""
     text = re.sub(r"```.*?```", " ", content, flags=re.S)
@@ -100,7 +109,23 @@ def _anchor_images(ctx, content: str, base_dir: Path, target: Path) -> str:
                   content, flags=re.I)
 
 
-@tool("make_doc", '<tool name="make_doc" type="pdf|docx|pptx|xlsx|html" path="docs/report.pdf" theme="corporate">'
+def _doc_name(args: dict, body: str) -> str:
+    kind = str(args.get("type") or args.get("format") or "").lower().lstrip(".")
+    if kind not in ("pdf", "docx", "pptx", "xlsx", "html"):
+        kind = "xlsx" if (body or "").lstrip().startswith(("[", "{")) else "pdf"
+    src = str(args.get("source") or "")
+    title = str(args.get("title") or "")
+    if not title and src:
+        title = re.sub(r"(\.partial)?\.(md|html?|json)$", "", src.replace("\\", "/").rsplit("/", 1)[-1])
+        title = re.sub(r"\.(pdf|docx|pptx|xlsx|html)$", "", title)
+    if not title:
+        m = re.search(r"<h1[^>]*>(.*?)</h1>|^#[ \t]+([^\n]+)$", body or "", re.S | re.M)
+        title = re.sub(r"<[^>]+>", "", (m.group(1) or m.group(2)) if m else "")
+    slug = re.sub(r"[^\w]+", "_", title.strip(), flags=re.U).strip("_")[:60] or "document"
+    return f"{slug}.{kind}"
+
+
+@tool("make_doc",'<tool name="make_doc" type="pdf|docx|pptx|xlsx|html" path="docs/report.pdf" theme="corporate">'
       'markdown, HTML or JSON content</tool>',
       "Generate a professional document (designed layout, every language and script, clickable links, LaTeX math). "
       "pdf/docx/pptx/html take full Markdown (headings, **bold**, lists, tables, links, images, code, > quotes, "
@@ -123,10 +148,14 @@ def _anchor_images(ctx, content: str, base_dir: Path, target: Path) -> str:
        "landscape": {"type": "boolean", "description": "PDF in landscape (wide tables)"},
        "header": S("Optional, with a letterhead template: this document's own letterhead lines (organisation | unit)"),
        "footer": S("Optional, with a template: this document's own footer lines (address | phone | web)")},
-      main="content", required=("path",))
+      main="content", required=())
 async def make_doc(ctx, args, body):
     from .docs_gen import generate
     from . import doc_templates
+    if not str(args.get("path") or "").strip():
+        # No path (models write type= / title= and forget it; the call failed with "Missing required argument
+        # 'path'" and the content was lost): named after the document's title, in the type asked for.
+        args = {**args, "path": _doc_name(args, body)}
     target = _path(ctx, args["path"])
     if not (args.get("template") or "").strip():
         # The user picked a template for this request (its chip puts make_doc template="id" into the message) and the
@@ -145,13 +174,25 @@ async def make_doc(ctx, args, body):
             args["theme"] = doc_templates.with_lines(tid, str(args.get("header") or ""), str(args.get("footer") or ""))
     content = body
     base_dir = ctx.root
+    keep0 = target.parent / ".doc-sources" / f"{target.name}.md"
+    if not args.get("source") and keep0.is_file() and _rel(ctx, keep0) in (ctx.files_changed or []):
+        # The model wrote this document's source with write_file in this task and then called make_doc without
+        # source= and with a scrap of a body (a title, 44 bytes): the PDF came out empty and the scrap replaced the
+        # source it had just written. The source it wrote is the content.
+        written = keep0.read_text(encoding="utf-8", errors="replace")
+        if len(_strip_cdata(written).strip()) > max(200, 2 * len((body or "").strip())):
+            args = {**args, "source": _rel(ctx, keep0)}
     if args.get("source"):
         src = _path(ctx, args["source"])
         if not src.is_file():
             return ToolResult(False, f"source not found: {args['source']}")
         content = src.read_text(encoding="utf-8", errors="replace")
         base_dir = src.parent
-    if not (content or "").strip():
+    content = _strip_cdata(content or "")
+    if not content.strip():
+        if args.get("source"):  # the model pointed at a source file that is there but empty
+            return ToolResult(False, f"The source file {args['source']} is empty. Write the document's Markdown into it "
+                                     "with write_file first, or call make_doc with the Markdown as the content.")
         return ToolResult(False, "No content: pass Markdown/HTML/JSON as content, or source=<file>.")
     content = _anchor_images(ctx, content, base_dir, target)
     tpl = doc_templates.get(tid) if tid else None

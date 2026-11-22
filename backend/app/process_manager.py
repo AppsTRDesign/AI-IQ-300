@@ -88,9 +88,17 @@ class ProcessManager:
         else:
             kwargs["start_new_session"] = True
         try:
-            info.proc = await asyncio.create_subprocess_exec(
-                *argv, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **kwargs)
+            if sys.platform == "win32" and len(argv) == 5 and [a.lower() for a in argv[:4]] == ["cmd", "/d", "/s", "/c"]:
+                # cmd reads its own command line: passed as a list, Python escaped the command's quotes as \" (C
+                # runtime style), which cmd does not know - `adb install -r "app\x.apk"` reached adb with the quotes
+                # ("filename doesn't end .apk"). The line goes to cmd exactly as written.
+                info.proc = await asyncio.create_subprocess_shell(
+                    argv[4], cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **kwargs)
+            else:
+                info.proc = await asyncio.create_subprocess_exec(
+                    *argv, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, **kwargs)
         except Exception as e:
             if not background:
                 self._sem.release()
@@ -131,7 +139,19 @@ class ProcessManager:
         assert p and p.stdout and p.stderr
         pumps = asyncio.gather(self._pump(info, p.stdout, "stdout"), self._pump(info, p.stderr, "stderr"))
         try:
-            await asyncio.wait_for(asyncio.shield(p.wait()), timeout)
+            # Waited in slices: a command moved to the background meanwhile (detach: a server started from a
+            # script) is no longer bound by the command timeout - it was killed at 300 s right after being handed
+            # to the model as a running server. Background processes end with stop or the server TTL.
+            deadline = time.monotonic() + timeout if timeout else None
+            while True:
+                left = None if deadline is None or info.background else deadline - time.monotonic()
+                if left is not None and left <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    await asyncio.wait_for(asyncio.shield(p.wait()), min(left, 5) if left is not None else 5)
+                    break
+                except asyncio.TimeoutError:
+                    continue
         except asyncio.TimeoutError:
             info.state = "timed_out"
             await self._kill_tree(info)
@@ -139,10 +159,21 @@ class ProcessManager:
                 await asyncio.wait_for(p.wait(), 20)
             except asyncio.TimeoutError:
                 info.tail.append("[could not be stopped: the process did not exit]")
-        try:
-            await asyncio.wait_for(pumps, 10)  # descendants may hold pipes open briefly
-        except asyncio.TimeoutError:
-            pass
+        # A child left running in the background (`ruflo daemon start`, `npm start &`, a service) inherits the pipes and
+        # holds them open: the command was over, yet every such run waited the full 10 s. Wait only while output still
+        # comes (the last lines after exit), at most 10 s.
+        end = time.monotonic() + 10
+        while not pumps.done() and time.monotonic() < end:
+            try:
+                await asyncio.wait_for(asyncio.shield(pumps), 0.4)
+            except asyncio.TimeoutError:
+                if time.monotonic() - (info.last_output or 0) > 1.2:
+                    break
+        if not pumps.done():
+            pumps.cancel()  # the pipe of a still-running descendant: stop reading it
+            await asyncio.wait({pumps}, timeout=1)
+        if pumps.done() and not pumps.cancelled():
+            pumps.exception()  # retrieved, so asyncio logs nothing
         info.exit_code = p.returncode
         if info.cancel_requested:
             info.state = "cancelled"
@@ -153,6 +184,16 @@ class ProcessManager:
         self._persist(info)
         self._emit(info, "exit", state=info.state, exit_code=info.exit_code)
         info.done.set()
+
+    def detach(self, info: ProcInfo) -> None:
+        """A foreground command that turned out to run on (a server started from a script, a watcher): it becomes a
+        background process (its slot is freed, it is stopped with its task's servers) instead of blocking the task."""
+        if info.background or info.state != "running":
+            return
+        info.background = True
+        if self._sem is not None:
+            self._sem.release()
+        self._emit(info, "state", state="running", background=True)
 
     async def _kill_tree(self, info: ProcInfo) -> None:
         p = info.proc

@@ -59,6 +59,54 @@ def page_state(name: str, res, unresolved: str) -> str:
     return "" if unresolved.startswith("[page error]") else unresolved
 
 
+CHECK_TOOLS = {"read_file", "inspect_media", "browser_navigate", "web_screenshot", "browser_check", "browser_snapshot"}
+_OUT_PATH = re.compile(r"[\w.:-]*(?:[\\/]+[\w.-]+)+\.\w{1,5}\b|[\w-]+\.(?:html?|md|json|pdf|mp4|mp3|wav|png|jpe?g|csv|txt|zip)\b")
+
+
+def _norm_path(p: str, root: Path | None) -> str:
+    p = re.sub(r"^file:/+", "", str(p).strip().strip("'\"`")).replace("\\\\", "/").replace("\\", "/").lower()
+    r = str(root).replace("\\", "/").lower().rstrip("/") + "/" if root else ""
+    if r and p.startswith(r):
+        p = p[len(r):]
+    return p.lstrip("./")
+
+
+def failed_outputs(unresolved: str, root: Path | None, since: float) -> list[str]:
+    """Files the failed command's output names that exist on disk and were written during this task (a program that
+    finished its job and only reported a non-zero exit: 'done in 63.7s', "report": "out\\x\\report.html")."""
+    if not unresolved or unresolved.startswith("[page error]") or ": SYNTAX ERROR -" in unresolved or not root:
+        return []
+    found: list[str] = []
+    for m in _OUT_PATH.finditer(unresolved.replace("\\\\", "\\")):
+        rel = _norm_path(m.group(0), root)
+        if len(rel) < 4 or rel in found:
+            continue
+        p = Path(rel) if Path(rel).is_absolute() else Path(root) / rel
+        try:
+            if p.is_file() and p.stat().st_size > 0 and p.stat().st_mtime >= since - 5:
+                found.append(rel)
+        except OSError:
+            continue
+    return found
+
+
+def output_checked(unresolved: str, name: str, args: dict | None, body: str, ok: bool, root: Path | None,
+                   since: float) -> str:
+    """The failed command's own output file was then opened and read without an error (read_file / inspect_media /
+    the page in the browser): the step is shown to work, so it is no longer an open failure. A rea-video run reported
+    exit 1 (PowerShell 2>&1), the model read report.html and opened it cleanly, and the answer still got "the last
+    command still fails". Returns the new 'unresolved'."""
+    if not unresolved or not ok or name not in CHECK_TOOLS:
+        return unresolved
+    targets = [str(v) for k, v in (args or {}).items() if k in ("path", "url", "file", "src") and v] + ([body] if body else [])
+    outs = failed_outputs(unresolved, root, since)
+    for t in targets:
+        tn = _norm_path(t, root)
+        if tn and any(tn == o or tn.endswith("/" + o) or o.endswith("/" + tn) for o in outs):
+            return ""
+    return unresolved
+
+
 def failure_signature(failure: str) -> str:
     """A failed command's error without what changes on every attempt (temp script names, paths, hex ids, numbers),
     so the same error is recognised as the same."""

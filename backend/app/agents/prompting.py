@@ -191,6 +191,19 @@ def _system_prompt(role: str, root, session_id: str, project: dict | None, skill
         if section := mcp_client.prompt_section(request):
             parts.append(section)
             sizes["tools"] = sizes.get("tools", 0) + tokens.count(section)
+    from .. import connections as _conn
+    if (tools is None or "google" in tools) and _conn.google_connected():
+        # The google-* MCP servers list tools but refuse every call without Google's Developer Preview: the model
+        # kept trying them and told the user to fix scopes. The REST tool works with the same sign-in.
+        parts.append("Google account connected: for Gmail, Drive, Docs, Sheets, Calendar and Contacts use the "
+                     "`google` tool (Google's REST APIs, always works; use_skill google gives the endpoints). google-* "
+                     "MCP tools, when listed under MCP tools, work too. Put JSON bodies in the body argument. Account "
+                     "data (mails, files, events) only ever comes from a tool result. 'Taslak / draft' mail = save it "
+                     "as a Gmail draft right away - do not ask first, the draft is the request: google method=\"POST\" "
+                     "url=\"https://gmail.googleapis.com/gmail/v1/users/me/drafts\" body={\"to\": .., \"subject\": .., "
+                     "\"text\": ..} ('kendime / to me' = the account's own address, GET .../users/me/profile). Ask before sending mail, "
+                     "deleting, sharing or creating calendar events.")
+        sizes["tools"] = sizes.get("tools", 0) + tokens.count(parts[-1])
     if tools is None or "team" in tools:
         pool = [e["model"] for e in router.pool() if e["model"].partition(":")[2] != model][:12]
         if pool:

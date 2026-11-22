@@ -128,12 +128,24 @@ function md { mkdir @args }
 function touch { foreach ($x in (__aiiq_paths $args)) { if (Test-Path -LiteralPath $x) { (Get-Item -LiteralPath $x).LastWriteTime = Get-Date } else { New-Item -ItemType File -Path $x -Force | Out-Null } } }
 function ls { if (__aiiq_native $args '^-(Path|LiteralPath|Filter|Include|Exclude|Recurse|Depth|Force|Name|File|Directory|Hidden|ReadOnly|System|Attributes|ErrorAction)$') { Microsoft.PowerShell.Management\Get-ChildItem @args; if (-not $?) { $global:__aiiq_err = $true } } else { $f = @($args | Where-Object { __aiiq_isflag $_ }) -join ' '; $p = __aiiq_paths $args; $a = @{}; if ($f -match '(^|\s)(-\w*a\w*|/a)') { $a.Force = $true }; if ($f -cmatch '(^|\s)(-\w*R\w*|/s)') { $a.Recurse = $true }; if ($p.Count) { Microsoft.PowerShell.Management\Get-ChildItem -Path $p @a } else { Microsoft.PowerShell.Management\Get-ChildItem @a } } }
 function dir { ls @args }
+# head / tail / wc do not exist in PowerShell ('rea-video --help 2>&1 | head -20', 'wc -l index.html' failed), and
+# 'curl -s URL' hit the Invoke-WebRequest alias ("missing mandatory parameters: Uri"): the real curl.exe answers instead.
+function global:__aiiq_nargs($a) { $n = 10; $f = @(); for ($i = 0; $i -lt $a.Count; $i++) { $x = "$($a[$i])"; if ($x -ceq '-n' -and $i + 1 -lt $a.Count) { $i++; $n = [int]"$($a[$i])".TrimStart('+') } elseif ($x -match '^-n?(\d+)$') { $n = [int]$Matches[1] } elseif ($x -match '^--lines=(\d+)$') { $n = [int]$Matches[1] } elseif ($x -notmatch '^-') { $f += $x } }; return @{ n = $n; files = $f } }
+function head { $p = __aiiq_nargs $args; if ($p.files.Count) { foreach ($x in $p.files) { Get-Content -LiteralPath $x -TotalCount $p.n } } else { $input | Select-Object -First $p.n } }
+function tail { $p = __aiiq_nargs $args; if ($p.files.Count) { foreach ($x in $p.files) { Get-Content -LiteralPath $x -Tail $p.n } } else { $input | Select-Object -Last $p.n } }
+function wc { $f = (@($args | Where-Object { "$_" -match '^-[lwcm]+$' }) -join ''); $files = @($args | Where-Object { "$_" -notmatch '^-' }); $one = { param($t, $name) $o = @(); if (-not $f -or $f -match 'l') { $o += @($t).Count }; if (-not $f -or $f -match 'w') { $o += @((@($t) -join ' ') -split '\s+' | Where-Object { $_ }).Count }; if (-not $f -or $f -match '[cm]') { $o += (@($t) -join "`n").Length }; (($o -join ' ') + " $name").Trim() }; if ($files.Count) { foreach ($x in $files) { & $one @(Get-Content -LiteralPath $x) $x } } else { & $one @($input) '' } }
+if (Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue) { Remove-Item Alias:curl -Force -ErrorAction SilentlyContinue }
 """
 
 
+# A program run with 2>&1 that only logged to stderr (INFO lines) and exited 0: Windows PowerShell 5.1 turns each stderr
+# line into a NativeCommandError record and sets $? to false, so 'rea-video decompose ... 2>&1' (done, report written)
+# came back as exit 1 / failed and the model and the app called a finished step broken. Such a run is a success.
+PS_NATIVE_OK = "($LASTEXITCODE -eq 0 -and $Error.Count -gt 0 -and \"$($Error[0].FullyQualifiedErrorId)\" -like 'NativeCommandError*')"
+
 # The script's exit code: Windows PowerShell exits 0 even when the last native command failed.
 PS_TRAILER = r"""
-$__ok = $?
+$__ok = $? -or """ + PS_NATIVE_OK + r"""
 if ($global:__aiiq_failed -or $global:__aiiq_err -or -not $__ok) { if ($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 } }
 """
 
@@ -163,19 +175,48 @@ def ps_chain(line: str) -> str:
     parts = _split_chain(line)
     if not parts:
         return line
-    ok = "$__s = $? -and -not $global:__aiiq_err"  # the shims above report their own failures
+    ok = f"$__s = ($? -or {PS_NATIVE_OK}) -and -not $global:__aiiq_err"  # the shims above report their own failures
     out = f"{parts[0]}; {ok}"
     for op, seg in zip(parts[1::2], parts[2::2]):
         out += f"; if ({'' if op == '&&' else '-not '}$__s) {{ $global:__aiiq_err = $false; {seg}; {ok} }}"
     return out + "; $global:__aiiq_failed = -not $__s"
 
 
+# "Remove-Item x -ErrorAction SilentlyContinue", "Get-Command ruflo -ea 0", "ls a, b 2>$null": the error was silenced
+# on purpose (delete if there, look if it exists), yet PowerShell still sets $? to false and the run came back as
+# exit 1 / failed - the app then started debugging and held the final answer as "the last command failed".
+PS_QUIET = re.compile(r"-(?:ErrorAction|EA)\s*:?\s*(?:SilentlyContinue|Ignore|0)\b|\b2>\s*\$null\b|\*>\s*\$null\b", re.I)
+
+
+def _last_statement(command: str) -> str:
+    lines = [l for l in command.strip().split("\n") if l.strip() and not l.strip().startswith("#")]
+    return (lines[-1].rsplit(";", 1)[-1] if lines else "")
+
+
 def ps_script(command: str, pwsh: bool) -> str:
     """Script text for PowerShell: compatibility shims, && / || chains (5.1 only) and a real exit code."""
+    quiet = bool(PS_QUIET.search(_last_statement(command)))
     if not pwsh and "@'" not in command and '@"' not in command:  # here-strings stay as written
         command = "\n".join(ps_chain(l) if ("&&" in l or "||" in l) and not l.rstrip().endswith("`") else l
                             for l in command.split("\n"))
-    return PS_SHIM + command + PS_TRAILER
+    if quiet:  # a silenced cmdlet error is not a failure; a native program's own exit code still counts
+        return (PS_SHIM + _bash_shim() + command
+                + "\nif ($LASTEXITCODE -and -not $global:__aiiq_failed) { exit $LASTEXITCODE }"
+                + "\nif ($global:__aiiq_failed) { exit 1 }\nexit 0\n")
+    return PS_SHIM + _bash_shim() + command + PS_TRAILER
+
+
+def _bash_shim() -> str:
+    """'bash script.sh' typed in PowerShell runs System32\\bash.exe (WSL): with no Linux installed it printed a
+    UTF-16 "no distribution installed" message read as 'L i n u x  i ç i n ...' and failed. Git Bash runs it instead."""
+    if sys.platform != "win32":
+        return ""
+    from ..hostinfo import git_bash
+    gb = git_bash()
+    if not gb:
+        return ""
+    gb = gb.replace("'", "''")
+    return f"function bash {{ & '{gb}' @args }}\nfunction sh {{ & '{gb}' @args }}\n"
 
 
 # One command line for a program (not source code of the language): "python --version", "node -v", "pip install x".
@@ -225,6 +266,13 @@ def venv_pip(command: str, shell: str) -> str:
     return PIP_CALL.sub(repl, command)
 
 
+# One program call whose output goes to a file ("& "C:\...\adb.exe" exec-out screencap -p > shot.png"): no pipeline,
+# no PowerShell variables or sub-expressions, so cmd runs it the same way.
+NATIVE_REDIRECT = re.compile(
+    r"(?:&\s*)?((?:\"[^\"]+\.(?:exe|com|bat|cmd)\"|[^\s\"|;$`()]+\.(?:exe|com)|adb|ffmpeg|ffprobe|sqlite3|git|"
+    r"pg_dump|mysqldump|openssl|magick|convert)(?=\s))([^|;$`(){}\n]*?\s\d?>{1,2}\s*(?:\"[^\"]+\"|[^\s\"|;]+))", re.I)
+
+
 def build_argv(ctx: ToolContext, shell: str, command: str) -> list[str]:
     """Turn a shell + command into an argv vector. Script shells use an explicit script file."""
     shell = (shell or DEFAULT_SHELL).lower()
@@ -249,6 +297,10 @@ def build_argv(ctx: ToolContext, shell: str, command: str) -> list[str]:
     if sys.platform != "win32" and shell in POWERSHELLS + ("cmd",) and not shutil.which("pwsh"):
         shell = "bash"  # Linux/macOS without PowerShell: run the command in bash
     shell, command = route_heredoc(shell, command)
+    if sys.platform == "win32" and shell in POWERSHELLS and (m := NATIVE_REDIRECT.fullmatch(command.strip())):
+        # Windows PowerShell's ">" re-encodes a program's output as UTF-16 text: `adb exec-out screencap -p >
+        # shot.png` wrote a broken PNG. cmd redirects the bytes as they are.
+        shell, command = "cmd", m.group(1) + m.group(2)
     if shell in POWERSHELLS:
         command = HERE_CLOSE.sub(r"\1", command)
     if shell == "bash":
@@ -271,6 +323,8 @@ def build_argv(ctx: ToolContext, shell: str, command: str) -> list[str]:
     if shell == "cmd":
         return ["cmd", "/d", "/s", "/c", command]
     argv = shlex.split(command, posix=sys.platform != "win32")  # "exec": direct argv
+    if sys.platform == "win32":  # non-posix split keeps the quotes: "app\x.apk" must reach the program without them
+        argv = [_unquote_arg(a) for a in argv]
     if argv and argv[0].lower() in ("python", "python3", "py"):
         argv[0] = PYTHON
     elif argv and argv[0].lower() in ("pip", "pip3"):
@@ -436,9 +490,34 @@ async def _spawn(ctx: ToolContext, args: dict, body: str, background: bool):
     timeout = None if background else float(args.get("timeout") or load_settings()["agent"]["command_timeout"])
     info = await manager.start(argv, str(cwd), env, owner=ctx.owner or ctx.run_id, timeout=timeout,
                                background=background)
-    if background:
-        ctx.step("process", {"process_id": info.id, "command": command, "shell": shell})
+    # (No extra "process" step: the start tool's own step already shows the command; the copy appeared as a second,
+    # untitled "Process started" line in the trace and the steps export.)
     return info, None
+
+
+READ_TOOLS_AS_CMD = {"list_dir", "read_file", "search_code", "system_info"}
+
+
+async def _tool_as_command(ctx, args, body) -> ToolResult | None:
+    """`run list_dir` / `run read_file app.py`: the model typed an app tool's name as a shell command and PowerShell
+    answered "list_dir is not recognized" (a failed step and a debug turn). A read-only tool is called for real; any
+    other gets a clear one-line correction."""
+    import shutil
+    from .registry import TOOLS
+    cmd = (body or str(args.get("command") or "")).strip()
+    if not cmd or "\n" in cmd or args.get("argv"):
+        return None
+    head, _, rest = cmd.partition(" ")
+    if head not in TOOLS or head in ("run", "start", "stop") or shutil.which(head):
+        return None
+    tool_ = TOOLS[head]
+    if head in READ_TOOLS_AS_CMD:
+        rest = rest.strip().strip("'\"")
+        res = await (tool_.fn(ctx, {}, rest) if tool_.main else tool_.fn(ctx, {"path": rest} if rest else {}, ""))
+        return ToolResult(res.ok, f"[`{head}` is an app tool, not a shell command: it was called as the tool.]\n"
+                          + res.output, res.data)
+    return ToolResult(False, f"`{head}` is an app tool, not a shell command: call it directly as "
+                             f"<tool name=\"{head}\" ...> instead of through run.")
 
 
 ERR_AT = re.compile(r"((?:[A-Za-z]:)?[\w ./\\()~-]+?\.(?:js|mjs|cjs|jsx|ts|tsx|py|php|kt|kts|java|json|css|scss|html|vue|"
@@ -481,6 +560,8 @@ def error_context(ctx, out: str) -> str:
        "cwd": S("Working directory, default '.'"), "timeout": {"type": "integer", "description": "Seconds"}},
       main="command", required=())
 async def run(ctx, args, body):
+    if redirected := await _tool_as_command(ctx, args, body):
+        return redirected
     if SERVER_CMD.search(body or "") or SERVER_CMD.search(" ".join(map(str, args.get("argv") or []))):
         # A server never "finishes": with run the task would wait for the command timeout (minutes). It is started
         # in the background instead and returns once it is up (it is stopped later with stop, or automatically).
@@ -493,16 +574,51 @@ async def run(ctx, args, body):
         return denied
     waiter = asyncio.create_task(info.done.wait())
     canceller = asyncio.create_task(ctx.cancel.wait())
+    detached = ""
     try:
-        await asyncio.wait({waiter, canceller}, return_when=asyncio.FIRST_COMPLETED)
+        while True:
+            done, _ = await asyncio.wait({waiter, canceller}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+            if done:
+                break
+            # A command that runs on without a word (a server started from inside a script, a dev server the
+            # pattern did not know, a program waiting for something): the task sat on "run" for minutes. After a
+            # silence it goes on in the background and the model gets its id - it decides to wait, read or stop it.
+            idle = time.monotonic() - (info.last_output or info.started_mono)
+            serving = time.time() - t0 >= 15 and _listens(info.pid)
+            if serving and not (serving := await asyncio.to_thread(_http_port, info.pid)):
+                # A build or tool that opens a port of its own (the Gradle client talking to its daemon, adb's
+                # server on 5037) is no web server: it was moved to the background after 15 s, the model waited on
+                # the wrong process and ran the build again over the running one. It goes on until it ends (or
+                # stays silent too long).
+                serving = 0
+            if serving or idle >= RUN_IDLE_DETACH:
+                manager.detach(info)
+                detached = (f"\n[App note: this command is still running after {int(time.time() - t0)} s"
+                            + (f" and serves HTTP on port {serving}" if serving else f" with no output for {int(idle)} s")
+                            + f"; it was moved to the background as process_id={info.id} so the task is not blocked. "
+                            "Check it with process id=" + info.id + ", stop it with stop id=" + info.id
+                            + (f". It is a server: use it now (web_screenshot / fetch_url http://127.0.0.1:{serving}).]"
+                               if serving else ". Read its output later with process id=" + info.id
+                               + " before running it again.]"))
+                break
     except asyncio.CancelledError:  # the task was stopped while the command ran: never leave it running
         await asyncio.shield(manager.stop(info.id))
         raise
     finally:
         canceller.cancel()
+        if not waiter.done():
+            waiter.cancel()
+    if detached:
+        out = tidy_ps_errors("\n".join(info.tail))
+        return ToolResult(True, f"state=running (background)\n{clip(out)}{detached}",
+                          {"process_id": info.id, "exit_code": None})
     if ctx.cancel.is_set():
         await manager.stop(info.id)
     out = tidy_ps_errors("\n".join(info.tail))
+    if info.exit_code == 1 and info.state == "failed" and (miss := probe_miss(body or " ".join(map(str, args.get("argv") or [])), out)):
+        # "is it still installed?" -> not found: that is the answer, not an error (no debug turn, no held answer)
+        return ToolResult(True, f"exit_code=1 state=exited\n{clip(out)}\n[App note: {miss}]",
+                          {"process_id": info.id, "exit_code": 1, "probe_miss": True})
     # Files the command wrote are checked by type (a 1 KB "video", an empty PDF, a .docx that is no zip...):
     # exit code 0 alone does not mean the output is real.
     from .verify import check_outputs
@@ -513,6 +629,27 @@ async def run(ctx, args, body):
     return ToolResult(info.state == "exited" and not broken,
                       f"exit_code={info.exit_code} state={info.state}\n{clip(out)}{broken}{where}",
                       {"process_id": info.id, "exit_code": info.exit_code})
+
+
+# Lookups whose exit code 1 means "nothing found" (where / which / Get-Command / npm ls / pip show / grep...).
+PROBE_HEAD = re.compile(r"^\s*(?:&\s*)?(?:get-command|gcm|where(?:\.exe)?|which|command\s+-v|type\s+-[ap]|test-path|"
+                        r"npm(?:\.cmd)?\s+(?:ls|list)|pnpm\s+(?:ls|list)|yarn\s+list|pip3?\s+show|python3?\s+-m\s+pip\s+show|"
+                        r"py\s+-m\s+pip\s+show|winget\s+list|choco\s+list|get-process|get-service|findstr|grep|rg|"
+                        r"select-string|sls|get-package|conda\s+list|docker\s+ps|tasklist)\b", re.I)
+PROBE_EMPTY = re.compile(r"\(empty\)|not found|could not find|no match|no packages? found|cannot find|"
+                         r"is not recognized|bulunamad|no instances|no installed package", re.I)
+
+
+def probe_miss(command: str, out: str) -> str:
+    """A lookup that found nothing (exit 1, no output or a 'not found' line): the note for the model, or ''."""
+    cmd = (command or "").strip()
+    if not cmd or "\n" in cmd.strip() or not PROBE_HEAD.match(cmd.split(";")[-1].split("|")[0]):
+        return ""
+    text = re.sub(r"^exit_code=.*$", "", out or "", flags=re.M).strip()
+    if text and (not PROBE_EMPTY.search(text) or len(text) > 1500):  # a real error message is left as a failure
+        return ""
+    return ("this lookup found nothing (exit 1 here means 'not found / no match'). That is the answer - e.g. it is "
+            "not installed or not present - not an error to fix.")
 
 
 _PS_AT = re.compile(r"^(\[stderr\] )?At [^\n]*\.ps1:\d+ char:\d+\s*$")
@@ -577,6 +714,49 @@ def _real_places(ctx, out: str) -> str:
     cwd = _rel(ctx, _path(ctx, ctx.shell_cwd or "."))
     return (f"\n[App note: commands run in {cwd}. Where these files really are (paths from the task folder): "
             + "; ".join(lines) + "]")
+
+
+RUN_IDLE_DETACH = 120  # seconds without any output before a still-running run goes to the background
+
+
+def _speaks_http(port: int) -> bool:
+    """Whether the local port answers like a web server (an HTTP status line within a second)."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=1) as s:
+            s.settimeout(1)
+            s.sendall(b"HEAD / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            return s.recv(8).startswith(b"HTTP/")
+    except OSError:
+        return False
+
+
+def _listen_ports(pid: int | None) -> list[int]:
+    """The ports the process (or a child of it) listens on (psutil; without it nothing is detected)."""
+    if not pid:
+        return []
+    out: list[int] = []
+    try:
+        import psutil
+        procs = [psutil.Process(pid)]
+        procs += procs[0].children(recursive=True)
+        for p in procs:
+            for c in p.net_connections(kind="inet"):
+                if c.status == psutil.CONN_LISTEN and c.laddr and int(c.laddr.port) not in out:
+                    out.append(int(c.laddr.port))
+    except Exception:
+        return out
+    return out
+
+
+def _listens(pid: int | None) -> int:
+    """A port the process (or a child of it) listens on, 0 if none."""
+    return (_listen_ports(pid) or [0])[0]
+
+
+def _http_port(pid: int | None) -> int:
+    """The first port of the process that answers HTTP, 0 if none (a dev server's HMR socket may come first)."""
+    return next((p for p in _listen_ports(pid)[:6] if _speaks_http(p)), 0)
 
 
 # Commands that start a server or a watcher (they run until stopped).

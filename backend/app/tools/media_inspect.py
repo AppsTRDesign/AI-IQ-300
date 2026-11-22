@@ -182,11 +182,32 @@ def _transcribe(path: Path, minutes: float, lang: str | None) -> str:
     return table(segs)
 
 
+_CV_WARM = False
+
+
+def _cv_warm() -> None:
+    """OpenCV used for the first time in a worker thread (asyncio.to_thread) kept the process from exiting on Windows
+    (the app hung on close, pytest never ended); used once on the main thread first, it exits normally (measured)."""
+    global _CV_WARM
+    if _CV_WARM:
+        return
+    _CV_WARM = True
+    try:
+        import cv2
+        import numpy as np
+        cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml").detectMultiScale(
+            np.zeros((64, 64), np.uint8), 1.1, 6)
+        cv2.Laplacian(np.zeros((8, 8), np.uint8), cv2.CV_64F)
+    except Exception:  # noqa: BLE001 - no OpenCV: the facts skip sharpness / faces
+        pass
+
+
 async def inspect(path: Path, work: Path, model: str, question: str = "", lang: str = "tr",
                   transcript: bool = True, minutes: float = 10) -> dict:
     """{kind, facts..., text, description, transcript, sheet} for the file at `path`."""
     from PIL import Image
     from .visual import describe_for
+    _cv_warm()
     ext = path.suffix.lower()
     res: dict = {"file": path.name}
     if ext in IMAGE:

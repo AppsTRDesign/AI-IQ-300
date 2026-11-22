@@ -130,11 +130,43 @@ PARTIAL = "partial_call.json"
 WRITERS = ("write_file", "make_doc")
 
 
+# Tools whose arguments are a few words: thousands of characters streaming into one of them is a loop.
+TINY_ARGS = frozenset({"my_location", "system_info", "need_tools", "web_search", "research", "fetch_url", "read_file",
+                       "list_dir", "delete_file", "stop", "process", "browser_navigate", "browser_click", "browser_key",
+                       "browser_scroll", "browser_wait", "browser_tabs", "browser_snapshot", "browser_screenshot",
+                       "web_screenshot", "stock_photo", "places", "read_document"})
+# Calls with a JSON body that is small in practice (an API request, MCP arguments, a to-do list): cut far later than
+# the tiny ones. nemotron streamed one google call for 9 minutes (280K characters) before anything stopped it.
+SMALL_ARGS = {"google": 24000, "mcp": 24000, "todo": 12000, "need_tools": 3000, "use_skill": 3000}
+
+
 def _file_loop_check(run: "Run", loop_check: list) -> None:
     """A file streaming in that turned into one block repeated again and again (a generation loop: 30K characters of
     the same <script>): stop it early. The salvage keeps the written part with the repeats removed and the model
     continues from there, instead of writing the loop for minutes and handing it over as the file."""
     size = len(run.partial_tag) + sum(len(x) for s in run.partial_args.values() for x in s["args"])
+    for slot in run.partial_args.values():
+        n = sum(len(x) for x in slot["args"])
+        if slot.get("name") in TINY_ARGS and n > 3000:
+            # A call with a few short arguments (my_location, a search, a click) that keeps streaming: a generation
+            # loop inside the arguments (seen live: "preparing my_location" growing for minutes). Cut now.
+            run.file_loops += 1
+            raise ProviderError("looping", f"the model kept writing the arguments of {slot['name']} ({n} characters "
+                                           "for a call that takes a few words); call it again with short arguments")
+        if n > SMALL_ARGS.get(slot.get("name") or "", 10 ** 9):
+            run.file_loops += 1
+            raise ProviderError("looping", f"the model kept writing one {slot['name']} call ({n} characters, a "
+                                           "generation loop); call it again with a short body")
+    tag_m = re.match(r'<(?:tools?\s+name="([\w.-]+)"|([\w.-]+)[\s>])', run.partial_tag) if run.partial_tag else None
+    tag_name = (tag_m.group(1) or tag_m.group(2)) if tag_m else ""
+    if len(run.partial_tag) > SMALL_ARGS.get(tag_name, 10 ** 9):
+        run.file_loops += 1
+        raise ProviderError("looping", f"the model kept writing one {tag_name} call ({len(run.partial_tag)} "
+                                       "characters, a generation loop); call it again with a short body")
+    if len(run.partial_tag) > 3000 and (m := tag_m) and (m.group(1) or m.group(2)) in TINY_ARGS:
+        run.file_loops += 1
+        raise ProviderError("looping", f"the model kept writing one {m.group(1) or m.group(2)} call "
+                                       f"({len(run.partial_tag)} characters); call it again with short arguments")
     if len(loop_check) < 2:
         loop_check.append(0)
     if size - loop_check[1] < 3000:
@@ -208,15 +240,15 @@ def _live_write(run: "Run", got: tuple[str, dict, bool]) -> None:
             from .. import policy
             if policy.decide_file_write(target, root, ctx.mode).action != "allow":
                 return
-            rel = target.relative_to(root).as_posix()
-            if target.exists() and not (append or rel in ctx.files_changed):
-                return  # an existing file of the project: replaced only when the whole new version has arrived
-            live[key] = target.read_text(encoding="utf-8", errors="replace") if (append and target.exists()) \
-                else (None if not target.exists() else "")
+            if target.exists() and not append:
+                # An existing file is replaced only when the whole new version has arrived: a rewrite streamed into
+                # it live emptied it first, and a break then left only the cut-off rewrite (80K -> 0 seen live).
+                return
+            live[key] = target.read_text(encoding="utf-8", errors="replace") if target.exists() else None
         content = args.get("content") or ""
         if "\n" in content:
             content = content[:content.rfind("\n") + 1]
-        base = live[key] or ""
+        base = live[key] or ""  # what the file held before this call: restored by live_restore
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(base + content, encoding="utf-8", newline="")
     except (OSError, ValueError):
@@ -262,14 +294,42 @@ def save_partial(root, tool: str, args: dict, append: bool) -> tuple[str, int] |
         if tool == "make_doc":
             target = target.parent / ".doc-sources" / f"{target.name}.partial.md"
         target.parent.mkdir(parents=True, exist_ok=True)
-        if append and target.exists():
+        old = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
+        rel = target.relative_to(Path(root).resolve()).as_posix()
+        if old.strip() and not append:
+            from ..tools.file_tools import starts_over
+            if not starts_over(old, content):
+                append = True  # the next part sent as a plain write: it goes after what the file holds
+            elif len(content) < len(old):
+                # A rewrite of the file from its start, cut off shorter than the file already is: the file stays as
+                # it was (a second break wiped 36K of game.js down to the 10K of the cut rewrite, seen live). The cut
+                # part is kept beside it, never over it.
+                side = target.with_name(target.name + ".cut-rewrite.txt")
+                side.write_text(content, encoding="utf-8", newline="")
+                return rel, len(old), "kept"
+            else:
+                _backup(target, old)
+        if append and old:
+            from ..tools.file_tools import trim_overlap
+            content = trim_overlap(old, content)[0]
             with open(target, "a", encoding="utf-8", newline="") as fh:
-                fh.write(content)
-        else:
-            target.write_text(content, encoding="utf-8", newline="")
-        return target.relative_to(Path(root).resolve()).as_posix(), len(content)
+                fh.write(("" if old.endswith("\n") else "\n") + content)
+            return rel, len(content), "appended"
+        target.write_text(content, encoding="utf-8", newline="")
+        return rel, len(content), "written"
     except (OSError, ValueError):
         return None
+
+
+def _backup(target: Path, text: str) -> None:
+    """The previous version of a file about to be replaced: kept in .aiiq/backups next to the project."""
+    try:
+        root = next((p for p in [target.parent, *target.parents] if (p / ".aiiq").is_dir()), target.parent)
+        bdir = root / ".aiiq" / "backups"
+        bdir.mkdir(parents=True, exist_ok=True)
+        (bdir / f"{target.name}.{time.strftime('%Y%m%d-%H%M%S')}").write_text(text, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _salvage(run: "Run", ctx, messages: list[dict]) -> tuple[str, int] | None:
@@ -285,17 +345,31 @@ def _salvage(run: "Run", ctx, messages: list[dict]) -> tuple[str, int] | None:
     saved = save_partial(ctx.root, *got)
     if not saved:
         return None
-    path, n = saved
+    path, n, mode = saved
     ctx.files_changed.append(path)
     _unclaim(run)
+    full = (Path(ctx.root) / path).read_text(encoding="utf-8", errors="replace") if (Path(ctx.root) / path).is_file() else ""
+    if mode == "kept":
+        messages.append({"role": "user", "content": (
+            f"[App note] The connection dropped while you were writing {got[1]['path']} again from its beginning. "
+            f"That rewrite was cut off SHORTER than the file already is, so it was NOT applied: {path} still holds "
+            f"its complete earlier version ({len(full)} characters). Its last lines are:\n...{full[-1500:]}\n\n"
+            "Do not start the file over. Change only what must change with edit_file, or add what is missing with "
+            f"write_file path=\"{path}\" append=true after that end. {_split_rule(True, run.model or '', run.tps)}")})
+        _drop_partial_file(run.session["id"])
+        return path, n
+    saved = (path, n)
     # write_file to this path without append=true is joined to the saved part when it does not restart the file
     # (see registry.write_file): a model (or the next model after a switch) that "continued" with a plain write
     # wiped the saved 10K characters before.
     pend = getattr(ctx, "salvaged", None)
     if pend is None:
         pend = ctx.salvaged = {}
-    pend[path] = got[1]["content"][:n]
-    tail = got[1]["content"][:n][-400:]
+    pend[path] = full or got[1]["content"][:n]
+    # The real end of the file on disk (not of the cut call): after an append it is the end of everything written,
+    # and the model continues exactly from there instead of from what it remembers.
+    tail = (full or got[1]["content"][:n])[-1200:]
+    n = len(full) or n
     how = (f"continue writing it with write_file path=\"{path}\" append=true" if got[0] == "write_file" else
            f"continue the document's source with write_file path=\"{path}\" append=true, then make_doc "
            f"source=\"{path}\" path=\"{got[1]['path']}\"")
@@ -603,6 +677,15 @@ def todo_board(run: "Run") -> str:
     single source of truth given to a model that takes over or has lost track."""
     mark = {"completed": "x", "in_progress": ">", "pending": " "}
     return "  ".join(f"{i}. [{mark.get(t.get('status'), ' ')}] {t['content']}" for i, t in enumerate(run.todos, 1))
+
+
+TODO_TRAILER = re.compile(r"\n?\[To-do \d+/\d+ done; now: .*?\]\s*$", re.S)
+
+
+def without_todo_line(text: str) -> str:
+    """A tool output without the to-do state the app added at its end: that line is no error (the stop message said
+    'Last error: [To-do 2/7 done; now: ...]' after a build had passed)."""
+    return TODO_TRAILER.sub("", text or "")
 
 
 def todo_line(run: "Run") -> str:

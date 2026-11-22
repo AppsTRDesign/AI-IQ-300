@@ -232,6 +232,16 @@ async def main():
         check("request got the make_doc / system_info hint", "make_doc" in calls[0]["last"] and "system_info" in calls[0]["last"],
               calls[0]["last"][-200:])
 
+        # 8c1b. an app check sends a full answer back and the model answers it with a short note, doing nothing:
+        # the full answer stays (a GitHub project list was wiped for three lines)
+        n0 = len(mock_log())
+        sid, r = await new_chat(c, "HELDANS liste.md yaz ve test et")
+        check("held-answer task finishes", await wait_done(c, sid))
+        ans = (await msgs(c, sid))[-1]["content"]
+        calls = mock_log()[n0:]
+        check("the app check was sent", any("[App note]" in x["last"] for x in calls))
+        check("full answer kept over the short note", "TAM CEVAP" in ans and "sunucu yok" not in ans, ans[:80])
+
         # 8c2. a script run before it was written: the model is told the file does not exist (no web search)
         n0 = len(mock_log())
         sid, r = await new_chat(c, "NOFILE hesap.py yaz ve calistir")

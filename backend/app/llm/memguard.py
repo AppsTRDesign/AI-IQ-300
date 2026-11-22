@@ -28,10 +28,53 @@ GB = 1024 ** 3
 RESERVE = 3 * GB  # default; see reserve(): it follows the size of the machine
 
 
-def reserve(total: int) -> int:
+def auto_reserve(total: int) -> int:
     """Memory left to the system, the browser and this app: a tenth of the RAM, at least 1.5 GB and at most 4 GB
     (3 GB of an 8 GB laptop was more than a third of it; on a 64 GB workstation 3 GB was too little)."""
     return int(max(1.5 * GB, min(4 * GB, total * 0.10)))
+
+
+def guard_settings() -> dict:
+    try:
+        from ..config import load_settings
+        return load_settings().get("local_guard") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def reserve(total: int) -> int:
+    """The reserve in use: Settings > local model memory (reserve_gb, at least 0.5 GB), else the automatic one."""
+    try:
+        gb = float(guard_settings().get("reserve_gb") or 0)
+    except (TypeError, ValueError):
+        gb = 0
+    return int(max(0.5, min(gb, total / GB / 2)) * GB) if gb > 0 else auto_reserve(total)
+
+
+def load_check() -> str:
+    """'block' (default): a model whose weights do not fit is not loaded; 'warn': loaded anyway, with a warning."""
+    return "warn" if guard_settings().get("load_check") == "warn" else "block"
+
+
+def machine() -> dict:
+    """What the guard works with, for Settings: RAM, the Windows commit headroom (RAM + page file), dedicated VRAM,
+    the reserve and the CPU threads a local model gets. Blocking (VRAM query): call it from a worker thread."""
+    import psutil
+    vm = psutil.virtual_memory()
+    c = commit_free()
+    v = vram()
+    gb = lambda b: round(b / GB, 1) if b is not None else None  # noqa: E731
+    try:
+        swap = psutil.swap_memory().total
+    except Exception:  # noqa: BLE001
+        swap = None
+    return {"ram_total_gb": gb(vm.total), "ram_free_gb": gb(vm.available), "commit_free_gb": gb(c),
+            "usable_gb": gb(free_memory()), "page_file_gb": gb(swap),
+            "vram_total_gb": gb(v["total"]) if v else None,
+            "vram_free_gb": gb(v.get("free")) if v and v.get("free") is not None else None,
+            "vram_source": v.get("source") if v else None,
+            "reserve_gb": gb(reserve(vm.total)), "reserve_auto_gb": gb(auto_reserve(vm.total)),
+            "threads": threads(), "cores": psutil.cpu_count(logical=False), "logical": psutil.cpu_count()}
 
 
 def limits(total: int, low_pct: float = 12, critical_pct: float = 6) -> tuple[int, int]:
@@ -504,8 +547,12 @@ def safe_window(base_url: str, model: str, kv_tok: int | None) -> dict | None:
         return None
     sizes = _sizes(base_url)
     weights = sizes.get(model)
-    if not weights or not kv_tok:
+    if not weights:
         return None
+    if not kv_tok:
+        # The model does not say its KV size: a cautious estimate from its file size (a 20 GB model ~200 KB per
+        # token in f16), so the guard still works - before, no estimate meant no guard at all
+        kv_tok = max(128 * 1024, weights // 100_000)
     vm = psutil.virtual_memory()
     # Memory of loaded local models comes back when they are unloaded (the app unloads others before a switch).
     loaded = sum(v for k, v in sizes.items() if k.startswith("loaded:"))
@@ -525,6 +572,7 @@ def safe_window(base_url: str, model: str, kv_tok: int | None) -> dict | None:
     room = free - weights * 1.05
     fit = int(room / per_token) // 1024 * 1024 if room > 0 else 0
     return {"max": fit, "short": fit < 2048, "parallel": parallel, "weights_gb": round(weights / 1024 ** 3, 1),
+            "reserve_gb": round(reserve(vm.total) / GB, 1),
             "free_gb": round(free / 1024 ** 3, 1), "total_gb": round(vm.total / 1024 ** 3, 1),
             "cap": _CAPS.get(model),
             "vram_gb": round(gpu["total"] / 1024 ** 3, 1) if gpu else None,

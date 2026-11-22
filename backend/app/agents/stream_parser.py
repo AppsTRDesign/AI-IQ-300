@@ -20,26 +20,33 @@ TAGS = [(f"<{DSML}invoke ", f"</{DSML}invoke>"),
         ("<tool=", "</tool>"), ("<tool ", "</tool>"), ("<tool>", "</tool>"),
         ("<think>", "</think>"), ("<thinking>", "</thinking>"), ("<reasoning>", "</reasoning>"),
         ("<|channel|>analysis<|message|>", "<|end|>"),  # gpt-oss (harmony) reasoning channel
-        ("<|channel|>commentary to=", "<|call|>")]  # gpt-oss (harmony) tool call written as text
+        ("<|channel|>commentary to=", "<|call|>"),  # gpt-oss (harmony) tool call written as text
+        ("<|tool_call_begin|>", "<|tool_call_end|>"),  # Kimi K2: functions.NAME:0<|tool_call_argument_begin|>{json}
+        ('<invoke name="', "</invoke>")]  # MiniMax M2: <invoke name="x"><parameter name="k">v</parameter></invoke>
 HARMONY_RUN = re.compile(r"(?:<\|\w+\|>[\w .=]*)*(?:<\|?\w*\|?)?")  # complete or partial control-token run
 THINK_OPENERS = {"<think>", "<thinking>", "<reasoning>", "<|channel|>analysis<|message|>"}
 # Closing tags without an opener, and harmony control tokens around the final answer: never shown.
 # Also the pieces of other call formats that a model leaves around its text (seen in notes: "...doğruluyorum.
 # </parameter>", a note that was only "</tool>", DeepSeek's <｜DSML｜function_calls> wrapper).
-STRAY = re.compile(r"</?tool_call>|</function>|<\|start\|>assistant|<\|channel\|>\w+(?: to=[\w.]+)?"
+STRAY = re.compile(r"<system>[^<\n]{0,60}</system>|</?system>|</?tool_call>|</function>|<\|start\|>assistant|<\|channel\|>\w+(?: to=[\w.]+)?"
                    r"(?:\s*<\|constrain\|>\w+)?<\|message\|>|<\|(?:end|return|start|call)\|>"
                    r"|</parameter>|<parameter=[\w.-]+>|</tools?>|</?arg_(?:key|value)>|</?invoke\b[^>\n]{0,80}>"
-                   r"|</?｜DSML｜[\w]*[^>\n]{0,80}>|<｜[\w▁ ]{1,40}｜>")
+                   r"|</?｜DSML｜[\w]*[^>\n]{0,80}>|<｜[\w▁ ]{1,40}｜>"
+                   # Kimi K2 section markers, MiniMax's wrapper, Llama 3's python tag / end-of-message tokens
+                   r"|<\|tool_calls_section_(?:begin|end)\|>|</?[\w-]+:tool_calls?>|<\|python_tag\|>|<\|e[om]t?_id\|>")
 # A reasoning closer with no opener: the template opened the block in the prompt (DeepSeek-R1 / QwQ style), so
 # everything shown before it was reasoning.
 LONE_CLOSE = re.compile(r"</(?:think|thinking|reasoning)>")
 # key="value" or key='value' (models copy the args='[...]' style of the examples; single-quoted values were
 # dropped, so a call like mcp arguments='{...}' reached the tool with no arguments at all)
-ATTR = re.compile(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
+# A JSON list written without quotes (argv=["git","log","-3"], seen live) is taken as well: dropped, run got no
+# command at all.
+# A JSON object the same way (arguments={"owner": "x"}): runs to the last brace on the line.
+ATTR = re.compile(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|(\[[^\]\n<>]*\])|(\{[^\n<>]*\}))')
 
 
 def attrs(text: str) -> dict:
-    return {k: html.unescape(a if a or not b else b) for k, a, b in ATTR.findall(text or "")}
+    return {k: html.unescape(a or b or c or d) for k, a, b, c, d in ATTR.findall(text or "")}
 
 
 # Arguments that hold a whole file, an edit or a command. Weak models put them into the opening tag as an attribute
@@ -62,6 +69,23 @@ def _unescape_big(value: str, quote: str) -> str:
     elif quote == '"' and '"' not in value and "&quot;" in value:
         value = value.replace("&quot;", '"')
     return value
+
+
+# An opening tag whose short attributes all closed on one line, followed (only whitespace between) by the next call:
+# the model never wrote </tool> for the first one. Read as one block, the first call's last attribute ran to the end of
+# the second (research query="Kozan hava durumu\">\n<tool name=\"todo" was searched on the web, seen live).
+_OPEN_LINE = re.compile(r'<tools?\s+name\s*=\s*"[\w.-]+"(?:\s+[\w.-]+\s*=\s*(?:"[^"\n]*"|\'[^\'\n]*\'))*\s*/?>')
+_NEXT_CALL = re.compile(r'\s*<tools?\s+name\s*=\s*"[\w.-]+"')
+_SHORT_BIG = ("query", "code", "command", "script", "search", "items")
+
+
+def split_unclosed(block: str) -> tuple[str, str] | None:
+    """(first call closed, the rest) when `block` is two calls, the first one left without its closing tag."""
+    m = _OPEN_LINE.match(block)
+    if not m or not _NEXT_CALL.match(block, m.end()):
+        return None
+    opening = block[:m.end()]
+    return (opening if opening.endswith("/>") else opening + "</tool>"), block[m.end():].lstrip()
 
 
 def big_attr_call(raw: str) -> tuple[str, dict, str] | None:
@@ -107,12 +131,18 @@ def big_attr_call(raw: str) -> tuple[str, dict, str] | None:
         args[key] = _unescape_big(value[:cut.start()], quote)
         args[cut.group(2)] = _unescape_big(value[cut.end():], cut.group(3))
     else:
+        if key in _SHORT_BIG and (nxt := re.search(r'["\']?\s*/?>?\s*<tools?\s+name\s*=\s*"', value)):
+            # a search / script value that ran into the next call's tag: only what came before it is the value
+            value = value[:nxt.start()].rstrip()
         args[key] = _unescape_big(value, quote)
     return tag, args, body
 MAX_OPEN = max(len(o) for o, _ in TAGS)
 CLOSERS = ("</tool_call>", "</function>", "</think>", "</thinking>", "</reasoning>")
 STRAY_HEADS = ("</parameter>", "<parameter=", "</tool>", "</tools>", f"<{DSML}", f"</{DSML}", "</arg_", "<arg_",
-               "</invoke", "<invoke", "<｜")
+               "</invoke", "<invoke", "<｜", "</minimax", "<minimax")
+# Any short tag-shaped tail ("</minimax:", "<|tool_ca"): a vendor's call wrapper split between two chunks went to
+# the chat in halves, STRAY never saw it whole (a note that was only "</minimax:tool_call>", nemotron on NVIDIA).
+TAG_TAIL = re.compile(r"</?[A-Za-z_][\w:.|-]{0,40}$")
 
 
 @dataclass
@@ -135,7 +165,7 @@ def _xml_function(raw: str) -> ToolCall | None:
 
 def _normalize(raw: str) -> str:
     """Variants weak models write for our tag: <tools ="x">, <tool="x">, <tools name="x">...</tools>."""
-    raw = re.sub(r'^<tools?\s*=\s*"([\w.-]+)"', r'<tool name="\1"', raw)
+    raw = re.sub(r'^<tools?\s*=\s*["\']?([\w.-]+)["\']?(?=[\s>/])', r'<tool name="\1"', raw)
     raw = re.sub(r"^<tools\b", "<tool", raw)
     return re.sub(r"</tools>\s*$", "</tool>", raw)
 
@@ -161,6 +191,17 @@ def parse_tool(raw: str, names: set[str] | frozenset[str] = frozenset()) -> Tool
     raw = _normalize(raw.strip())
     if raw.startswith(f"<{DSML}invoke"):
         return _dsml(raw)
+    if raw.startswith("<|tool_call_begin|>"):  # Kimi K2
+        m = re.match(r"<\|tool_call_begin\|>\s*(?:functions\.)?([\w.-]+?)(?::\d+)?\s*<\|tool_call_argument_begin\|>"
+                     r"(.*?)(?:<\|tool_call_end\|>)?\s*$", raw, re.S)
+        try:
+            args = json.loads(m.group(2)) if m else None
+        except json.JSONDecodeError:
+            args = None
+        return ToolCall(m.group(1), {}, "", args) if m and isinstance(args, dict) else None
+    if raw.startswith('<invoke name="'):  # MiniMax M2: the DSML shape without its prefix
+        return _dsml(raw.replace("<invoke", f"<{DSML}invoke").replace("</invoke>", f"</{DSML}invoke>")
+                     .replace("<parameter", f"<{DSML}parameter").replace("</parameter>", f"</{DSML}parameter>"))
     if names and (call := parse_named(raw, names)):
         return call
     if raw.startswith("<|channel|>commentary to="):  # harmony: to=functions.NAME ... <|message|>{json}<|call|>
@@ -203,11 +244,61 @@ def parse_tool(raw: str, names: set[str] | frozenset[str] = frozenset()) -> Tool
     m = re.match(r"<tool\b([^>]*)>(.*?)(?:</tool>)?\s*$", raw, re.S)
     if not m:
         return None
-    args = attrs(m.group(1))
+    head, body = _split_open(m.group(1), m.group(2))
+    args = attrs(head)
     name = args.pop("name", "")
-    if not name and m.group(2).strip().startswith("{"):  # <tool>{"name": ..., "arguments": {...}}</tool>
-        return parse_tool(f"<tool_call>{m.group(2).strip()}</tool_call>")
-    return ToolCall(name, args, m.group(2)) if name else None
+    if not name and body.strip().startswith("{"):  # <tool>{"name": ..., "arguments": {...}}</tool>
+        return parse_tool(f"<tool_call>{body.strip()}</tool_call>")
+    return ToolCall(name, *_lift_args(args, body)) if name else None
+
+
+def _split_open(head: str, body: str) -> tuple[str, str]:
+    """An opening tag never closed with '>' before the content (<tool name="make_doc" path="r.pdf"\\n<h1>Title</h1>):
+    the content's own '>' ended the tag, the <h1> was lost and "Title</h1>" became the step's label. The tag ends at
+    the first '<' inside it."""
+    cut = re.search(r"<(?=[a-zA-Z!/])", head)
+    if not cut:
+        return head, body
+    return head[:cut.start()], head[cut.start():] + ">" + body
+
+
+# Argument blocks written inside the body instead of as attributes: <parameter name="path">x</parameter>,
+# <parameter=path>x</parameter>, <arguments>{"path": "x"}</arguments>, <path>x</path>. make_doc got no path ("Missing
+# required argument 'path'") and the parameter tags were written into the document.
+_ARG_NAMES = ("path", "format", "title", "url", "query", "command", "source", "template", "method", "server", "tool",
+              "file", "save", "name", "lang", "language", "mode", "id", "shell", "cwd", "append", "theme", "style")
+_LEAD_ARG = re.compile(
+    r'\s*(?:<parameter\s+name\s*=\s*"([\w.-]+)"\s*>(.*?)</parameter>|<parameter=([\w.-]+)>(.*?)</parameter>'
+    r'|<(arguments|args|parameters)>\s*(\{.*?\})\s*</\5>|<(' + "|".join(_ARG_NAMES) + r')>([^<]{0,400})</\7>)',
+    re.S)
+_CONTENT_KEYS = ("content", "body", "html", "markdown", "text", "code", "command", "query")
+
+
+def _lift_args(args: dict, body: str) -> tuple[dict, str]:
+    pos, lifted = 0, {}
+    while (m := _LEAD_ARG.match(body, pos)) and m.end() > pos:
+        if m.group(1) or m.group(3):
+            key, val = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+            lifted[key] = val.strip("\n")
+        elif m.group(6):
+            try:
+                obj = json.loads(m.group(6))
+            except json.JSONDecodeError:
+                break
+            if not isinstance(obj, dict):
+                break
+            lifted.update({k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) for k, v in obj.items()})
+        else:
+            lifted[m.group(7)] = m.group(8).strip()
+        pos = m.end()
+    if not lifted:
+        return args, body
+    rest = body[pos:]
+    for k in _CONTENT_KEYS:  # the content written as a parameter block is the body
+        if k in lifted and not rest.strip():
+            rest = lifted.pop(k)
+            break
+    return {**lifted, **args}, rest
 
 
 def _is_call(block: str) -> bool:
@@ -218,7 +309,7 @@ def _is_call(block: str) -> bool:
 # Raw tool syntax that must never reach the user (any model, any provider).
 LEAK = re.compile(r"<parameter=|<function=|</?tool_call>|\[TOOL_CALLS\]|<\|tool_call|<tool\s+name=|\"arguments\"\s*:\s*\{|"
                   r"<tools?\s*=|</?tools\b|\[/?tools?(\s*name)?\s*=|\[/tools?\]|"
-                  r"<\|channel\|>|<\|message\|>|<｜DSML｜",
+                  r"<\|channel\|>|<\|message\|>|<｜DSML｜|<invoke name=|minimax:tool_call|<\|python_tag\|>",
                   re.I)
 
 
@@ -330,8 +421,10 @@ def parse_named(raw: str, names: set[str] | frozenset[str]) -> ToolCall | None:
     m = re.match(r"<([\w-]+)\b([^>]*?)(/?)>(.*?)(?:</\1>)?\s*$", raw.strip(), re.S)
     if not m or m.group(1) not in names:
         return None
-    args = attrs(m.group(2))
-    return ToolCall(m.group(1), args, m.group(4) if not m.group(3) else "")
+    if m.group(3):
+        return ToolCall(m.group(1), attrs(m.group(2)), "")
+    head, body = _split_open(m.group(2), m.group(4))
+    return ToolCall(m.group(1), *_lift_args(attrs(head), body))
 
 
 class StreamSplitter:
@@ -378,7 +471,7 @@ class StreamSplitter:
         # A stray piece of call syntax split between two chunks ("</pa" + "rameter>") is held until it is whole, so
         # STRAY can take it out; otherwise each half went to the chat as text.
         if any(h.startswith(tail) for h in STRAY_HEADS) or (
-                len(tail) < 100 and ">" not in tail and any(tail.startswith(h) for h in STRAY_HEADS)):
+                len(tail) < 100 and ">" not in tail and any(tail.startswith(h) for h in STRAY_HEADS)) or TAG_TAIL.fullmatch(tail):
             return cut
         return -1
 
@@ -419,6 +512,8 @@ class StreamSplitter:
                         self._scan = 0
                 return out
             block, self.buf = self.buf[: end + len(close)], self.buf[end + len(close):]
+            if opener in ("<tool ", "<tools ") and (two := split_unclosed(block)):
+                block, self.buf = two[0], two[1] + self.buf  # the second call is read on the next pass
             if opener in THINK_OPENERS:
                 self.thought = True
                 out.append(("thinking", block[len(opener):-len(close)]))

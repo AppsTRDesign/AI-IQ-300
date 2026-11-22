@@ -201,6 +201,7 @@ GROUP_TOOLS = {
     "project": {"impact", "symbols"},
     "team": {"team", "ask_model"},
     "mcp": {"mcp"},
+    "google": {"google"},
     "mcp_setup": {"mcp_add", "mcp_search"},
     # "foto" opens this group, so the photo search must be offered with it (it was missing: the model then claimed
     # downloads that never happened)
@@ -210,6 +211,19 @@ GROUP_TOOLS = {
     "mobile": {"mobile_env"},
 }
 GROUPED = set().union(*GROUP_TOOLS.values())
+# The user's own account data (answered only from a tool, never from memory)
+OWN_DATA = re.compile(
+    r"\b(takvim|ajanda|e-?posta|mail|gelen\s*kutu|drive|dosya|klas[öo]r|ki[şs]i|rehber|toplant[ıi]|etkinlik|randevu|"
+    r"tablo|belge|depo|repo)\w*(?:[ıiuü]m|lar[ıi]m|ler[ıi]m|[ıiuü]m[ıiuü]|lar[ıi]m[ıi]|ler[ıi]m[ıi]|[ıiuü]mda|"
+    r"lar[ıi]mda|ler[ıi]mde|[ıiuü]mdaki|lar[ıi]mdaki|ler[ıi]mdeki)\b|"
+    r"\bmy\s+(calendar|e-?mails?|mails?|inbox|drive|files?|contacts?|meetings?|events?|sheets?|docs?|repos?|repositories)\b|"
+    r"okunmam[ıi][şs]|unread", re.I)
+# Actions on the connected Google account ("kendime taslak e-posta hazırla", "takvime toplantı ekle"): with Google
+# connected, a text-only reply ("Taslağınız hazır") claims something that never happened in Gmail.
+GOOGLE_ACT = re.compile(
+    r"\b(taslak|draft)\w*\b.{0,40}\b(e-?posta|e-?mail|mail|gmail)|\b(e-?posta|e-?mail|mail|gmail)\w*\b.{0,40}\b(taslak|draft)|"
+    r"\bgmail\b|\b(takvim|calendar)\w*\b.{0,40}\b(ekle|olu[şs]tur|add|create|schedule)|"
+    r"\b(drive|sheets?|google\s+(docs?|sheets?|drive|calendar|takvim))\b", re.I)
 GROUP_WORDS = {
     "mobile": re.compile(r"\b(android|ios|iphone|apk|ipa|flutter|react\s*native|expo|capacitor|emülatör|emulator|"
                          r"simülatör|simulator|adb|maestro)\b|mobil\s*uygulama|mobile\s*app", re.I),
@@ -230,6 +244,11 @@ GROUP_WORDS = {
                        r"b[üu]y[üu]k\s*proje|kapsaml[ıi]|large\s*project", re.I),
     "project": re.compile(r".", re.S),  # a project chat: always (availability decides)
     "mcp": re.compile(r".", re.S),
+    # offered only while Google is connected (orchestrator availability); then for any mail / file / calendar talk
+    "google": re.compile(r"google|gmail|e-?posta|\bmail|mesaj|gelen\s*kutu|inbox|drive|dosya|klas[öo]r|takvim|"
+                         r"calendar|toplant|etkinlik|randevu|meeting|event|sheets?|tablo|spreadsheet|docs?\b|belge|"
+                         r"slides?|sunum|ki[şs]i(ler)?\b|rehber|contact|fatura|invoice|ajanda|hat[ıi]rlat|okunmam[ıi][şs]|"
+                         r"unread|taslak|draft", re.I),
     "design": RULE_TOPICS["design"][0],
     "mcp_setup": re.compile(r"\bmcp\b|model\s*context\s*protocol|ara[çc]\s*sunucu|tool\s*server|entegrasyon|"
                             r"integration|connector|ba[ğg]lay[ıi]c[ıi]", re.I),
@@ -262,6 +281,65 @@ BROWSER_WORDS = re.compile(r"\b(siteye|siteyi|sitesine|sitesini|sitede|sayfaya|s
 CODE_NOT_RUN = re.compile(r"```[\s\S]{0,30}(pip3?\s+install|npm\s+(i|install|ci)|apt(-get)?\s+install|"
                           r"choco\s+install|winget\s+install|pip\s+install|python3?\s+-c\b|requests\.(get|post)\(|"
                           r"subprocess\.(run|call|popen)|curl\s+-|Invoke-WebRequest|Invoke-RestMethod)", re.I)
+
+
+# A verb about work already done ("test ettin", "çalıştırdın mı", "oluşturuldu", "did you run") asks about the past,
+# not for new work. Seen live: "bu sistemde çalışıyor, test ettin?" was taken for a run request, the finished answer
+# (which reported earlier commands in code blocks) was thrown away and the model was told "you only printed the code".
+_PAST_TAIL = re.compile(r"(?:[dt][ıiuü](?:n|n[ıiuü]z|m|k|ğ\w*|r|ysa)?|[ıiuü]?l?d[ıiuü]\w*|[ıiuü]?ld[ıiuü]\w*|m[ıiuü]ş\w*|"
+                        r"il(?:di|miş)\w*)$", re.I)
+_LIGHT_VERB = re.compile(r"\s+e[td](\w*)", re.I)  # Turkish "test et / kontrol et": the tense is on "et"
+_PAST_EN = re.compile(r"\b(did|have|has|had|was|were)\s+(you|it|we|they|i|he|she|that|this)\s+(\w+\s+){0,2}$", re.I)
+_EN_PAST_WORD = re.compile(r"(ed|ran|wrote|made|built|found|done)$", re.I)
+
+
+def asks_for(rx: re.Pattern, text: str) -> bool:
+    """rx (WORK, RUN_ASK...) used as a request: matches inside past-tense / perfect forms do not count."""
+    for m in rx.finditer(text or ""):
+        end = m.end()
+        while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+            end += 1
+        tail = text[m.end():end]
+        if not tail and (lv := _LIGHT_VERB.match(text, end)):
+            tail = lv.group(1)
+            if not tail:
+                return True  # "test et" itself is the imperative
+        if tail and (_PAST_TAIL.match(tail) or _EN_PAST_WORD.search(text[m.start():end])):
+            continue
+        if _PAST_EN.search(text[max(0, m.start() - 40):m.start()]):
+            continue
+        return True
+    return False
+
+
+# The answer itself says a step failed / was not finished: an honest report, not a false "done". The guards that
+# stop a final answer for "the last command failed" let it stand (the user saw a finished answer erased and rewritten).
+ADMITS_FAILURE = re.compile(
+    r"ba[şs]ar[ıi]s[ıi]z|tamamlan(ma)?mad[ıi]|tamamlanamad[ıi]|[çc]al[ıi][şs]mad[ıi]|[çc]al[ıi][şs]m[ıi]yor|yap[ıi]lamad[ıi]|"
+    r"olu[şs]turulamad[ıi]|ger[çc]ekle[şs](me|e)med[ıi]|hata (ver|al)d[ıi]|bitmedi|ilerlemedi|tak[ıi]l[ıi] ?kald[ıi]|"
+    r"\bfail(ed|s|ure)?\b|did(n'?t| not) (work|run|finish|complete)|could(n'?t| not)|not (completed?|finished|done)|"
+    r"\bstuck\b|\bunable to\b|❌", re.I)
+
+
+def admits_failure(answer: str) -> bool:
+    return bool(ADMITS_FAILURE.search(answer or ""))
+
+
+_OUTPUT_FENCES = {"", "text", "txt", "output", "log", "console-output", "plaintext", "stdout", "json", "md", "markdown"}
+
+
+def printed_code(answer: str) -> bool:
+    """The answer holds code to create / run (a tagged source block, or a command line), not just an earlier run's
+    output pasted in an untagged / text block."""
+    for lang, body in re.findall(r"```[ \t]*([\w+-]*)[^\n]*\n(.*?)```", answer or "", re.S):
+        lang = lang.lower()
+        if lang not in _OUTPUT_FENCES:
+            if lang in SHELL_FENCES and not any(CMD_START.match(ln) or ln.strip().startswith("$") for ln in body.splitlines()):
+                continue  # a "bash" block holding only output
+            return True
+        if any(ln.strip().startswith("$ ") for ln in body.splitlines()):
+            return True
+    return False
 
 
 # "How do I ...?" asks for instructions: a command in the answer is meant to be read, not run.
@@ -318,6 +396,15 @@ FILE_NAME = re.compile(r"(?<![\w/\\.-])([\w./\\-]+\.(?:txt|md|csv|json|ya?ml|xml
 # Common failures and the other routes that fix them (any OS). A weak model retried the same command with small
 # changes; these lines name the real alternatives so the next try is a different one.
 ERROR_PLAYBOOK = [
+    # type C:\Users\Onur GamePC\x.json: the path was split at the space ("cannot find a positional parameter that
+    # accepts argument 'GamePC\...'"; cmd: "The system cannot find the path specified").
+    (re.compile(r"positional parameter cannot be found that accepts argument '[^']*[\\/]|"
+                r"A positional parameter cannot be found that accepts argument", re.I),
+     "The path contains a space and was split into two arguments. Quote it: Get-Content -LiteralPath "
+     "'C:\\Users\\Some Name\\file.json' (or read it with read_file, which needs no quoting)."),
+    # npm uninstall -g pkg@latest: "Remove arguments must only contain package names"
+    (re.compile(r"ERMARGS|Remove arguments must only contain package names", re.I),
+     "npm uninstall takes the bare package name without a version: npm uninstall -g <name> (no @latest / @1.2)."),
     # create-expo-app --template typescript takes the npm package "typescript" as the template: the folder holds the
     # TypeScript compiler's own package.json ("author": "Microsoft Corp.", bin tsgo), not an app.
     (re.compile(r"declare exactly one bin entry named tsgo|Microsoft Corp\.", re.I),
@@ -574,7 +661,8 @@ def plan_steps(text: str) -> list[str]:
         m = re.match(r"\*\*(.+?)\*\*", it)
         s = (m.group(1) if m else it).strip(" :*-")
         s = re.sub(r"[*`_]+", "", s).strip(" :")
-        if len(s) >= 3:
+        from ..tools.agent_tools import JUNK_ITEM
+        if len(s) >= 3 and not JUNK_ITEM.search(s):  # a tool tag or a command line is no plan item
             out.append(s[:90])
     return out if len(out) >= 3 else []
 
@@ -635,7 +723,7 @@ NUMBERED_STEP = re.compile(r"(?:^|\s)(?:\d{1,2}[.)]|[-•]\s)\s*\S", re.M)
 def missing_deliverables(request: str, answer: str, root: Path, since: float) -> list[str]:
     """What the answer presents as produced but is not on disk: a requested file kind no file of this task has, and
     output files the answer names that do not exist. Empty for questions and how-to answers."""
-    if not WORK.search(request) or HOWTO.search(request) or not DELIVER_VERB.search(request):
+    if not asks_for(WORK, request) or HOWTO.search(request) or not DELIVER_VERB.search(request):
         return []
     out = []
     for rx, exts, kind in DELIVERABLES:

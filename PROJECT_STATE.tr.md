@@ -11,6 +11,68 @@ Otonom, çoklu ajan destekli, yerel ve bulut LLM'leri ile çalışan tam kapsaml
 - **Son Başarılı İşlem:** v0.10.0 — profesyonel belge motoru (Chromium PDF/HTML + KaTeX, tasarımlı DOCX/PPTX/XLSX), ayarlanabilir akış zaman aşımları ve parçalı yazma, run_state.json ile kesinti sonrası devam, paralel araç yürütme, canlı todos, çok dilli niyet tablosu, zengin mesaj kutusu, mesaj sayfalama/kopyala/sil/alıntı, sağ tık menüleri, gruplu değişiklik kartı, medya oynatıcılar, servis kartları, kota/bakiye ekranı.
 - **Önceki:** v0.6 — kesintisiz orkestrasyon (devam ettirme, sessiz araç yazımında heartbeat, görev içi bağlam kırpma/özetleme, canlı bağlam sayımı, takılı adım temizliği, tekrar eden çağrı koruması, asılsız dosya iddiası koruması), todo aracı + canlı yapılacaklar listesi, otomatik yetenek algılama (use_skill), bilgi sorularında salt-okuma araçlar, arama alaka filtresi + Bing URL çözümü, canlı gruplu adımlar, model seçiciden bağlam düzenleme (ayarlarla senkron), aç/kapat popover'lar, çizim ekranı, klasör yükleme, hedef modu, belge kartları ve önizleme (xlsx/docx/pdf/pptx), kökteki gereksiz docs/ kaldırıldı.
 
+## v0.18.6 (2026-11-22): Google / GitHub entegrasyonu, başka araçların komutlarıyla beceri
+Gerçek modelle test edildi (NVIDIA Nemotron, geçici AIIQ_DATA kopyası). pytest 284.
+- **Google:** yerleşik `google` aracı (bağlı hesapla Google REST API'leri: Gmail ve taslaklar, Drive, Sheets, Docs,
+  Takvim, Kişiler); google-* MCP sunucuları cevap verdiğinde kullanılır, Developer Preview reddinde bu araca
+  geçilir; "API'leri etkinleştir" uyarısı gerçek denetimden gelir.
+- **GitHub MCP:** issue / PR / commit / depo kelimeleri bağlı github sunucusuna yönlendirir; yanlış sahip -> get_me
+  ipucu; olmayan araç adına "Bunu mu demek istediniz"; yanlış alana yazılan seçenek değeri doğru alana taşınır.
+- **Zayıf model korumaları:** `<arguments>{...}</arguments>` / `<argument name="body">` sarmalayıcıları her araçta
+  açılır; tırnaksız `argv=[...]` / `arguments={...}` okunur; mcp gövdesindeki iç içe araç etiketi bildirilir; 24 bin
+  karakteri aşan google / mcp çağrısı üretim döngüsü olarak kesilir; hesap aracı çağrılmadan verilen hesap cevabı bir
+  kez uyarılır; yapılacaklar listesi boşa dönme döngüsü kapatıldı.
+- **Komutlarla beceri** (`catalog.skill_source`): `npx skills add sahip/depo`, sahip/depo, GitHub adresi,
+  `hf skills add [ad]` (Hugging Face pazaryeri), `gradio skills add [kullanici/space]` (gradio becerisi ya da bir
+  Space'in API'sinden üretilen beceri) MCP sunucusu olarak hata vermek yerine Beceriler sayfasında ya da MCP formunda
+  seçim penceresini (RepoSkillsModal) açar. `source:` alanı sayesinde tekrar içe aktarma günceller; yerleşikler
+  ezilmez; becerinin yanındaki dosyalar fetch_url bağlantısı olur; tek seferde en fazla 60 (her biri istemde ~40
+  token). YAML blok açıklamalar (`description: >-`) okunur.
+- **Donanım raporu -> Drive görevi (tüm modeller için düzeltildi):** `google file=` yerel dosyayı gerçekten yükler
+  (5 MB'a kadar multipart, üstünde 8 MB'lık parçalarla resumable; düz Drive adresi yükleme adresine çevrilir;
+  /files/<id> = PATCH; Drive'ın bildirdiği boyut denetlenir). `save=` yalnızca indirme içindir, JSON cevap asla .pdf'in
+  üstüne yazılmaz (önceki görev sağlam PDF'i 128 baytlık JSON ile ezmişti). fetch_url save= bir web sayfasını .pdf /
+  .zip / resim adıyla kaydetmez. Beceri `tools:` listeleri temel araçları (run, list_dir, read/write/edit_file,
+  system_info...) artık engellemez. Ayrıştırıcı: kapanmamış açılış etiketi ilk `<`'de biter; `<parameter name=…>` /
+  `<parameter=…>` / `<path>` / `<arguments>` blokları argüman olur (adım etiketine "…Raporu</h1>" sızıyordu). Sonuna
+  eklenen işaretlemede eklem yerindeki yetim kapanış parçası atılır, açık tablo / liste kapatılır. Yolu verilmeyen
+  make_doc dosya adını başlıktan çıkarır. use_skill adı her argümandan alır. Canlı: NVIDIA Nemotron 4 tur / 24 sn'de
+  yaptı, geçerli 3 sayfalık PDF boyutu eşleşerek yüklendi; evren:auto da yaptı (446 sn, sağlayıcı bir kez durdu,
+  kaydedilen kısımdan devam edilerek kurtarıldı). pytest 291.
+- **Geçmiş işle ilgili sorularda yanıt artık silinmiyor:** "…test ettin?" / "çalıştırdın mı" / "did you run it"
+  çalıştırma isteği sayılıyordu; önceki komutları kod bloklarında anlatan bitmiş yanıt "bir komut yazılmış ama
+  çalıştırılmamıştı" notuyla siliniyordu. `checks.asks_for` geçmiş / bitmiş zaman kiplerini (Türkçe "test et-"
+  çekimleri dahil) yanıtı yeniden yazdıran tüm korumalarda yok sayar (yazdırılmış kod, çalıştırılmamış komut,
+  değişiklik iddiası, eksik teslim, yazılmamış kod); "sadece yazdırdı" koruması yapıştırılmış çıktı değil gerçek kod
+  (kaynak bloğu ya da komut satırı) ister. pytest 294.
+- **Durum sorgusu nihai yanıtı artık durdurmuyor:** döngü koruması aynı sonucun 3. tekrarını, model yön değiştirsin
+  diye hataya çeviriyor; exit 0 dönen bir sorgu (`ruflo task status`, 6 kez) böylece "son komut başarısız" sayıldı,
+  bitmiş yanıt silindi ("…model bitti diyordu; önce düzeltmesi isteniyor") ve hata ayıklama rolü başladı. Bu
+  sonuçlar artık `repeat_ok` taşır: model için yine döngü notu, ama asla çözülmemiş hata ya da hata ayıklama turu
+  değil. Bir adımın başarısız olduğunu / bitmediğini kendisi söyleyen yanıt (`admits_failure`) çözülmemiş hata,
+  teslim edilmeyen dosya (bir denemeden sonra) ve açık yapılacaklar (bir hatırlatmadan sonra) korumalarında korunur.
+- **Arka planda süreç bırakan komutlar hemen döner:** `ruflo daemon start` (miras aldığı boruları açık tutan
+  daemon) bittikten sonra her seferinde tam 10 sn bekliyordu; borular artık yalnızca çıktı gelirken okunuyor (1,2 sn
+  sessizlikte biter). pytest 297.
+- **Bir aracı kaldırmak artık bir dizi "hata" değil:**
+  - Son komut `Remove-Item … -ErrorAction SilentlyContinue` ya da `2>$null` ise çıkış kodu 0 olur. PowerShell bu
+    durumda da `$?` değerini false yapıyordu.
+  - Hiçbir şey bulamayan sorgular (`Get-Command x`, `where`, `npm ls -g x`, `pip show`, `Test-Path`, `grep` …)
+    hata değil, sonuç sayılır.
+  - İki durum sorgusu arasında durumu değiştiren başka bir çağrı varsa döngü sayacı sıfırlanır.
+  - Komut olarak yazılan uygulama aracı (`run list_dir`) aracı çalıştırır.
+  - Hata rehberine iki kayıt eklendi: boşluklu yolun iki argümana bölünmesi ve `@latest` kaynaklı npm EUSAGE.
+  - Çalışma klasörü dışındaki bir dosyayı açmak konsolda yakalanmamış 403 yerine bildirim gösterir.
+- **8300 geçmiş taramasından:**
+  - Ham satır sonu içeren ya da nesneden sonra cümle gelen MCP argümanları (uzun Linear / Notion metinleri)
+    okunur.
+  - PowerShell'de `head` / `tail` çalışır.
+  - Tarayıcıda en üstte `return` olan ya da IIFE biçimindeki JS kodu çalışır.
+  - İki akış parçasına bölünen satıcı çağrı sarmalayıcısı (`</minimax:` + `tool_call>`, NVIDIA'da nemotron) not
+    olarak görünüyordu. Artık etiket biçimindeki her kısa kuyruk tamamlanana kadar tutulur ve `<x:tool_call>`
+    sarmalayıcıları atılır.
+  - pytest 305.
+
 ## Proje Durumu: v0.18.5
 Dev dosyalar ve sonrası (2026-11-21), model bazında değil tüm sağlayıcılar için. Canlı: NVIDIA Nemotron 3 Ultra
 152.690 karakterlik oyunu tek çağrıda yazdı (660 sn, kopmasız, tek doctype), tarayıcıda test etti, tek hatayı

@@ -38,15 +38,19 @@ from .checks import plan_steps, request_steps, request_parts, error_playbook, NO
 # Parts split into their own modules (round 2026-11-20); the names stay available here.
 from .learning import CTX_RATIO, LAST_REAL, _RATIO_FILE, _ratio_file, _learn_ratio, _BACKGROUND, SPEED, SLOW_MS_PER_1K, _SPEED_FILE, _speed_file, _learn_speed, is_slow, lean_for, _shown_tokens  # noqa: F401
 from .runstate import Run, PERF, _timing, RUNS, _emit, _step, TOOL_TITLES, ACTION_KINDS  # noqa: F401
-from .guards import PAGE_TOOLS, PAGE_ERR, page_state, failure_signature, _UNIT, _loop_cut, _babble_cut, _SALAD_WORD, _salad_cut  # noqa: F401
+from .guards import PAGE_TOOLS, PAGE_ERR, page_state, output_checked, failed_outputs, failure_signature, _UNIT, _loop_cut, _babble_cut, _SALAD_WORD, _salad_cut  # noqa: F401
 from .history import OLD_STEP_MARK, KEEP_RECENT, _short, _gone_body, READ_TOOLS, CHANGE_TOOLS, _RESULT_BLOCK, _READ_HEAD, _TAG_CALL, _pkey, _kept_reads, shrink_old_steps, _tag_call, _for_model, estimate_tokens, SHRUNK, shrink_messages, COMPRESS_PROMPT, compress, context_breakdown, OVERFLOW_DIGEST, DIGEST_TAG, _overflow, _history, _action, _action_log  # noqa: F401
+from .continuity import without_todo_line  # noqa: E402
+from .checks import OWN_DATA, GOOGLE_ACT, asks_for, printed_code, admits_failure  # noqa: E402  (not in checks' star export)
 from .continuity import cap_chars, RUN_STATE, RESUME_TAG, _calls_done, _team_board, _checkpoint, _results_kept, PARTIAL, WRITERS, _file_loop_check, _partial_call, _persist_partial, save_partial, _salvage, _drop_partial_file, RECORD_TAG, CONTINUE_TAG, THINK_CARRY, CARRY_MAX, _carry_thinking, LOOK_TOOLS, _ledger, _load_checkpoint, _drop_checkpoint, resume_note, recover_interrupted, HANDOVER, _handover, SPLIT_HINT_HEAD, _split_rule, split_hint, todo_board, todo_line, _short_desc, EVIDENCE_TOOLS  # noqa: F401
 from .prompting import BROWSER_GUIDE, TEAM_GUIDE, ABILITIES, ABILITY_TASKS, _abilities_load, _abilities_open, _abilities_save, _system_prompt, _parse_mentions  # noqa: F401
 from .streaming import TOOL_NAMES, PREP_NAME, _stream_turn, TRANSIENT, SILENT_TOOL_LIMIT, THINK_CAP, MIDCALL_STALL, PATH_IN_ARGS, _partial_target, _call_open  # noqa: F401
-from .tooling import VERIFY_ASK, VERIFY_TOOLS, TEST_CMD, REPEAT_GUARD, _verified, PLAN_GATED, MEDIA_CAP, BOOKKEEPING, STUCK_WARN, PARALLEL_SAFE, TODO_DOC, TODO_RUN, TODO_START, TODO_FILE, _auto_todo, PARALLEL_WRITE, _job_path, _run_jobs, _exec, _merge_team_calls, _run_tool, _wait_online, RUN_ASK, MD_WORDS, OPENS_URL, _close_visible_browser, _readable  # noqa: F401
+from .tooling import VERIFY_ASK, VERIFY_TOOLS, TEST_CMD, REPEAT_GUARD, _verified, _served, PLAN_GATED, MEDIA_CAP, BOOKKEEPING, STUCK_WARN, PARALLEL_SAFE, TODO_DOC, TODO_RUN, TODO_START, TODO_FILE, _auto_todo, PARALLEL_WRITE, _job_path, _run_jobs, _exec, _merge_team_calls, _run_tool, _wait_online, RUN_ASK, MD_WORDS, OPENS_URL, _close_visible_browser, _readable  # noqa: F401
 
 
 RETRY_WAITS = (5, 15, 30, 60, 90, 120)
+SKILL_BASE = {"todo", "use_skill", "need_tools", "read_file", "list_dir", "write_file", "edit_file", "run",
+              "system_info"}
 
 
 BUDGET_NOTE = {"tr": "Adım sınırına ulaşıldı ({n} adım) ve görev henüz bitmedi. Kaldığı yerden sürdürmek için "
@@ -382,14 +386,16 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
     proc_manager.hold(f"{session['id']}:")  # this chat's servers stay up while it works again
     try:
         ctx_info = await router.context_info(model)
-        if ctx_info["local"] and (ram := ctx_info.get("ram") or {}).get("short"):
+        if ctx_info["local"] and (ram := ctx_info.get("ram") or {}).get("short") and memguard.load_check() == "warn":
+            _step(run, "note", "tools", "done", "⚠️ " + ui_text(lang, "ai_warn_no_ram", router.NO_RAM_WARN, model=model,
+                  need=ram["weights_gb"], free=ram["free_gb"], total=ram["total_gb"]))
+        elif ctx_info["local"] and (ram := ctx_info.get("ram") or {}).get("short"):
             # The weights alone do not fit in the free RAM: loading would swap the computer to a halt (or crash
             # it). Stop before anything is sent, and say what to do.
             raise ProviderError("no_memory", ui_text(
                 lang, "ai_err_no_ram", "{model} needs about {need} GB of RAM for its weights alone, but only {free} GB "
                 "is free (of {total} GB, with a safety reserve). It was not loaded, to protect the computer. Close "
-                "other programs, pick a smaller local model or a cloud model, and set Ollama's parallel requests "
-                "(now {parallel}) to 1 in Settings > Providers > Ollama.", model=model, need=ram["weights_gb"],
+                "other programs, or pick a smaller local model or a cloud model.", model=model, need=ram["weights_gb"],
                 free=ram["free_gb"], total=ram["total_gb"], parallel=ram["parallel"]))
         if ctx_info["local"] and (ram := ctx_info.get("ram") or {}).get("parallel", 1) > 1 and ram["max"] < 32768:
             _step(run, "note", "context", "done", ui_text(
@@ -450,6 +456,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
         chat_only = is_small_talk(clean_text) and not skill_names and not forced_role and "#" not in clean_text
         # Plain knowledge questions in a chat without earlier work get read-only tools (no unrequested files).
         allowed = None
+        from .. import connections as _conn
+        google_on = _conn.google_connected()
         if chat_only:
             allowed = set()
         elif (not skill_names and not forced_role and not project and is_knowledge_question(clean_text)
@@ -462,13 +470,17 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             run.soft_gate = True
         if allowed is not None and not chat_only:
             from .. import mcp_client
-            if mcp_client.picked_tools(clean_text):
+            if mcp_client.picked_tools(clean_text) or mcp_client.available_tools():
+                # a connected MCP server is the model's to use whenever it helps, a plain question too ("saat kaç?"
+                # -> time/get_current_time, a library question -> context7 / deepwiki)
                 # the user picked an MCP tool (#server/tool chip): a "question" ("saat kaç?") still gets the mcp tool
                 # (it was left out with the read-only set, and the model answered without the tool it was given)
                 allowed |= {"mcp", "mcp_add"}
+            if google_on:
+                allowed |= {"google"}  # "bu haftaki takvimim?" reads like a question but needs the account
         # A conversation reply (small talk, a plain question): the UI streams it straight into the chat as the answer
         # instead of the work-note slot under the steps (it showed there first, then jumped into the chat).
-        _emit(run, "reply_mode", chat=chat_only or (allowed is not None and not allowed - set(READ_ONLY)))
+        _emit(run, "reply_mode", chat=chat_only or (allowed is not None and not allowed - set(READ_ONLY) - {"mcp", "mcp_add"}))
         # An agent or skill with a 'tools:' list gets only those tools (fewer tool definitions, fewer tokens).
         skill_limited = False
         chosen = ([catalog.agents().get(forced_role)] if forced_role else []) + [catalog.skills().get(s) for s in skill_names] \
@@ -479,7 +491,9 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             for t in list(limit):
                 limit |= SKILL_COMPANIONS.get(t, set())
             limit &= set(TOOLS)
-            allowed = (set(TOOLS) if allowed is None else allowed | limit) & (limit | {"todo", "use_skill", "need_tools"})
+            # The basic file / command tools stay with every skill: /google "make a PDF of this PC and put it on
+            # Drive" needed run and list_dir, the google skill listed neither, and every call was refused.
+            allowed = (set(TOOLS) if allowed is None else allowed | limit) & (limit | SKILL_BASE)
             skill_limited = True  # need_tools / a grouped call can still open what the list left out
         lang = reply_language(clean_text, opts.get("ui_lang"))
         # No skill is loaded by trigger words any more (user request, 2026-11-20): a word in the prompt ("android",
@@ -583,6 +597,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
         verify_nudged = False  # a run-and-test request answered without running anything was sent back once
         repeat_nudged = False  # a reply that repeated the previous answer word for word was sent back once
         source_nudged = False  # a sourced-answer agent was told once to research instead of answering from memory
+        data_nudged = False  # an answer about the user's own account data written without a single tool call
         # A sourced-answer skill / agent (researcher, web-research...) - not one that merely may research (/docs lists
         # research for documents that need facts: "explain how templates work" was sent back to research, then the
         # whole answer was written again "with sources").
@@ -605,6 +620,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
         deliver_retries = 0  # "the PDF is ready" while no PDF exists: asked twice at most to really make it
         pending_nudges = 0  # a "summary" while planned items were never started: sent back to work (bounded)
         missing_files: list[str] = []
+        held_answer, held_turn = "", -1  # a complete answer an app check sent back (see keep_held)
         broken_syntax: dict[str, str] = {}  # written files that do not parse (path -> the write result's error lines)
 
         def track_syntax(name: str, res) -> str:
@@ -623,6 +639,16 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                 p, err = next(iter(broken_syntax.items()))
                 cur = f"{p}: {err}"
             return cur
+
+        def keep_held(text: str) -> None:
+            """An app check (run-and-test, sources, open items) sent a complete answer back, and the model did nothing
+            with tools after it - it judged the check not to apply ("no web server was started in this conversation")
+            and wrote a short note instead. That note must not replace the full answer the user was reading (a 40-line
+            GitHub project list was wiped for three lines, seen with nemotron): the full answer comes back."""
+            if held_answer and tool_turns == held_turn and len(text.strip()) < len(held_answer) * 0.6:
+                visible[:] = [held_answer]
+                _emit(run, "reset_text")
+                _emit(run, "delta", text=held_answer)
 
         def flag_unresolved() -> None:
             """The answer ends the task while the last command still fails (or the promised file still does not
@@ -644,7 +670,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     _emit(run, "reset_text")
                     _emit(run, "delta", text=visible[0])
                     return
-            if unresolved and unresolved_asked and used_tools and "".join(visible).strip():
+            if (unresolved and unresolved_asked and used_tools and "".join(visible).strip()
+                    and not admits_failure("".join(visible))):
                 warning = ui_text(_ui(lang), "ai_note_unresolved_final", NOTES["unresolved_final"]["en"])
                 _step(run, "note", "tools", "done", warning)
                 visible[:] = [f"> {warning}\n\n" + "".join(visible).strip()]
@@ -816,7 +843,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                 # conversation, or this task's own steps) is about. The model can open another group itself with
                 # need_tools. Sending every definition with every turn crowded small models and filled the context.
                 used_now = {s.get("data", {}).get("tool") for s in run.steps}
-                avail = {"team": bool(pool_others and multi.get("delegate", True)), "mcp": has_mcp or bool(mcp_client.available_tools()), "project": bool(project)}
+                avail = {"team": bool(pool_others and multi.get("delegate", True)), "mcp": has_mcp or bool(mcp_client.available_tools()), "project": bool(project),
+                         "google": google_on}
                 offer = set(CORE_TOOLS) | (set(TOOLS) - GROUPED)  # tools of no group are always there
                 for g, (names, words) in tool_groups(clean_text).items():
                     if not avail.get(g, True):
@@ -829,6 +857,10 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     hit = words is not None and words.search(words_in)
                     if hit and lean_now and g == "browser" and not STRONG_BROWSER.search(clean_text):
                         hit = False
+                    if g == "google" and google_on:
+                        # one small definition: always there while Google is connected. "ekledim, tekrar dene" has no
+                        # Google word, the tool was left out and the model fell back to the failing google-* MCP calls.
+                        hit = True
                     if g in run.unlocked or names & used_now or hit:
                         offer |= names
                 offer &= set(TOOLS)
@@ -839,6 +871,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                      "times. Searching is closed for this task: write the answer now from what you "
                                      "already found, and say what could not be verified."})
                 offer = (set(TOOLS) if offer is None else set(offer)) - REPEAT_GUARD
+            if run.todo_closed:  # looped on the list: not offered any more (the app keeps it)
+                offer = (set(TOOLS) if offer is None else set(offer)) - {"todo"}
             if run.tools_off:  # stuck: no tools at all any more, only the answer (what was done, what blocks it)
                 offer = set()
             # Built once per role and task: an unchanged prompt prefix lets local servers (Ollama, llama.cpp,
@@ -1329,8 +1363,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                           "The model wrote a tool call as plain text ({names}); it was recognized and is being run for real.",
                           names=", ".join(dict.fromkeys(c.name for c in inline))))
                 elif (not used_tools and work_mode and not chat_only and code_runs < 3 and "run" in TOOLS
-                      and (offer is None or "run" in offer) and (WORK.search(clean_text) or RUN_ASK.search(clean_text))
-                      and not HOWTO.search(clean_text) and (cmds := fenced_commands(text_now, RUN_ASK.search(clean_text)))):
+                      and (offer is None or "run" in offer) and (asks_for(WORK, clean_text) or asks_for(RUN_ASK, clean_text))
+                      and not HOWTO.search(clean_text) and (cmds := fenced_commands(text_now, asks_for(RUN_ASK, clean_text)))):
                     # The user asked for an action and the model answered with the command in a code block instead
                     # of calling run ("I'll create it with ffmpeg: ```bash ffmpeg ...```"): run exactly that command
                     # now (with the usual approvals) instead of asking again and again - the result goes back to it.
@@ -1348,8 +1382,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "executed. Call the tool correctly using the available tools, or answer in plain text "
                                   "without any tool syntax. Do not claim actions that did not run."}]
                     continue
-                elif not used_tools and work_mode and not printed_retry and "```" in text_now and (
-                        RUN_ASK.search(clean_text) or FILE_NAME.search(clean_text)):
+                elif not used_tools and work_mode and not printed_retry and printed_code(text_now) and (
+                        asks_for(RUN_ASK, clean_text) or (FILE_NAME.search(clean_text) and asks_for(WORK, clean_text))):
                     # The user asked to run it (or for a named file) and the reply only prints code: do it for real.
                     printed_retry = True
                     run.hold = True
@@ -1359,7 +1393,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "and run it: write the file with write_file now, run it with the run tool, and answer "
                                   "with the REAL output. Do not paste the whole code again in the answer."}]
                     continue
-                elif not used_tools and work_mode and code_nudges < 2 and WORK.search(clean_text) \
+                elif not used_tools and work_mode and code_nudges < 2 and asks_for(WORK, clean_text) \
                         and CODE_NOT_RUN.search(text_now):
                     # A command/script was printed as text instead of actually run with a tool: redo it for real
                     # (twice at most; after that the reply stands, with the "nothing ran" note of the checks below).
@@ -1374,7 +1408,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "a tool already does."}]
                     continue
                 elif not used_tools and work_mode and fake_claims >= 2 and (
-                        ACTION_ECHO.search(text_now) or (CHANGE_REQUEST.search(clean_text) and CHANGE_CLAIM.search(text_now))):
+                        ACTION_ECHO.search(text_now) or (asks_for(CHANGE_REQUEST, clean_text) and CHANGE_CLAIM.search(text_now))):
                     # Still only claims after two reminders: keep the answer, but say plainly that nothing ran.
                     warning = ui_text(_ui(lang), "ai_note_no_action", "Nothing was executed in this turn.")
                     _step(run, "note", "tools", "done", warning)
@@ -1383,7 +1417,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     _emit(run, "delta", text=visible[0])
                     break
                 elif not used_tools and work_mode and (
-                        ACTION_ECHO.search(text_now) or (CHANGE_REQUEST.search(clean_text) and CHANGE_CLAIM.search(text_now))):
+                        ACTION_ECHO.search(text_now) or (asks_for(CHANGE_REQUEST, clean_text) and CHANGE_CLAIM.search(text_now))):
                     # Claims (or copies the app's action note) without running a single tool: do it for real.
                     fake_claims += 1
                     run.hold = True
@@ -1487,7 +1521,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "change is needed at all, say so plainly."}]
                     continue
                 elif (used_tools and not files_nudged and work_mode and not chat_only and not ctx.files_changed
-                      and WORK.search(clean_text) and not HOWTO.search(clean_text)
+                      and asks_for(WORK, clean_text) and not HOWTO.search(clean_text)
                       and not CODE_EXAMPLE_ASK.search(clean_text) and not _mcp_picked(clean_text) and len([b for b in re.findall(r"```(\w*)\n(.*?)```", text_now, re.S)
                                                          if b[0].lower() not in SHELL_FENCES and b[1].count("\n") >= 8]) >= 2):
                     # The app's source printed in the answer (App.js, screens...) while no file was written: a weak model
@@ -1504,6 +1538,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "what the tool results show."}]
                     continue
                 elif (deliver_retries < 2 and work_mode and not chat_only and text_now
+                      and not (deliver_retries and admits_failure(text_now))
                       and (missing := await asyncio.to_thread(missing_deliverables, clean_text, text_now, root, run.started))):
                     # The answer presents a file (the PDF asked for, "open report.pdf") that is not on disk: a weak
                     # model printed a script and said "created". Make it produce the file for real (twice at most).
@@ -1527,17 +1562,24 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "the complete final answer the request asked for (report, file tree, test results), "
                                   "with this file included."}]
                     continue
-                elif used_tools and unresolved and not unresolved_asked and text_now and work_mode:
+                elif (used_tools and unresolved and not unresolved_asked and text_now and work_mode
+                      and not admits_failure(text_now)):
                     # The last command failed and nothing fixed it, yet the model is writing its final answer
                     # (often "done, the video has subtitles"): make it fix the step or say plainly that it failed.
                     unresolved_asked = True
                     run.hold = True
                     _step(run, "note", "tools", "done", ui_text(_ui(lang), "ai_note_unresolved", NOTES["unresolved"]["en"]))
                     broken_file = ": SYNTAX ERROR -" in unresolved
+                    made = failed_outputs(unresolved, root, run.started)
                     messages += [{"role": "assistant", "content": raw},
                                  {"role": "user", "content": ("[App note] A file written in this task still does not "
                                   "parse:\n" + unresolved + "\nFix that line with edit_file, run the project's check "
                                   "again (tsc / build / tests), and only then answer." if broken_file else
+                                  "[App note] The last command returned a failure exit code, but files its output names "
+                                  "exist and were written in this task: " + ", ".join(made[:6]) + ". Open the main one "
+                                  "(read_file, or the page in the browser) to check it is complete; if it is, the step "
+                                  "worked - say so with what the file shows. If it is broken or empty, fix the command."
+                                  if made else
                                   "[App note] The last command FAILED and no later command "
                                   "fixed it:\n" + unresolved + "\nIts output file does not exist or is broken. Fix it "
                                   "now (different options/codec/format, overwrite with -y), check the result, and only "
@@ -1547,10 +1589,13 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "see), not only the correction."}]
                     continue
                 elif (used_tools and not verify_nudged and text_now and work_mode and VERIFY_ASK.search(clean_text)
-                      and not _verified(run)):
+                      and (ctx.files_changed or _served(run)) and not _verified(run)):
                     # "Start it on localhost and test it in the browser": a weak model wrote the files and reported
                     # success without running or looking at anything. Once, make it really start and check the result.
+                    # Only when this task made something that can be run: a research answer ("projects I can run with
+                    # AI IQ 300") was sent back and wiped before.
                     verify_nudged = True
+                    held_answer, held_turn = text_now, tool_turns
                     run.hold = True
                     _emit(run, "reset_text")
                     _step(run, "note", "tools", "done", ui_text(_ui(lang), "ai_note_not_verified",
@@ -1567,6 +1612,29 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "the user did not actually ask for a run or a test, say so in one line and give your "
                                   "final answer instead.) Your next "
                                   "answer replaces the previous one: make it the complete final answer."}]
+                    continue
+                elif (not data_nudged and text_now and not chat_only and offer != set()
+                      and not {s.get("data", {}).get("tool") for s in run.steps} & {"mcp", "google"}
+                      and (_mcp_picked(clean_text) or ((google_on or has_mcp) and OWN_DATA.search(clean_text))
+                           or (google_on and GOOGLE_ACT.search(clean_text)))):
+                    # "#google-calendar/list_calendars ile takvimlerimi listele": nemotron answered with two invented
+                    # calendars and called nothing. Account data never comes from memory: once, make it call the tool.
+                    data_nudged = True
+                    run.hold = True
+                    _emit(run, "reset_text")
+                    from .. import mcp_client as _mc
+                    picked = ", ".join(f"{s}/{t}" for s, t in _mc.picked_tools(clean_text))
+                    named = _mc.named_servers(clean_text)
+                    messages += [{"role": "assistant", "content": raw or text_now},
+                                 {"role": "user", "content": "[App note] You answered without calling the tool that holds "
+                                  "the user's account data, so that answer is invented or incomplete - you cannot know it "
+                                  "from memory or a web search. "
+                                  + (f"The user picked the MCP tool {picked}: call it now with the mcp tool. " if picked
+                                     else f"Use the connected MCP server {named[0]} now (mcp server=\"{named[0]}\"; "
+                                     "tool=\"list\" shows its tools). " if named
+                                     else "Call the google tool now (e.g. GET the right googleapis.com URL). " if google_on
+                                     else "Use the connected MCP server for it now. ")
+                                  + "Then answer only from what the tool returned."}]
                     continue
                 elif (not used_tools and not repeat_nudged and text_now and len(text_now) > 120
                       and _same_as_before(text_now, messages[:first_run_msg])):
@@ -1586,6 +1654,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     # An agent / skill made for sourced answers (@researcher, /web-research...) answered from memory
                     # without a single search: once, make it look the facts up and cite them.
                     source_nudged = True
+                    held_answer, held_turn = text_now, tool_turns
                     run.hold = True
                     _emit(run, "reset_text")
                     messages += [{"role": "assistant", "content": raw},
@@ -1593,9 +1662,12 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "used: your answer is from memory and may be outdated. Call research (or web_search + "
                                   "fetch_url) now, then answer with the facts the sources give and their links."}]
                     continue
-                elif (used_tools and work_mode and not run.tools_off and pending_nudges < 8 and not _mcp_picked(clean_text)
+                elif (used_tools and work_mode and not run.tools_off and not run.todo_closed and pending_nudges < 8
+                      and not _mcp_picked(clean_text)
                       and len([t for t in open_todos if t["status"] == "pending"]) >= 1
-                      and len(open_todos) >= 2 and len(text_now) >= 200 and not is_announcement(text_now)):
+                      and len(open_todos) >= 2 and len(text_now) >= 200 and not is_announcement(text_now)
+                      # an honest "this part failed / could not be done" after a reminder is the answer, not a loop
+                      and not (pending_nudges and admits_failure(text_now))):
                     # (A short note or an announcement - "now I write app.js, reading api.php in parallel:" with the
                     # call missing - is not a summary: the plain "continue" below handles it. This heavy note on every
                     # such turn made weak models re-plan, re-read and close items they had not done.)
@@ -1603,6 +1675,7 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     # tests): the task was reported finished half way (round 5). Not an answer yet - carry on with the
                     # open items; the summary waits until they are done.
                     pending_nudges += 1
+                    held_answer, held_turn = text_now, tool_turns
                     run.hold = True
                     _emit(run, "reset_text")
                     _step(run, "note", "tools", "done", ui_text(_ui(lang), "ai_note_open_todos", NOTES["open_todos"]["en"],
@@ -1621,7 +1694,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     # write the answer twice; the step it was on is done.
                     run.todos = [{**t, "status": "completed"} if t["status"] == "in_progress" else t for t in run.todos]
                     _emit(run, "todos", todos=run.todos)
-                    await fix_language(text_now)
+                    keep_held(text_now)
+                    await fix_language("".join(visible).strip())
                     flag_unresolved()
                     break
                 elif used_tools and nudges < (6 if opts.get("goal_mode") else 3) and work_mode and (
@@ -1649,7 +1723,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                                   "the answer."}]
                     continue
                 else:
-                    await fix_language(text_now)
+                    keep_held(text_now)
+                    await fix_language("".join(visible).strip())
                     flag_unresolved()
                     break
             if not used_tools and not run.todos and work_mode:
@@ -1673,6 +1748,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             if calls:
                 messages.append({"role": "assistant", "content": narration, "by": turn_model,
                                  **({"thinking_blocks": run.thinking_blocks} if run.thinking_blocks else {}),
+                                 # DeepSeek's thinking mode with tools needs it back (400 otherwise, API docs)
+                                 **({"reasoning": run.last_thinking[-20000:]} if getattr(run, "last_thinking", "") else {}),
                                  "tool_calls": [{"id": c["id"], "name": c["name"], "arguments": c["arguments"], **({"extra": c["extra"]} if c.get("extra") else {})} for c in calls]})
                 calls = _merge_team_calls(calls)
                 jobs = []
@@ -1692,11 +1769,12 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                         continue
                     messages.append({"role": "tool", "tool_call_id": c["id"], "name": c["name"], "content": res.output})
                     if c["name"] == "run":
-                        unresolved = "" if res.ok else res.output[-700:]
+                        unresolved = "" if (res.ok or (res.data or {}).get("repeat_ok")) else without_todo_line(res.output)[-700:]
                         ran_ok = ran_ok or res.ok
+                    unresolved = output_checked(unresolved, c["name"], job[1], job[2], res.ok, root, run.started)
                     unresolved = page_state(c["name"], res, unresolved)
                     unresolved = track_syntax(c["name"], res)
-                    if not res.ok and c["name"] == "run":
+                    if not res.ok and c["name"] == "run" and not (res.data or {}).get("repeat_ok"):
                         failure = res.output
                 _checkpoint(run, messages, first_run_msg, clean_text)
             else:
@@ -1713,16 +1791,36 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     name = call.name if call else "?"
                     results.append(f'<result tool="{name}" ok="{str(res.ok).lower()}">\n{res.output}\n</result>')
                     if name == "run":
-                        unresolved = "" if res.ok else res.output[-700:]
+                        unresolved = "" if (res.ok or (res.data or {}).get("repeat_ok")) else without_todo_line(res.output)[-700:]
                         ran_ok = ran_ok or res.ok
+                    if call:
+                        unresolved = output_checked(unresolved, name, call.args, call.body, res.ok, root, run.started)
                     unresolved = page_state(name, res, unresolved)
                     unresolved = track_syntax(name, res)
-                    if not res.ok and name == "run":
+                    if not res.ok and name == "run" and not (res.data or {}).get("repeat_ok"):
                         failure = res.output
                 messages += [{"role": "assistant", "content": raw},
                              {"role": "user", "content": "Tool results:\n" + "\n".join(results)}]
                 _checkpoint(run, messages, first_run_msg, clean_text)
             tool_turns += 1
+            turn_names = [c["name"] for c in calls] if calls else [c.name for c in parsed or [] if c]
+            if any(n not in BOOKKEEPING for n in turn_names):
+                # Real work since the last "continue" reminder: the reminders count again from zero. Counted over
+                # the whole task, a long job (85 steps) used them up early and later just stopped after a passing
+                # build with "the model stopped without a final answer".
+                nudges = empty_retries = 0
+                run.bookkeeping_turns = 0
+            elif turn_names:
+                # Only list keeping, turn after turn (nemotron: todo 117 times in 66 turns, nothing else, until the
+                # user stopped it). 3 such turns close the list; 6 end tool use so the model must answer.
+                run.bookkeeping_turns += 1
+                if run.bookkeeping_turns >= 6:
+                    run.tools_off = True
+                elif run.bookkeeping_turns >= 3 and not run.todo_closed:
+                    run.todo_closed = True
+                    messages.append({"role": "user", "content": "[App note] You have only been updating the to-do "
+                                     "list for several turns. The list is closed now (the app keeps it). Do the next "
+                                     "real step with the other tools, or write the final answer if the work is done."})
             if (tool_turns == 3 and not run.todos and work_mode and not chat_only
                     and (parts := request_parts(clean_text))):
                 # Asked and still no list (weak models): the app opens one from the request's own parts, so the user
@@ -1902,11 +2000,14 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     s["status"] = "done" if status == "ok" else "error"
                     _emit(run, "step", step=s)
             answer = ACTION_ECHO.sub("\n", "".join(visible)).strip() or (best if status in ("ok", "budget", "cancelled") else "")
+            no_final = False
             if not answer and status == "ok" and (ctx.files_changed or ctx.commands):
+                no_final = True
                 # The model stopped without a final answer: say plainly what was done and that it ended there, instead
                 # of an empty message (or an old note shown as the answer).
                 files = list(dict.fromkeys(ctx.files_changed))[-15:]
-                last_err = (locals().get("unresolved") or "").strip().splitlines()[-1:] or [""]
+                last_err = [ln for ln in without_todo_line(locals().get("unresolved") or "").strip().splitlines()
+                            if ln.strip() and not ln.lstrip().startswith(("[App", "[To-do"))][-1:] or [""]
                 answer = ui_text(_ui(lang), "ai_no_final", "The model stopped without writing a final answer. Done in this "
                                  "task: {files}.{err} Write \"continue\" to let it go on.",
                                  files=", ".join(f"`{f}`" for f in files) or "-",
@@ -1925,7 +2026,9 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                         changed = None
                 except Exception:
                     changed = None
-            if status == "ok" and answer and not answer.rstrip().endswith("?") and any(
+            # (Not when the "answer" is the app's own "stopped without a final answer" message: the list showed 7/7
+            # done for a task that had stopped at item 3.)
+            if status == "ok" and answer and not no_final and not answer.rstrip().endswith("?") and any(
                     t["status"] != "completed" for t in run.todos):
                 # The task ended with a real final answer: items the model forgot to tick are done (they showed as open
                 # next to a finished task, e.g. 1/3 checked). An answer that asks the user something leaves them open.

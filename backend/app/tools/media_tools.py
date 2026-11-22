@@ -110,7 +110,7 @@ async def inspect_media(ctx, args, body):
         return ToolResult(False, f"inspection failed: {type(e).__name__}: {str(e)[:200]}")
     data: dict = {"path": _rel(ctx, target)}
     if res.get("sheet"):
-        data["screenshot"] = _rel(ctx, res["sheet"])  # the key-frame sheet appears under the step like a screenshot
+        data["screenshot"] = _rel(ctx, Path(res["sheet"]))  # a PDF gives its page sheet as text  # the key-frame sheet appears under the step like a screenshot
         ctx.files_changed.append(data["screenshot"])
     return ToolResult(True, clip(media_inspect.report(res), 16000), data)
 

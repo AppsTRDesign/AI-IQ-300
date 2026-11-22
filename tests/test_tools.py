@@ -238,3 +238,93 @@ def test_a_page_showing_an_error_keeps_the_task_open():
     held = page_state("browser_navigate", bad, "")
     assert held.startswith("[page error]")
     assert page_state("browser_navigate", ToolResult(True, "opened http://127.0.0.1:8000/menu.php\n- heading Menu"), held) == ""
+
+
+def test_powershell_2to1_stderr_logs_with_exit_0_is_a_success(tmp_path):
+    # rea-video decompose ... 2>&1 logged INFO lines to stderr, exited 0, and came back as exit 1 / failed
+    import os
+    import subprocess
+    import sys
+    import pytest
+    if sys.platform != "win32":
+        pytest.skip("Windows PowerShell 5.1 only")
+    from app.tools.shell_tools import ps_script
+    py = sys.executable
+    cases = [(f'& "{py}" -c "import sys; sys.stderr.write(\'INFO x\\n\'); print(1)" 2>&1', 0),
+             (f'& "{py}" -c "import sys; sys.stderr.write(\'ERR\\n\'); sys.exit(3)" 2>&1', 3),
+             (f'& "{py}" -c "import sys; sys.stderr.write(\'INFO\\n\')" 2>&1 && echo after', 0),
+             (f'& "{py}" -c "print(1)"; Get-Item C:\\aiiq_nope_does_not_exist', 1)]
+    for i, (cmd, want) in enumerate(cases):
+        script = tmp_path / f"s{i}.ps1"
+        script.write_text(ps_script(cmd, False), encoding="utf-8-sig")
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                           capture_output=True, text=True, env=os.environ.copy())
+        assert r.returncode == want, (cmd, r.stdout, r.stderr)
+
+
+def test_a_failed_run_whose_report_was_then_read_is_resolved(tmp_path):
+    import time
+    from app.agents.orchestrator import failed_outputs, output_checked
+    since = time.time()
+    (tmp_path / "out" / "v").mkdir(parents=True)
+    (tmp_path / "out" / "v" / "report.html").write_text("<html>ok</html>", encoding="utf-8")
+    failed = 'exit_code=1 state=failed\n[stderr] INFO done in 63.7s\n{\n  "report": "out\\\\v\\\\report.html"\n}'
+    assert failed_outputs(failed, tmp_path, since) == ["out/v/report.html"]
+    # a listing or a failed read does not count; reading or opening the report does
+    assert output_checked(failed, "list_dir", {"path": "out/v"}, "", True, tmp_path, since) == failed
+    assert output_checked(failed, "read_file", {"path": "out/v/report.html"}, "", False, tmp_path, since) == failed
+    assert output_checked(failed, "read_file", {"path": "out/v/report.html"}, "", True, tmp_path, since) == ""
+    url = "file:///" + str(tmp_path / "out" / "v" / "report.html").replace("\\", "/")
+    assert output_checked(failed, "browser_navigate", {"url": url}, "", True, tmp_path, since) == ""
+    # a file the failed command names but that is not there (ffmpeg failed): still open
+    gone = 'exit_code=1 state=failed\nError opening output out/x.mp4'
+    assert failed_outputs(gone, tmp_path, since) == []
+    assert output_checked(gone, "read_file", {"path": "out/x.mp4"}, "", True, tmp_path, since) == gone
+
+
+def test_a_research_question_is_not_a_run_and_test_request():
+    # "...çalıştırabileceğimiz github ... araştırır mısın": the full answer was sent back for a browser test and wiped
+    from app.agents.tooling import VERIFY_ASK
+    q = ("ai iq 300 de çalıştırabileceğimiz github açık ücretsiz kaynakları web'den araştırır mısın yapay zeka ile "
+         "ilgili olanları güncel tarihe göre")
+    assert not VERIFY_ASK.search(q)
+    assert VERIFY_ASK.search("uygulamayı çalıştır ve tarayıcıda dene") and VERIFY_ASK.search("çalıştırıp test et")
+
+
+def test_home_folder_paths_resolve(tmp_path):
+    from pathlib import Path
+    from app.policy import resolve_in
+    for p in ("~/.claude/x.md", "$HOME\\.claude\\x.md", "%USERPROFILE%/.claude/x.md", "$env:USERPROFILE/.claude/x.md"):
+        assert resolve_in(tmp_path, p, allow_outside=True) == (Path.home() / ".claude" / "x.md").resolve()
+    assert resolve_in(tmp_path, "~notes.txt") == (tmp_path / "~notes.txt").resolve()  # a file name, not the home
+
+
+def test_powershell_head_tail_wc_and_bash(tmp_path):
+    import subprocess
+    import sys
+    import pytest
+    if sys.platform != "win32":
+        pytest.skip("Windows PowerShell only")
+    from app.tools.shell_tools import ps_script
+    (tmp_path / "f.txt").write_text("\n".join(f"line {i}" for i in range(1, 31)), encoding="utf-8")
+    script = tmp_path / "s.ps1"
+    script.write_text(ps_script("head -3 f.txt; '--'; Get-Content f.txt | tail -n 2; '--'; wc -l f.txt; "
+                                "'--'; 1..50 | head -n 2", False), encoding="utf-8-sig")
+    r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                       capture_output=True, text=True, cwd=tmp_path)
+    parts = [p.strip().splitlines() for p in r.stdout.split("--")]
+    assert r.returncode == 0, r.stderr
+    assert parts[0] == ["line 1", "line 2", "line 3"] and parts[1] == ["line 29", "line 30"]
+    assert parts[2] == ["30 f.txt"] and parts[3] == ["1", "2"]
+
+
+def test_a_cli_task_without_a_page_is_tested_by_running_it():
+    from types import SimpleNamespace
+    from app.agents.tooling import VERIFY_ASK, _verified
+    assert VERIFY_ASK.search("bunu test et") and VERIFY_ASK.search("run a test of it") and not VERIFY_ASK.search("btestb")
+    ran = {"kind": "tool", "status": "done", "data": {"tool": "run", "command": "rea-video survey v.mp4 -o out"}}
+    assert _verified(SimpleNamespace(steps=[ran]))
+    web = {"kind": "tool", "status": "done", "data": {"tool": "write_file", "args": {"path": "src/index.html"}}}
+    assert not _verified(SimpleNamespace(steps=[web, ran]))  # a web page must be opened in the browser
+    failed = {**ran, "status": "error"}
+    assert not _verified(SimpleNamespace(steps=[failed]))

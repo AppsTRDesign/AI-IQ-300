@@ -62,20 +62,75 @@ def live_restore(ctx, target: Path) -> bool:
     return True
 
 
+def shrink_guard(ctx, target: Path, rel: str, content: str) -> str:
+    """The file guard: a file this task wrote (or saved after a break) is never cut down by a plain rewrite without
+    the model seeing what it would lose. Weak models forgot what they had written and "wrote it again" from the top
+    after a break: 80K of a page became the few K of the new start. The first such write is refused with the file's
+    real end shown; written again (the model has seen it and means it), it goes through and the old version is
+    kept in .aiiq/backups."""
+    old = _text_of(target) or ""
+    ours = rel in (getattr(ctx, "files_changed", None) or []) or rel in (getattr(ctx, "salvaged", None) or {})
+    if not ours or len(old) < 2000 or len(content) >= len(old) * 0.6:
+        return ""
+    seen = getattr(ctx, "shrink_seen", None)
+    if seen is None:
+        seen = ctx.shrink_seen = {}
+    if seen.get(rel):
+        seen.pop(rel)
+        return ""  # asked once already: a deliberate smaller version
+    seen[rel] = True
+    lines = old.count("\n") + 1
+    return (f"Not written (file guard): {rel} already has {len(old)} characters ({lines} lines) written in this task; "
+            f"this write would replace it with {len(content)} characters and lose about {len(old) - len(content)}. "
+            f"You may have forgotten what is already there. The file ends with:\n...{old[-1200:]}\n\n"
+            "- To add what is missing: write_file append=true with ONLY the part after that end.\n"
+            "- To change a part: edit_file with that part.\n"
+            "- Only if a shorter file is really intended: send this same write_file again (the old version is kept "
+            "in .aiiq/backups).")
+
+
 def trim_overlap(old: str, new: str) -> tuple[str, int]:
     """A continuation that begins by repeating the end of the file (the model re-sent its last lines): the repeated
     part is dropped. Returns (new without the overlap, characters dropped)."""
     tail = old[-4000:]
     probe = new[:40]  # an overlap shorter than this is not worth guessing
     if len(probe) < 40:
-        return new, 0
+        return repair_seam(old, new), 0
     idx = tail.rfind(probe)
     while idx != -1:
         ov = tail[idx:]
         if new.startswith(ov):
-            return new[len(ov):].lstrip("\n") if ov.endswith("\n") else new[len(ov):], len(ov)
+            return repair_seam(old, new[len(ov):].lstrip("\n") if ov.endswith("\n") else new[len(ov):]), len(ov)
         idx = tail.rfind(probe, 0, idx)
-    return new, 0
+    return repair_seam(old, new), 0
+
+
+_ORPHAN_CLOSE = re.compile(r"^[^<\n]{0,60}</([a-zA-Z][\w-]*)>[ \t]*\n?")
+_BLOCK_START = re.compile(r"\s*<(h[1-6]|section|article|p|div)\b", re.I)
+
+
+def repair_seam(old: str, new: str) -> str:
+    """The joint of a markup file continued after a break. Seen live (a PDF report's source): the part after the
+    break began with "content</h2>" - a fragment of a tag that was never opened - and started the next section while
+    the table before it was still open, so the document rendered with a stray word and a broken table. The fragment
+    is dropped and the open table / list is closed before the new section."""
+    if "<" not in old[-4000:] or not new:
+        return new
+    last = old.rstrip("\n").rsplit("\n", 1)[-1].lower()
+    m = _ORPHAN_CLOSE.match(new)
+    if m and f"<{m.group(1).lower()}" not in last:
+        new = new[m.end():]
+    if _BLOCK_START.match(new):
+        t = old[-8000:].lower()
+        closing = ""
+        for inner, outer in (("tbody", "table"), ("ul", None), ("ol", None)):
+            if t.count(f"<{inner}") > t.count(f"</{inner}>"):
+                closing += f"</{inner}>"
+            if outer and t.count(f"<{outer}") > t.count(f"</{outer}>"):
+                closing += f"</{outer}>"
+        if closing:
+            new = closing + "\n" + new
+    return new
 
 
 @tool("write_file", '<tool name="write_file" path="REL/PATH">full file content</tool>',
@@ -158,6 +213,9 @@ async def _write_file(ctx, args, body):
             restart_note = (" Note: this content started the file from its beginning again, so it REPLACED the file "
                             "instead of being appended (two copies would have broken it). If it is only the first "
                             "part, continue with write_file append=true from its end - never start over.")
+    if existed and str(args.get("append", "")).lower() not in ("true", "1", "yes"):
+        if msg := shrink_guard(ctx, target, rel0, content):
+            return ToolResult(False, msg)
     if str(args.get("append", "")).lower() in ("true", "1", "yes") and existed:
         if msg := await gate(ctx, {**op, "tool": "write_file"}, policy.decide_file_write(target, ctx.root, ctx.mode)):
             return ToolResult(False, msg)
@@ -199,6 +257,15 @@ async def _write_file(ctx, args, body):
         change = {}
     target.parent.mkdir(parents=True, exist_ok=True)
     unread_rewrite = ""
+    if existed and again and len(old_again := _text_of(target) or "") > 1500:
+        # A file of this task written again in full: its previous version is kept too (the guard lets a deliberate
+        # shorter version through; nothing written is ever lost without a copy).
+        try:
+            bdir = (ctx.session_dir or ctx.root / ".aiiq") / "backups"
+            bdir.mkdir(parents=True, exist_ok=True)
+            (bdir / f"{rel.replace('/', '__')}.{time.strftime('%Y%m%d-%H%M%S')}").write_text(old_again, encoding="utf-8")
+        except OSError:
+            pass
     if existed and not again:
         old_text = _text_of(target) or ""
         was_read = any(k.split("#")[0] == str(target.resolve()) for k in getattr(ctx, "read_seen", {}))

@@ -43,8 +43,11 @@ REPEAT_GUARD = {"fetch_url", "web_search", "research", "use_skill"}
 
 
 # The request asks to run / test the result; tools that really did that
-VERIFY_ASK = re.compile(r"test\s*et|btestb|dene(yin|yip|)b|çalıştır|başlat|doğrula|tarayıcıda|run it|start it|verify|"
+VERIFY_ASK = re.compile(r"test\s*et|\btest\b|dene(yin|yip|)\b|çalıştır(?!abil|ıl|ma[ksz])|başlat|doğrula|tarayıcıda|run it|start it|verify|"
                         r"in the browser|try it", re.I)
+
+
+WEB_FILE = re.compile(r"\.(?:html?|php|jsx?|tsx?|vue|svelte|css|astro)$|(?:^|[\\/])package\.json$", re.I)
 
 
 VERIFY_TOOLS = {"start", "web_screenshot", "browser_check", "browser_navigate", "browser_batch", "mobile_env",
@@ -80,11 +83,18 @@ async def _wait_online(cancel: asyncio.Event, limit: float) -> bool:
     return False
 
 
+def _served(run) -> bool:
+    """A server was started in this task (start tool)."""
+    return any(isinstance(s.get("data"), dict) and s["data"].get("tool") == "start" for s in run.steps)
+
+
 def _verified(run) -> bool:
     """Something was really run or looked at: a page opened, or a command that checks. A started server alone is not
     a test: an Expo app whose bundle answered 500 was reported as running because `start` printed its address, so
-    once a server ran, only opening its page in a browser tool (console + network are reported there) counts."""
-    served = tested = False
+    once a server ran, only opening its page in a browser tool (console + network are reported there) counts.
+    A task with no page at all (no server, no web file written: a CLI analysing a video, a script) is tested by
+    running it: a rea-video survey/decompose run that worked was told "nothing was run or checked yet"."""
+    served = tested = web = ran = False
     for s in run.steps:
         d = s.get("data") or {}
         if not isinstance(d, dict):
@@ -96,7 +106,11 @@ def _verified(run) -> bool:
             served = True
         elif tool in VERIFY_TOOLS or (tool == "run" and TEST_CMD.search(str(d.get("command") or ""))):
             tested = True
-    return tested and not served
+        elif tool == "run" and s.get("status") == "done":
+            ran = True
+        if tool in ("write_file", "edit_file") and WEB_FILE.search(str((d.get("args") or {}).get("path") or d.get("path") or "")):
+            web = True
+    return (tested or (ran and not web)) and not served
 
 
 PLAN_GATED = {"write_file", "edit_file", "run", "start", "make_doc", "generate_image", "delete_file"}
@@ -107,6 +121,101 @@ MEDIA_CAP = {"generate_image": 6, "stock_photo": 10, "generate_video": 4, "anima
 
 
 BOOKKEEPING = {"todo", "need_tools", "use_skill", "remember"}  # never part of a loop signature
+
+TODO_KEYS = {"advance", "done", "start", "add"}
+_DONE_WORDS = {"completed", "complete", "done", "finished", "finish", "closed", "ok", "true", "x", "[x]", "✓", "✅"}
+_START_WORDS = {"in_progress", "in progress", "inprogress", "started", "start", "doing", "active", "current", "working"}
+
+
+def _item_no(current: list[dict], ref) -> int | None:
+    """1-based number of the item a model means: a number, '#2', 'step 2', or (part of) its text."""
+    s = str(ref or "").strip()
+    if not s:
+        return None
+    if m := re.fullmatch(r"(?:#|step\s*|item\s*|madde\s*|adım\s*)?(\d{1,3})\.?", s, re.I):
+        n = int(m.group(1))
+        return n if 1 <= n <= len(current) else None
+    import difflib
+    key = re.sub(r"\W+", " ", s.lower()).strip()
+    best, score = None, 0.0
+    for i, t in enumerate(current, 1):
+        c = re.sub(r"\W+", " ", t["content"].lower()).strip()
+        r = 1.0 if key and (key in c or c in key) else difflib.SequenceMatcher(None, key, c).ratio()
+        if r > score:
+            best, score = i, r
+    return best if score >= 0.8 else None
+
+
+def todo_intent(spec: dict, body, current: list[dict]):
+    """Every shape a model uses to tick its list, turned into advance / done / start (the call is changed in place;
+    returns the body to use). The calculator, Google and Playwright runs sent {"id": 2, "status": "completed"},
+    {"content": "<item>", "status": "completed"}, {"completed": [2]}, {"status": "done"} and a single item object as
+    the body: none matched, every call answered "No change" and nemotron called todo 117 times in 66 turns."""
+    if not current:
+        return body
+    obj = None
+    if isinstance(body, str) and body.strip():
+        try:
+            from ..tools.agent_tools import loose_json
+            obj = loose_json(body)
+        except ValueError:
+            obj = None
+    # one object (or a list of objects) that names existing items with a status = ticks, not a new plan
+    objs = [obj] if isinstance(obj, dict) and not (obj.get("items") or obj.get("todos")) else (
+        obj if isinstance(obj, list) and obj and all(isinstance(o, dict) for o in obj) else [])
+    # The body is an update only when every object in it names an item the list already has (a new plan that shares
+    # a word or two with the old one is still a new plan).
+    if objs and not all(any(o.get(k) not in (None, "") for k in ("id", "index", "item", "number", "num", "n", "step",
+                                                                   "position", "task", "no", "completed", "tick"))
+                        or _item_no(current, o.get("content") or o.get("title") or o.get("text") or "")
+                        for o in objs):
+        return body
+    src = [spec] + objs
+    done, start, used_body = [], [], False
+    for o in src:
+        status = str(o.get("status") or o.get("state") or "").strip().lower()
+        ref = next((o[k] for k in ("id", "index", "item", "number", "num", "n", "step", "position", "task", "no")
+                    if o.get(k) not in (None, "")), None)
+        if ref is None and o is not spec:
+            ref = o.get("content") or o.get("title") or o.get("text")
+        nums = [n for n in (_item_no(current, r) for r in (ref if isinstance(ref, list) else [ref])) if n] if ref is not None else []
+        if nums and status in _DONE_WORDS:
+            done += nums
+        elif nums and status in _START_WORDS:
+            start += nums[:1]
+        elif not nums and status in _DONE_WORDS and o is spec:
+            spec["advance"] = True  # "status": "completed" alone: the item in progress is finished
+        for k in ("completed", "complete", "finished", "finish", "tick", "check", "mark_done", "done_items", "checked"):
+            v = o.get(k)
+            if v not in (None, "", False, [], "false"):
+                vals = v if isinstance(v, list) else re.split(r"[,;]\s*", str(v)) if not isinstance(v, bool) else []
+                done += [n for n in (_item_no(current, x) for x in vals) if n]
+        if o is not spec and (nums or any(k in o for k in ("completed", "complete", "tick", "mark_done"))):
+            used_body = True
+    if objs and len(objs) == len(current) and all(isinstance(o.get("content"), str) for o in objs) and not used_body:
+        return body  # a whole list with statuses: the normal new-list path handles it
+    if objs and used_body and len(objs) < len(current):
+        body = ""  # the body was the update, not a plan
+    elif objs and used_body and all(_item_no(current, o.get("content") or "") for o in objs):
+        body = ""  # the same items again with new statuses: applied as ticks below
+    if done:
+        prev = spec.get("done")
+        spec["done"] = list(dict.fromkeys(([prev] if prev and not isinstance(prev, list) else prev or []) + done))
+    if start and "start" not in spec:
+        spec["start"] = start[0]
+    return body
+
+
+def todo_noop(run, text: str) -> ToolResult:
+    """A todo call that changed nothing. Twice in a row: the list is closed for the task (the app ticks it from the
+    work done and at the final answer) and the model is told to move on - it never loops on the list again."""
+    run.todo_noops = getattr(run, "todo_noops", 0) + 1
+    if run.todo_noops >= 2:
+        run.todo_closed = True
+        return ToolResult(True, "No change again. The to-do list is now closed for this task and the app updates it "
+                          "itself. Do not call todo again: continue with the next real step using the other tools, or "
+                          "if everything is done, write the final answer now.")
+    return ToolResult(True, text)
 
 
 STUCK_WARN = 4  # failed tool rounds in a row: every 4th one the model is told to change the approach (never stopped)
@@ -214,6 +323,18 @@ def _job_path(job) -> str:
     return str(a.get("path") or "").replace("\\", "/").lower()
 
 
+def _mcp_server(job) -> str:
+    a = job[1] if job and isinstance(job[1], dict) else {}
+    return str(a.get("server") or "").lower() if job and job[0] == "mcp" else ""
+
+
+def _job_files(job) -> set[str]:
+    """Every file a call touches: its path and the source it reads (make_doc source=). A make_doc reading the .md that
+    a write_file of the same reply writes ran at the same moment, read the half-written file and said 'No content'."""
+    a = job[1] if isinstance(job[1], dict) else {}
+    return {str(a.get(k) or "").replace("\\", "/").lower().lstrip("./") for k in ("path", "source")} - {""}
+
+
 async def _run_jobs(run: "Run", ctx: ToolContext, jobs: list, offer, limits: dict, malformed: bool = False) -> list:
     """Runs one turn's tool calls. With parallel work on, consecutive read/lookup calls run together (results keep
     the call order); anything that changes files or runs commands runs alone, in order."""
@@ -228,7 +349,7 @@ async def _run_jobs(run: "Run", ctx: ToolContext, jobs: list, offer, limits: dic
             continue
         group = [i]
         if parallel and (job[0] in PARALLEL_SAFE or job[0] in PARALLEL_WRITE):
-            paths = {_job_path(job)} - {""}
+            paths = _job_files(job)
             wrote = job[0] in PARALLEL_WRITE
             while len(group) < 8 and group[-1] + 1 < len(jobs) and jobs[group[-1] + 1]:
                 nxt = jobs[group[-1] + 1]
@@ -237,10 +358,14 @@ async def _run_jobs(run: "Run", ctx: ToolContext, jobs: list, offer, limits: dic
                 if nxt[0] in PARALLEL_SAFE and wrote and nxt[0] in ("web_screenshot", "read_file", "list_dir",
                                                                      "search_code", "read_document"):
                     break
-                if nxt[0] in PARALLEL_SAFE and not (nxt[0] == "read_file" and _job_path(nxt) in paths):
+                if _mcp_server(nxt) and _mcp_server(nxt) in {_mcp_server(jobs[k]) for k in group}:
+                    # Two calls to one MCP server (playwright: one browser page) at the same moment raced each
+                    # other - navigate and read the console of a page not loaded yet. One server, one call at a time.
+                    break
+                if nxt[0] in PARALLEL_SAFE and not (nxt[0] == "read_file" and _job_files(nxt) & paths):
                     group.append(group[-1] + 1)
-                elif nxt[0] in PARALLEL_WRITE and _job_path(nxt) and _job_path(nxt) not in paths:
-                    paths.add(_job_path(nxt))  # a different file: written at the same time
+                elif nxt[0] in PARALLEL_WRITE and _job_path(nxt) and not (_job_files(nxt) & paths):
+                    paths |= _job_files(nxt)  # a different file: written at the same time
                     wrote = True
                     group.append(group[-1] + 1)
                 else:
@@ -339,10 +464,17 @@ async def _exec(run: Run, ctx: ToolContext, name: str, args: dict, body: str,
     # the per-error count above never sees two equal errors. Make the model change the approach, then stop it.
     # Counted per model turn: ten write_file calls of one turn refused for the same mistake (photos written as text)
     # are one wrong idea, and pausing every tool for it left the model unable to use the right tool.
+    ckey = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)}:{(body or '').strip()}"
+    if changes_state(name, args, body):
+        # Something was changed since (a daemon restarted, a config edited): the same status poll giving the same
+        # answer afterwards is news ("still not running"), not a loop - counted again from 1. A run polled `ruflo
+        # task status` between restarts and `daemon stop` itself got "same result 4 times" and a debug turn.
+        for k, v in list(run.outcomes.items()):
+            if k != ckey:
+                run.outcomes[k] = (v[0], 0, *v[2:])
     if name in ("run", "start", "browser_check", "web_screenshot", "edit_file", "read_file", "browser_snapshot"):
         # The same call giving the same result again and again (run create_db.php / read the .db, 15 times): each
         # one "succeeds", so no failure counter sees the loop. The third identical result is turned into a failure.
-        ckey = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}:{body.strip()}"
         digest = hashlib.sha1(re.sub(r"\d{2}:\d{2}:\d{2}|\b\d{9,}\b|process_id=\w+", "", res.output).encode()).hexdigest()
         prev = run.outcomes.get(ckey)
         count = prev[1] + 1 if prev and prev[0] == digest else 1
@@ -352,7 +484,10 @@ async def _exec(run: Run, ctx: ToolContext, name: str, args: dict, body: str,
                              "times: repeating it changes nothing. Work out why the result is not what you expect "
                              "(a script name run alone may only open the file - run it with its interpreter, e.g. "
                              "php create_db.php; a file may be written somewhere else; the error may be in another "
-                             "file), say it in one line, then do something different.", res.data)
+                             "file), say it in one line, then do something different.",
+                             # the command itself worked: a loop, not a failure - the final answer must not be held
+                             # as "the last command failed" (a status poll repeated 6 times was)
+                             {**(res.data or {}), "repeat_ok": True} if res.ok else res.data)
     if not res.ok:
         sig = (run.turn_idx, name, re.sub(r"[\w./\\-]+\.\w{1,5}\b|\d+", "#", res.output)[:160])
         run.turn_fail_sigs = {k: v for k, v in run.turn_fail_sigs.items() if k[0] == run.turn_idx}
@@ -441,13 +576,35 @@ async def _run_tool(run: Run, ctx: ToolContext, name: str, args: dict, body: str
     return res
 
 
+def _unwrap_args(name: str, args: dict, body: str) -> tuple[dict, str]:
+    """A call whose body is '<arguments>{"owner": ..}</arguments>' (nemotron, every GitHub call in a row): the wrapper
+    goes. A JSON object inside becomes the tool's arguments, except for mcp / google, whose body is that JSON. Values
+    that are only the wrapper's opening tag (fetch_url url="<arguments>") are dropped."""
+    from ..tools.agent_tools import unwrap_arg
+    inner = unwrap_arg(body or "")
+    if inner is body or not isinstance(inner, str):
+        return args, body
+    args = {k: v for k, v in args.items() if not re.fullmatch(r"\s*</?(arguments?|parameters?|args?)\b[^>]*>?\s*", str(v))}
+    from .continuity import TINY_ARGS
+    if name in TINY_ARGS and inner.startswith("{"):  # short-argument tools only: a file body stays a file body
+        try:
+            obj = json.loads(inner)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            return {**{k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict))
+                       else str(v) for k, v in obj.items()}, **args}, ""
+    return args, inner
+
+
 async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body: str,
                          allowed: set[str] | None = None) -> ToolResult:
     if name not in TOOLS:
         return ToolResult(False, f"Unknown tool '{name}'. Available: {', '.join(TOOLS)}")
-    if allowed is not None and name not in allowed and name in GROUPED and not run.restricted:
+    if allowed is not None and name not in allowed and not run.restricted:
         # The model knows the tool from the capability map and called it before opening its group: open the group
-        # and run the call, instead of an error that made it give up ("I have no text-to-speech tool").
+        # and run the call, instead of an error that made it give up ("I have no text-to-speech tool"). A skill's
+        # tools: list only narrows what is offered, so a tool outside it runs too (permissions still apply).
         run.unlocked |= {g for g, names in GROUP_TOOLS.items() if name in names}
         allowed = None
     if allowed is not None and name not in allowed:
@@ -459,6 +616,7 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
                                  "answer in chat, and only change files when asked).")
     if "_raw" in args:
         return ToolResult(False, "Invalid JSON arguments for this tool call. Send a valid JSON object.")
+    args, body = _unwrap_args(name, args, body)
     # The same read-only call twice in one task (a model looping over the same page) is answered from memory.
     key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}:{body.strip()}"
     if name in REPEAT_GUARD and key in run.seen:
@@ -476,8 +634,8 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
                                      "as above. Use the exact paths that result showed (they are from the working "
                                      "folder), or do the next step (write, run, start) now.")
         run.seen.add(fs_key)
-    elif name in ("write_file", "edit_file", "delete_file", "run", "start", "stop", "mcp", "make_doc", "edit_video",
-                  "fetch_url"):  # fetch_url can save a download
+    elif name in ("write_file", "edit_file", "delete_file", "run", "start", "stop", "mcp", "google", "make_doc",
+                  "edit_video", "fetch_url"):  # fetch_url / google can save a download
         run.fs_epoch += 1
     if name == "need_tools":  # opens tool groups for the next turns (no trace step: it is bookkeeping)
         raw_groups = args.get("groups") or body or ""
@@ -514,6 +672,38 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
                 except ValueError:
                     spec["add"] = [spec["add"].strip("[]")]
             body = ""
+        if run.todo_closed:
+            # The model kept calling todo without changing anything: the list is the app's from here on.
+            return ToolResult(True, "The to-do list is closed for this task (it is updated by the app now). Do not call "
+                              "todo again: do the next real step with the other tools, or write the final answer.")
+        before = json.dumps(run.todos, ensure_ascii=False)
+        body = todo_intent(spec, body, run.todos)
+        # Native calls send every field, empty ones too (advance=false, done=[], start=0, add=[] beside a new list):
+        # those keys used to make the call a "short update", so the new list was dropped and an item called "[]"
+        # appeared (nemotron: "the todo list seems to be getting reset"). Only fields that say something count.
+        for k in ("advance", "done", "start", "add"):
+            v = str(spec.get(k, "")).strip().lower()
+            if k in spec and (v in ("", "[]", "none", "null", "false", "0", "no")
+                              or (k == "start" and not re.search(r"[1-9]", v))):
+                spec.pop(k)
+        from ..tools.agent_tools import loose_json
+        try:
+            listed = loose_json(body) if isinstance(body, str) and body.strip() else None
+        except ValueError:
+            listed = None
+        if isinstance(listed, dict):
+            listed = listed.get("items") or listed.get("todos")
+        if listed:  # a whole list: a new plan, never patched by the other fields of the same call
+            for k in ("advance", "done", "start", "add"):
+                spec.pop(k, None)
+        elif isinstance(body, str) and re.fullmatch(r"\s*(?:\[\s*\]|null|none)?\s*", body, re.I):
+            body = ""
+        if run.todos and not body.strip() and not ({"advance", "done", "start", "add"} & spec.keys()):
+            # Nothing to change: the list as it is, instead of "The list is empty" (the model then believed its
+            # list was gone and retyped it again and again).
+            from .continuity import todo_board
+            return todo_noop(run, f"No change. The to-do list as the app keeps it: {todo_board(run)}. Tick an "
+                             "item with done=[its number] or advance=true; do not retype the list.")
         if run.auto_ticked and str(spec.get("advance", "")).lower() in ("true", "1", "yes"):
             # The app already ticked the item the model just finished (a command / file named it): its "advance"
             # means that one, so it must not finish the next item too (step 2 showed done before it started).
@@ -587,8 +777,13 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
                                          and t["content"] not in was_done], "work": work_done(run)}
             run.todos = todos
             _emit(run, "todos", todos=run.todos)
+            if json.dumps(run.todos, ensure_ascii=False) == before:
+                return todo_noop(run, res.output)
+            run.todo_noops = 0
         return res
-    first_line = body.strip().splitlines()[0][:120] if body.strip() else ""
+    # a label is plain text: "Bilgisayar Donanım Raporu</h1>" was shown as the step's title
+    first_line = next((t for t in (re.sub(r"<[^>]*>?", " ", ln).strip() for ln in body.strip().splitlines()[:8]) if t),
+                      "")[:120] if body.strip() else ""
     argv = args.get("argv") if isinstance(args.get("argv"), list) else None
     label = args.get("path") or args.get("url") or args.get("id") or first_line or (" ".join(map(str, argv))[:120] if argv else name)
     if name == "team":  # never the raw JSON of the members
@@ -597,6 +792,9 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
                            if isinstance(m, dict))[:160] or name
     elif name == "mcp":
         label = f"{args.get('server', '?')}/{args.get('tool', '?')}"
+    elif name == "google":  # "GET gmail/v1/users/me/messages" - the API and path, not the whole long URL
+        u = re.sub(r"^https://(?:www\.)?", "", str(args.get("url") or "")).replace(".googleapis.com", "")
+        label = f"{str(args.get('method') or 'GET').upper()} {u.split('?')[0][:110]}"
     elif name == "save_catalog":
         label = f"{args.get('kind', 'skills')}/{args.get('name') or ''}".rstrip("/")
     elif name == "web_screenshot":
@@ -638,7 +836,26 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
 
 
 # The user asks for something to be run or measured (not only written): printed code is not an answer.
-RUN_ASK = re.compile(r"[çc]al[ıi][şs]t[ıi]r|\brun\b|execute|test\s*et|dene\b|[öo]l[çc]|measure|benchmark|sonucu?\s*s[öo]yle",
+# A run that only looks (status, list, logs, version, existence checks, reading a file) changes nothing.
+READ_RUN = re.compile(r"^\s*(?:start-sleep[^;]*;\s*|sleep\s+\d+\s*[;&]+\s*)?(?:get-content|gc|type|cat|more|less|head|tail|"
+                      r"ls|dir|gci|get-childitem|get-item|test-path|resolve-path|select-string|sls|grep|rg|findstr|echo|"
+                      r"write-output|start-sleep|sleep|timeout(?:\.exe)?\s+/t|get-command|gcm|where(?:\.exe)?|which|get-process|get-service|tasklist|netstat|"
+                      r"git\s+(?:status|log|diff|show|branch)|[\w.@/-]+(?:\s+[\w-]+)?\s+(?:status|list|ls|show|info|"
+                      r"--version|-v|-V|--help|-h|help|logs?|get|doctor)\b(?!\s*\S*\s*(?:--fix|--set)))", re.I)
+STATE_TOOLS = {"write_file", "edit_file", "delete_file", "move_file", "start", "stop", "make_doc", "mcp_add",
+               "browser_click", "browser_type", "browser_fill", "google"}
+
+
+def changes_state(name: str, args: dict | None, body: str) -> bool:
+    if name in STATE_TOOLS:
+        return name != "google" or str((args or {}).get("method") or "GET").upper() != "GET"
+    if name == "run":
+        cmd = (body or str((args or {}).get("command") or "") or " ".join(map(str, (args or {}).get("argv") or []))).strip()
+        return bool(cmd) and not all(READ_RUN.match(part) for part in re.split(r"\s*(?:;|&&|\|\|)\s*", cmd) if part.strip())
+    return False
+
+
+RUN_ASK = re.compile(r"[çc]al[ıi][şs]t[ıi]r|\brun\b|execute|test\s*e[td]|dene\b|[öo]l[çc]|measure|benchmark|sonucu?\s*s[öo]yle",
                      re.I)
 
 

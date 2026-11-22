@@ -175,6 +175,9 @@ async def gate(ctx: ToolContext, op: dict, decision: policy.Decision, preview=No
                     "app and your task, and the user's other programs. Nothing was run. To free a port, start your server "
                     "on another free port; stop a server you started here with its process_id (stop tool), or one other "
                     "process by its PID only.")
+        if decision.category == "protected":
+            return ("DENIED: secrets.json (the user's API keys) and aiiq.db (all chats) belong to the app and are never "
+                    "read or changed by a task. Nothing was run. Do the work without them.")
         return f"DENIED by policy ({decision.category}). This operation is never allowed."
     if decision.action == "ask":
         ctx.step("approval", {"op": op, "category": decision.category})
@@ -201,6 +204,9 @@ def clean_file_content(text: str) -> str:
     text = APP_LINES.sub("", text)
     if m := FENCED.match(text):
         text = m.group(1)
+    if (s := text.strip()).startswith("<![CDATA[") and (s.endswith("]]>") or "]]>" not in s):
+        # The whole body wrapped XML style (seen live in .md sources): the wrapper is not part of the file.
+        text = s[len("<![CDATA["):].removesuffix("]]>")
     lines = text.rstrip().split("\n")
     while lines and (EOF_LINE.match(lines[-1]) or not lines[-1].strip()):
         lines.pop()

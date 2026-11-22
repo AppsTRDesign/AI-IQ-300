@@ -70,6 +70,9 @@ class Run:
     gate_lifted: bool = False  # the model asked for work tools (need_tools): lift that limit next turn
     todos_auto: bool = False  # the list was opened by the app (from the request / the written plan), not the model
     auto_ticked: int = 0  # items the app ticked itself since the model's last todo call (its advance means those)
+    todo_noops: int = 0  # todo calls in a row that changed nothing
+    todo_closed: bool = False  # the model looped on todo: the list is the app's for the rest of the task
+    bookkeeping_turns: int = 0  # turns in a row with only todo / need_tools / use_skill / remember calls
     todo_claims: dict | None = None  # items the model's last todo call marked done + the work count then
     # A rewrite was requested: the shown answer stays on screen until the new text starts (no blank flicker).
     hold: bool = False
@@ -207,9 +210,9 @@ TOOL_TITLES = {"write_file": "file", "read_file": "read", "read_document": "read
                "stop": "stop", "web_search": "search", "research": "search", "fetch_url": "fetch", "browser_check": "visual",
                "make_doc": "document", "doc_template": "document", "delete_file": "delete", "use_skill": "skill", "edit_file": "edit",
                "search_code": "grep", "symbols": "grep", "ask_model": "delegate", "remember": "memory",
-               "impact": "grep", "mcp": "mcp", "mcp_add": "mcp", "team": "team", "web_screenshot": "screenshot", "stock_photo": "photo", "generate_image": "image_gen", "edit_video": "video_edit", "animate_image": "video_gen", "generate_video": "video_gen", "mobile_env": "command", "mcp_search": "mcp", "inspect_media": "inspect", "speech_to_text": "transcribe", "text_to_speech": "speech","save_catalog": "catalog",
+               "impact": "grep", "mcp": "mcp", "mcp_add": "mcp", "google": "google", "team": "team", "web_screenshot": "screenshot", "stock_photo": "photo", "generate_image": "image_gen", "edit_video": "video_edit", "animate_image": "video_gen", "generate_video": "video_gen", "mobile_env": "command", "mcp_search": "mcp", "inspect_media": "inspect", "speech_to_text": "transcribe", "text_to_speech": "speech","save_catalog": "catalog",
                "places": "places", **{n: "browser" for n in BROWSER_TOOLS}}
 
 
 # Step kinds that are actions worth remembering in later turns (see _history).
-ACTION_KINDS = {"photo", "image_gen", "video_gen", "video_edit", "inspect", "speech", "transcribe", "file", "edit", "delegate", "memory", "mcp", "team", "command", "process", "document", "delete", "skill", "search", "fetch", "visual", "screenshot", "catalog", "browser"}
+ACTION_KINDS = {"photo", "image_gen", "video_gen", "video_edit", "inspect", "speech", "transcribe", "file", "edit", "delegate", "memory", "mcp", "google", "team", "command", "process", "document", "delete", "skill", "search", "fetch", "visual", "screenshot", "catalog", "browser"}

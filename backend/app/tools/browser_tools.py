@@ -399,6 +399,28 @@ FIELD_NEAR_JS = r"""(e) => {
 
 
 async def _type(ctx, args):
+    if not any(args.get(k) for k in ("ref", "selector", "target", "field", "label")):
+        # no field named: typed into the focused element, as a person types after clicking a field (a canvas game, a
+        # code editor, a field the last click focused)
+        text = str(args.get("text") if args.get("text") is not None else args.get("value") or "")
+        page = AGENT.page
+        info = await page.evaluate("() => { const e = document.activeElement; return e && e !== document.body ?"
+                                   " {tag: e.tagName.toLowerCase(), password: e.type === 'password',"
+                                   " card: /^cc-/.test(e.autocomplete || '')} : null; }")
+        if info:
+            _guard_type(ctx, {**info, "editable": True}, args)
+        AGENT.acted = True
+        if _flag(args.get("slowly")):
+            await page.keyboard.type(text, delay=35)
+        else:
+            await page.keyboard.insert_text(text)
+        where = f"the focused <{info['tag']}>" if info else "the page (nothing focused: click the field first)"
+        msg = f"typed {'***' if info and (info.get('password') or info.get('card')) else repr(text[:60])} into {where}"
+        if _flag(args.get("submit")):
+            await page.keyboard.press("Enter")
+            await AGENT.settle(page)
+            msg += f" and pressed Enter -> {page.url}"
+        return msg, {}
     loc, what, info = await AGENT.target(str(args.get("ref") or ""), str(args.get("selector") or ""),
                                          str(args.get("target") or args.get("field") or args.get("label") or ""))
     AGENT.acted = True
@@ -529,10 +551,28 @@ async def _scroll(ctx, args):
     d = str(args.get("direction") or "down").lower()
     n = int(max(1, min(_num(args.get("amount"), 3), 20)) * 300)
     dx, dy = {"down": (0, n), "up": (0, -n), "right": (n, 0), "left": (-n, 0)}.get(d, (0, n))
+    # wheel scrolls what is under the mouse: the pointer goes to the middle of the window first (it stayed at 0,0 over
+    # a fixed header and nothing moved); wheel does not wait for the scroll, so the position is read after a pause
+    POS = ("() => { let p = document.elementFromPoint(innerWidth / 2, innerHeight / 2), inner = 0;"
+           " for (; p && p !== document.body && p !== document.documentElement; p = p.parentElement)"
+           "  if (p.scrollHeight > p.clientHeight + 2 || p.scrollWidth > p.clientWidth + 2) inner += p.scrollTop + p.scrollLeft;"
+           " return [Math.round(scrollX), Math.round(scrollY), document.documentElement.scrollHeight - innerHeight, inner]; }")
+    vp = page.viewport_size or await page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+    before = await page.evaluate(POS)
+    await page.mouse.move(vp["width"] / 2, vp["height"] / 2)
     await page.mouse.wheel(dx, dy)
     await asyncio.sleep(0.4)
-    pos = await page.evaluate("() => [Math.round(scrollY), document.documentElement.scrollHeight - innerHeight]")
-    return f"scrolled {d}: now at {pos[0]}px of {max(pos[1], 0)}px", {}
+    pos = await page.evaluate(POS)
+    note = ""
+    if pos[3] != before[3] and pos[:2] == before[:2]:
+        return f"scrolled {d} inside the panel under the middle of the window (the page itself stays at {pos[1]}px)", {}
+    if pos[:2] == before[:2]:
+        # the wheel moved an inner panel, or the page ignores wheel events: the window itself is scrolled
+        pos = await page.evaluate("([dx, dy]) => { scrollBy(dx, dy); return [Math.round(scrollX), Math.round(scrollY),"
+                                  " document.documentElement.scrollHeight - innerHeight]; }", [dx, dy])
+        if pos[:2] == before[:2]:
+            note = " (the window did not move: the end of the page, or a scrolling panel - give ref= of that panel)"
+    return f"scrolled {d}: now at {pos[1]}px of {max(pos[2], 0)}px{note}", {}
 
 
 WAIT_MAX = 60  # seconds: a page that shows nothing after a minute is broken, not slow
@@ -558,14 +598,30 @@ async def _wait(ctx, args):
             if args.get("gone"):
                 await page.get_by_text(str(args["gone"])).first.wait_for(state="hidden", timeout=1000)
                 return f"'{args['gone']}' is gone"
+            if args.get("selector"):
+                # a CSS / Playwright selector; state visible (default), hidden, attached or detached
+                state = str(args.get("state") or "visible").lower()
+                state = state if state in ("visible", "hidden", "attached", "detached") else "visible"
+                await page.locator(str(args["selector"])).first.wait_for(state=state, timeout=1000)
+                return f"{args['selector']} is {state}"
             if args.get("url"):
-                await page.wait_for_url(re.compile(re.escape(str(args["url"]))), timeout=1000)
+                u = str(args["url"])
+                if "*" in u:  # a glob ("**/dashboard"), as Playwright's wait_for_url takes it
+                    pat = re.compile("^" + ".*".join(re.escape(p) for p in re.split(r"\*+", u)) + "$")
+                else:
+                    pat = re.compile(re.escape(u))
+                await page.wait_for_url(pat, timeout=1000)
                 return f"address now {page.url}"
+            if args.get("load"):  # load / domcontentloaded / networkidle
+                st = str(args["load"]).lower()
+                await page.wait_for_load_state(st if st in ("load", "domcontentloaded", "networkidle") else "load",
+                                               timeout=1000)
+                return f"page reached {st}"
         except Exception:  # noqa: BLE001 - not yet
             return ""
         return ""
 
-    if args.get("text") or args.get("gone") or args.get("url"):
+    if any(args.get(k) for k in ("text", "gone", "url", "selector", "load")):
         while True:
             if done := await met():
                 return done, {}
@@ -588,6 +644,8 @@ async def _wait(ctx, args):
                 state = "blank" if blank else "showing other content"
                 raise BrowserError(f"waited {timeout:.0f}s: not found (the page is {state}; browser_snapshot shows "
                                    "what is there, browser_inspect console / network shows errors)")
+    if args.get("ms") in (None, "") and args.get("seconds") not in (None, ""):
+        args["ms"] = _num(args["seconds"], 1) * 1000
     ms = int(max(0, min(_ms(args.get("ms"), 1000), 15000)))
     await asyncio.sleep(ms / 1000)
     return f"waited {ms} ms", {}
@@ -672,6 +730,41 @@ JS_RESULT = r"""(async (fn) => {
 })"""
 
 
+# Runs the code string `c` (in the page's global scope, as the console does) and returns a thunk for JS_RESULT.
+JS_RUN = r"""() => {
+  const ev = (0, eval);
+  let v, fnLike = /^\s*(async\b|function\b|\(?\s*[\w$,\s]*\)?\s*=>)/.test(c);
+  try { v = ev('(' + c + '\n)'); }  // one expression (also an object literal {a: 1})
+  catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    fnLike = false;
+    try { v = ev(c); }  // statements: the last value, as the console shows it
+    catch (e2) {
+      // `return x` or `await x` at the top: the code is a function body (what models often send)
+      if (!(e2 instanceof SyntaxError) || !/return|await|yield/.test(e2.message)) throw e2;
+      try { v = ev('(async () => (' + c + '\n))')(); }  // one expression using await
+      catch (e3) { if (!(e3 instanceof SyntaxError)) throw e3; v = ev('(async () => {\n' + c + '\n})')(); }
+    }
+  }
+  return typeof v === 'function' && fnLike && v.length === 0 ? v() : v;
+}"""
+
+
+async def _globals_hint(name: str) -> str:
+    """A name the code used that is not a global of the page: the page's own globals, so the model looks there."""
+    try:
+        own = await AGENT.page.evaluate(
+            "() => { const f = document.createElement('iframe'); f.style.display = 'none'; document.body.appendChild(f);"
+            " const base = new Set(Object.getOwnPropertyNames(f.contentWindow)); f.remove();"
+            " return Object.getOwnPropertyNames(window).filter((k) => !base.has(k) && !/^(__|webkit|on)/.test(k)).slice(0, 40); }")
+    except Exception:
+        own = []
+    return (f" - '{name}' is not a global of this page: it is declared inside a function, a module "
+            "(<script type=module>) or a closure, so the console cannot reach it. "
+            + (f"The page's own globals: {', '.join(own)}. " if own else "The page has no globals of its own. ")
+            + "Read the state from the DOM (document.querySelector...) or from one of these globals instead.")
+
+
 async def _inspect(ctx, args):
     what = str(args.get("what") or "console")
     tid = AGENT.tab_id()
@@ -720,17 +813,16 @@ async def _inspect(ctx, args):
         if ctx.mode == "ask":
             await _ask(ctx, {"tool": "browser_inspect", "code": code[:500]}, "runs JavaScript in the page")
         try:
-            val = await AGENT.page.evaluate(
-                JS_RESULT + "(" + (code if re.match(r"\s*(\(|async\b|function\b)", code) else f"() => ({code})") + ")")
+            # The code is handed over as a string and run like a console does (JS_RUN): an expression, several
+            # statements (value of the last one), or a function / arrow function (called). Glued into the source
+            # before, "(S.mode)" was taken for a function ("fn is not a function") and a stray quote broke the whole
+            # call; a page's own names were looked up the same way a console looks them up.
+            val = await AGENT.page.evaluate("(c) => (" + JS_RESULT + ")(" + JS_RUN + ")", code)
         except Exception as e:
-            if "SyntaxError" not in str(e):
-                raise BrowserError(f"JavaScript error: {str(e).splitlines()[0][:300]}") from e
-            # Several statements ("const p = game.player; p.x + ',' + p.y") are not one expression: run them as a
-            # script and give back the value of the last one, as a console does (models wrote this again and again).
-            try:
-                val = await AGENT.page.evaluate("(c) => (" + JS_RESULT + ")(() => (0, eval)(c))", code)
-            except Exception as e2:
-                raise BrowserError(f"JavaScript error: {str(e2).splitlines()[0][:300]}") from e2
+            msg = str(e).splitlines()[0][:300]
+            if m := re.search(r"ReferenceError: (\w+) is not defined", msg):
+                msg += await _globals_hint(m.group(1))
+            raise BrowserError(f"JavaScript error: {msg}") from e
         if val == "__aiiq_undefined__":
             return ("undefined - the expression has no value (a name that does not exist, or a statement without a "
                     "result). Check the name, e.g. Object.keys(window).filter(k => /game/i.test(k))"), {}
@@ -890,7 +982,8 @@ async def browser_click(ctx, args, body):
 
 
 @tool("browser_type", '<tool name="browser_type" ref="e7" submit="false">text to type</tool>',
-      "Type text into a field (by ref or selector). Replaces the field's text unless clear=false; slowly=true types "
+      "Type text into a field (by ref or selector; with neither, into the focused element - e.g. after clicking a "
+      "canvas or code editor). Replaces the field's text unless clear=false; slowly=true types "
       "key by key (for fields that react to each key); submit=true presses Enter afterwards. Passwords: on local "
       "development sites, and in Full access mode on the site the user's request names; card numbers only on local "
       "development sites (test values); otherwise use browser_handoff.",
@@ -938,9 +1031,15 @@ async def browser_scroll(ctx, args, body):
 
 
 @tool("browser_wait", '<tool name="browser_wait" text="Saved"></tool>',
-      "Wait until a text appears (text), disappears (gone) or the address contains url; else wait ms milliseconds. "
-      "timeout in seconds (default 15, max 60); a page that stays blank with errors ends the wait at once.",
-      {"text": S("Text to wait for"), "gone": S("Text to wait to disappear"), "url": S("Part of the address to wait for"),
+      "Wait until a text appears (text), disappears (gone), an element reaches a state (selector + state), the address "
+      "matches url (a part of it, or a glob like **/done) or the page reaches a load state (load); else wait ms "
+      "milliseconds. timeout in seconds (default 15, max 60); a page that stays blank with errors ends the wait at once.",
+      {"text": S("Text to wait for"), "gone": S("Text to wait to disappear"),
+       "url": S("Part of the address, or a glob (**/dashboard), to wait for"),
+       "selector": S("CSS selector to wait for"),
+       "state": S("With selector: visible (default), hidden, attached, detached",
+                  enum=["visible", "hidden", "attached", "detached"]),
+       "load": S("Load state to wait for", enum=["load", "domcontentloaded", "networkidle"]),
        "ms": {"type": "integer", "description": "Plain wait in ms (max 15000)"},
        "timeout": {"type": "integer", "description": "Seconds"}})
 async def browser_wait(ctx, args, body):
