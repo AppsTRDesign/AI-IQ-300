@@ -25,8 +25,9 @@ def check() -> int:
     pkg = json.loads((ROOT / "frontend" / "package.json").read_text(encoding="utf-8")).get("version")
     if pkg != version:
         problems.append(f"frontend/package.json has {pkg}, VERSION has {version}")
-    for name, pattern in (("README.md", rf"New in v{re.escape(version)}\b"),
-                          ("README.tr.md", rf"v{re.escape(version)} ile gelenler"),
+    # Release notes live in CHANGELOG(.tr).md; the READMEs only link to them.
+    for name, pattern in (("CHANGELOG.md", rf"New in v{re.escape(version)}\b"),
+                          ("CHANGELOG.tr.md", rf"v{re.escape(version)} ile gelenler"),
                           ("PROJECT_STATE.md", rf"## v{re.escape(version)}\b"),
                           ("PROJECT_STATE.tr.md", rf"## v{re.escape(version)}\b")):
         f = ROOT / name
