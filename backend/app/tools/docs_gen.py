@@ -39,6 +39,26 @@ MONO_STACK = '"Cascadia Mono", Consolas, "DejaVu Sans Mono", "Courier New", mono
 RTL_CHARS = re.compile(r"[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]")
 
 
+# A heading with no space after its #s ("###Ekran Görüntüleme", a weak model's Markdown): CommonMark keeps it as a
+# paragraph and "###" was printed in the PDF. A short line with one run of #s and a letter right after it is a heading;
+# "#1", "#hashtag #other" and code (masked before this) stay as they are.
+_TIGHT_HEADING = re.compile(r"^( {0,3})(#{1,6})(?=[^\W\d_])([^\n#]{1,150})$", re.M)
+_HTML_MD_HEADING = re.compile(r"<p>\s*(#{1,6})[ \t]*([^<#\n][^<\n]{0,150}?)\s*</p>")
+
+
+def _space_headings(text: str) -> str:
+    def fix(m: re.Match) -> str:
+        if len(m.group(2)) == 1 and " " not in m.group(3).strip():  # a lone "#hashtag" line
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)} {m.group(3)}"
+    return _TIGHT_HEADING.sub(fix, text)
+
+
+def _html_md_headings(text: str) -> str:
+    """<p>### Heading</p> in HTML content (Markdown mixed into a tag): a real <h3>."""
+    return _HTML_MD_HEADING.sub(lambda m: f"<h{len(m.group(1))}>{m.group(2).strip()}</h{len(m.group(1))}>", text)
+
+
 # ---------------------------------------------------------------- source: Markdown / HTML -> one HTML structure
 class Source:
     """The document as an HTML fragment (or a full HTML page the user designed) plus its formulas."""
@@ -113,6 +133,7 @@ class Source:
         masked = self._math(masked)
         # bare URLs become links (commonmark autolinks); ones already inside [text](url) or <...> stay as they are
         masked = re.sub(r"(?<![<(\[\"'=/\w])(https?://[^\s<>()\[\]\"']+[^\s<>()\[\]\"'.,;:!?])", r"<\1>", masked)
+        masked = _space_headings(masked)
         masked = re.sub(r"CODEPH(\d+)X", lambda m: stash[int(m.group(1))], masked)
         # page breaks the model may write
         masked = re.sub(r"^\s*(\\pagebreak|\\newpage|<!--\s*pagebreak\s*-->)\s*$", '<div class="page-break"></div>',
@@ -126,7 +147,7 @@ class Source:
         out = []
         i = 0
         while i < len(parts):
-            out.append(self._math(parts[i]) if i % 3 == 0 else parts[i])
+            out.append(self._math(_html_md_headings(parts[i])) if i % 3 == 0 else parts[i])
             i += 1 if i % 3 == 0 else (2 if i % 3 == 1 else 1)
         return self._restore("".join(out))
 

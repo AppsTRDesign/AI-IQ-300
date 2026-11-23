@@ -144,16 +144,15 @@ def test_write_and_make_doc_of_its_source_never_run_together():
 
 
 def test_inspect_media_reads_a_pdf(tmp_path, monkeypatch):
-    import fitz  # pymupdf
+    from PIL import Image, ImageDraw  # an app dependency (pymupdf is not one: CI had no fitz)
     from app.tools import visual
 
     async def no_vision(*a, **k):  # never a real vision model in a test (a local CPU model kept pytest from exiting)
         return None
     monkeypatch.setattr(visual, "describe_for", no_vision)
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), "Kozan hava durumu raporu")
-    doc.save(tmp_path / "r.pdf")
+    img = Image.new("RGB", (600, 800), "white")
+    ImageDraw.Draw(img).text((72, 72), "Kozan hava durumu raporu", fill="black")
+    img.save(tmp_path / "r.pdf", "PDF")
     res = asyncio.run(TOOLS["inspect_media"].fn(_ctx(tmp_path), {"path": "r.pdf", "transcript": "false"}, ""))
     assert "AttributeError" not in res.output
 
