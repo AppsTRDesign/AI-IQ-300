@@ -11,6 +11,26 @@ Otonom, çoklu ajan destekli, yerel ve bulut LLM'leri ile çalışan tam kapsaml
 - **Son Başarılı İşlem:** v0.10.0 — profesyonel belge motoru (Chromium PDF/HTML + KaTeX, tasarımlı DOCX/PPTX/XLSX), ayarlanabilir akış zaman aşımları ve parçalı yazma, run_state.json ile kesinti sonrası devam, paralel araç yürütme, canlı todos, çok dilli niyet tablosu, zengin mesaj kutusu, mesaj sayfalama/kopyala/sil/alıntı, sağ tık menüleri, gruplu değişiklik kartı, medya oynatıcılar, servis kartları, kota/bakiye ekranı.
 - **Önceki:** v0.6 — kesintisiz orkestrasyon (devam ettirme, sessiz araç yazımında heartbeat, görev içi bağlam kırpma/özetleme, canlı bağlam sayımı, takılı adım temizliği, tekrar eden çağrı koruması, asılsız dosya iddiası koruması), todo aracı + canlı yapılacaklar listesi, otomatik yetenek algılama (use_skill), bilgi sorularında salt-okuma araçlar, arama alaka filtresi + Bing URL çözümü, canlı gruplu adımlar, model seçiciden bağlam düzenleme (ayarlarla senkron), aç/kapat popover'lar, çizim ekranı, klasör yükleme, hedef modu, belge kartları ve önizleme (xlsx/docx/pdf/pptx), kökteki gereksiz docs/ kaldırıldı.
 
+## v0.20.0 (2026-11-23): ajan değerlendirmesi, iz kayıtları, belge başlıkları
+- **`agents/trace.py`:**
+  - Her görevin sonunda `record`, `.session/traces/<run>.jsonl` yazar: bir run satırı, model turu başına bir satır (`run.perf`'ten) ve adım başına bir satır, zaman sırasıyla. Uzun değerler kısaltılır, ilk hata satırı tutulur.
+  - Asla hata fırlatmaz; son 30 iz kaydı tutulur. `summary()` turları, araç çağrılarını ve hataları, yeniden denemeleri, model değişimlerini ve hata ayıklama turlarını sayar.
+  - `GET /api/sessions/{sid}/traces/{run}` bir iz kaydını döndürür.
+- **`eval/`:**
+  - `tasks.py`: TR/EN metinli, başlangıç dosyalı ve denetleyicili 5 görev. Denetleyiciler Playwright'ı, gizli testlerle bir kopya üzerinde pytest'i, python-docx ile pypdfium2'yi ve iz kaydını kullanır.
+  - `run_eval.py`: geçici AIIQ_DATA üzerinde ayrı bir uygulama (ayarlar ve anahtarlar `data/`'dan kopyalanır, kopya silinir), görev başına bir sohbet, `--timeout` aşılınca iptal; sonra `eval/reports/<zaman>/` içinde `report.md`, `report.json` ve iz kayıtları.
+  - `net_proxy.py`: `/_ctl/cut` uçlu geçiş vekili. Açık akışları koparır ve 8 sn boyunca AIIQ_NET_SIM dosyasını yazar. Sağlayıcının `base_url`'üne yalnızca `net_drop` sırasında uygulanır.
+  - `mock_solver.py`: 5 görevin hepsini çözer (CI adımı "Eval self-test").
+- **`docs_gen`:**
+  - `_space_headings`: boşluksuz `###Başlık` başlık olur. Maskelenmiş Markdown üzerinde çalışır, bu yüzden koda dokunulmaz; tek başına `#etiket` ve `#1` olduğu gibi kalır.
+  - `_html_md_headings`: pre/code dışında `<p>### X</p>` `<h3>` olur.
+- **`browser_tools.key_text`:** tuşlar `keys` / `text` / `key` / `press` alanından ya da eleman kimliği olmayan bir `ref`'ten alınır. evren:auto üzerindeki eval `web_app` görevi buldu.
+- **`checks.in_named_folder` / `_in_folder`:** istekte adı geçen tek bir klasör ("X/ klasöründe", "in the X/ folder") ve yalın dosya adları `X/ad` olur. `missing_deliverables` bunları o adlı bir klasörün içinde ister; başka bir yerde yalnızca adıyla bulunan dosya sayılmaz.
+- **İlk gerçek çalıştırmadan sonra denetleyici düzeltmeleri:**
+  - `check_multi` Python adlarını `tokenize` ile okur; docstring'deki İngilizce "price" sözcüğü kalıntı sayılmaz.
+  - `check_web` yanlış klasöre yazılmış sayfayı yine test eder; "var mı" kontrolleri geçmez ve bulunduğu yeri söyler.
+- **Testler:** `test_doc_headings`, `test_trace`, `test_eval_checks`, `test_browser_key_args`. `test_round_1122` PDF'ini artık Pillow ile üretiyor, çünkü pymupdf bir bağımlılık değil (CI bunda düşmüştü).
+
 ## v0.19.0 (2026-11-23): güvenli paralel yazım, geri alma, uç durumlar, CI
 - **`tools/safe_io.py`:**
   - Dosya başına asyncio kilidi: write_file ve edit_file bunun altında çalışır.

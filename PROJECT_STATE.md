@@ -29,6 +29,26 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
 
+## v0.20.0 (2026-11-23): agent evaluation, traces, document headings
+- **`agents/trace.py`:**
+  - At the end of each task, `record` writes `.session/traces/<run>.jsonl`: a run line, one line per model turn (from `run.perf`), and one per step in time order. Long values are cut, and the first error line is kept.
+  - It never raises, and the last 30 traces are kept. `summary()` counts turns, tool calls and errors, retries, fallbacks and debug rounds.
+  - `GET /api/sessions/{sid}/traces/{run}` returns a trace.
+- **`eval/`:**
+  - `tasks.py`: 5 tasks with TR/EN prompts, seeds and checkers. The checkers use Playwright, pytest on a copy with hidden tests, python-docx and pypdfium2, plus the trace.
+  - `run_eval.py`: an isolated app on a temporary AIIQ_DATA (settings and secrets copied from `data/`, the copy deleted), one chat per task, cancel on `--timeout`, then `report.md`, `report.json` and the traces in `eval/reports/<time>/`.
+  - `net_proxy.py`: pass-through with `/_ctl/cut`. It breaks the open streams and writes the AIIQ_NET_SIM file for 8 s. It is applied to the provider's `base_url` only during `net_drop`.
+  - `mock_solver.py`: solves all 5 tasks (the CI step "Eval self-test").
+- **`docs_gen`:**
+  - `_space_headings`: `###Heading` with no space becomes a heading. It runs on the masked Markdown, so code is untouched; a lone `#hashtag` and `#1` are left alone.
+  - `_html_md_headings`: `<p>### X</p>` becomes `<h3>` outside pre/code.
+- **`browser_tools.key_text`:** keys from `keys` / `text` / `key` / `press`, or from a `ref` that is not an element id. Found by eval `web_app` on evren:auto.
+- **`checks.in_named_folder` / `_in_folder`:** one folder named in the request ("X/ klasöründe", "in the X/ folder") plus bare file names become `X/name`. `missing_deliverables` requires them inside a folder of that name, so a file found only by name elsewhere does not count.
+- **Eval checker fixes after the first real run:**
+  - `check_multi` reads Python names with `tokenize`, so the English word "price" in a docstring is not a leftover.
+  - `check_web` still tests a page written in the wrong folder; the "exists" checks fail and say where it was found.
+- **Tests:** `test_doc_headings`, `test_trace`, `test_eval_checks`, `test_browser_key_args`. `test_round_1122` now builds its PDF with Pillow, because pymupdf is not a dependency (CI failed on it).
+
 ## v0.19.0 (2026-11-23): safe parallel writes, undo, edge cases, CI
 - **`tools/safe_io.py`:**
   - Per-file asyncio locks: write_file and edit_file run under them.

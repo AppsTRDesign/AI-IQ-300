@@ -369,6 +369,19 @@ A skills install command copies `SKILL.md` instructions into an agent's skills f
 
 **How it works:** a picker lists the skills (grouped, searchable, with descriptions; already imported ones are marked). Each picked skill is saved with its source, so importing again updates it instead of making a copy; a built-in skill with the same name is never overwritten (the new one gets the owner's name in front). Files next to a skill (references, scripts) are listed as links the model opens when the skill points to them. Every skill adds a short line (~40 tokens) to the model's prompt, so the picker shows the total and allows at most 60 at once - pick only what you will use. Flags such as `--global`, `--force`, `--cursor`, `--claude` or `--dest` are ignored: skills always go to the app's own Skills.
 
+## 🆕 New in v0.20.0 (agent evaluation, task traces, clean document headings)
+
+- **Agent Evaluation ([eval/README.md](eval/README.md)):**
+  - Five tasks run the same way for every model: a web app, broken Python to fix, a change across five files, a Word + PDF report, and a connection drop mid-task.
+  - Each task is scored only from real output: files on disk, tests that run, a real browser clicking the page, the documents opened with their own readers, and the task's trace. What the model says is never counted.
+  - For the connection-drop task the runner really cuts the model's connection for 8 seconds, then checks that the task went on without writing finished files again.
+  - `python eval/run_eval.py --models "a:x,b:y"` runs in an isolated app next to yours (your data is only read) and writes `report.md`, `report.json` and the traces. A scripted solver model (`--models mock`) checks the harness itself in CI.
+  - First results ([eval/BENCHMARK.md](eval/BENCHMARK.md)): `evren:auto` passes all five tasks, 31/31 checks. The runs also found the two app fixes below.
+- **Task traces:** every task writes `chat/<id>/.session/traces/<run>.jsonl`, with its model turns (wait, time, output tokens, speed) and steps in order (tool, arguments, time, error). It is written by the app, never by the model, and `GET /api/sessions/<id>/traces/<run>` returns it with its counts.
+- **Clean document headings:** a heading written without a space (`###Screens`, as weak models do) became a line of text with the `###` printed in the PDF. It is now a real heading in PDF, Word, PowerPoint and HTML; `#hashtags`, `#1` and code stay as they are. `<p>### Title</p>` inside HTML content becomes a heading too.
+- **Found by the first real evaluation:** `browser_key` takes the key from `key` or `ref` too. A weak model's `{"key": "F5", "keys": ""}` was refused three times in a row.
+- **Files go in the folder you named:** "in the `todo/` folder: index.html, style.css and app.js" means `todo/index.html`. A model that wrote them into the chat's root is told so at the end of the task and moves them (it happened twice in the evaluation).
+
 ## 🆕 New in v0.19.0 (no lost work: safe parallel writes, undo, documented edge cases, CI)
 
 - **Safe file writes:**

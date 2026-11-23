@@ -57,3 +57,9 @@ jobs:
 
       - name: Tests
         run: python -m pytest tests -q -p no:cacheprovider
+
+      # The agent-evaluation harness against its scripted solver model (no real model): an isolated app runs the five
+      # tasks, a real browser checks the web app and the proxy really cuts the connection. Real models are run by hand
+      # (eval/README.md).
+      - name: Eval self-test (mock model)
+        run: python eval/run_eval.py --models mock --timeout 300

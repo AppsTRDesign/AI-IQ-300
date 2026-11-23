@@ -369,6 +369,19 @@ Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasör�
 
 **Nasıl çalışır:** Bir seçim penceresi becerileri listeler (gruplu, aranabilir, açıklamalı; daha önce aktarılanlar işaretli). Seçilen her beceri kaynağıyla kaydedilir; tekrar içe aktarmak kopya oluşturmaz, günceller. Aynı adlı yerleşik bir beceri asla ezilmez (yenisinin önüne sahibinin adı eklenir). Becerinin yanındaki dosyalar (referanslar, betikler) bağlantı olarak eklenir; beceri onlara yönlendirince model açar. Her beceri modelin istemine kısa bir satır ekler (~40 token); pencere toplamı gösterir ve tek seferde en fazla 60 beceriye izin verir - yalnızca kullanacaklarınızı seçin. `--global`, `--force`, `--cursor`, `--claude`, `--dest` gibi bayraklar yok sayılır: beceriler her zaman uygulamanın kendi Beceriler bölümüne gider.
 
+## 🆕 v0.20.0 ile gelenler (ajan değerlendirmesi, görev iz kayıtları, temiz belge başlıkları)
+
+- **Ajan Değerlendirmesi ([eval/README.tr.md](eval/README.tr.md)):**
+  - Beş görev her model için aynı şekilde çalışır: bir web uygulaması, düzeltilecek bozuk Python, beş dosyaya yayılan bir değişiklik, Word + PDF rapor ve görev ortasında bağlantı kopması.
+  - Her görev yalnızca gerçek çıktıya göre puanlanır: diskteki dosyalar, çalışan testler, sayfaya tıklayan gerçek bir tarayıcı, kendi okuyucularıyla açılan belgeler ve görevin iz kaydı. Modelin söylediği asla sayılmaz.
+  - Bağlantı kopması görevinde runner modelin bağlantısını 8 saniye gerçekten keser, sonra görevin biten dosyaları yeniden yazmadan devam ettiğini denetler.
+  - `python eval/run_eval.py --models "a:x,b:y"` seninkinin yanında ayrı bir uygulama örneğinde çalışır (verilerin yalnızca okunur) ve `report.md`, `report.json` ile iz kayıtlarını yazar. Senaryolu bir çözücü model (`--models mock`) CI'da düzeneğin kendisini denetler.
+  - İlk sonuçlar ([eval/BENCHMARK.tr.md](eval/BENCHMARK.tr.md)): `evren:auto` beş görevin hepsini geçiyor, 31/31 kontrol. Çalıştırmalar aşağıdaki iki uygulama düzeltmesini de buldu.
+- **Görev iz kayıtları:** her görev `chat/<id>/.session/traces/<görev>.jsonl` yazar; model turları (bekleme, süre, çıktı token'ı, hız) ve adımlar sırasıyla (araç, argümanlar, süre, hata) içindedir. Bunu model değil uygulama yazar; `GET /api/sessions/<id>/traces/<görev>` onu sayılarıyla döndürür.
+- **Temiz belge başlıkları:** boşluksuz yazılan başlık (`###Ekranlar`, zayıf modellerin yaptığı gibi) PDF'te `###` basılı bir metin satırı oluyordu. Artık PDF, Word, PowerPoint ve HTML'de gerçek başlık; `#etiket`, `#1` ve kod olduğu gibi kalır. HTML içeriğindeki `<p>### Başlık</p>` de başlık olur.
+- **İlk gerçek değerlendirmenin bulduğu:** `browser_key` tuşu `key` ya da `ref` alanından da alır. Zayıf bir modelin `{"key": "F5", "keys": ""}` çağrısı üst üste üç kez reddedilmişti.
+- **Dosyalar adlandırdığın klasöre gider:** "`todo/` klasöründe: index.html, style.css ve app.js", `todo/index.html` demektir. Bunları sohbetin köküne yazan model görevin sonunda bunu duyar ve dosyaları taşır (değerlendirmede iki kez oldu).
+
 ## 🆕 v0.19.0 ile gelenler (iş kaybı yok: güvenli paralel yazım, geri alma, belgelenmiş uç durumlar, CI)
 
 - **Güvenli dosya yazımı:**

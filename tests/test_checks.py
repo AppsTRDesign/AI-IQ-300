@@ -100,6 +100,24 @@ def test_source_files_the_request_names_must_exist(tmp_path):
     assert checks.missing_deliverables("Node.js ile bir API yaz", "tamam", tmp_path, time.time()) == []
 
 
+def test_files_listed_for_a_named_folder_go_in_it(tmp_path):
+    """eval web_app, evren:auto: "todo/ klasöründe ... index.html, style.css ve app.js" written into the root twice."""
+    from app.agents import checks
+    req = "todo/ klasöründe küçük bir web uygulaması yap: index.html, style.css ve app.js. Bitince test et."
+    for n in ("index.html", "style.css", "app.js"):
+        (tmp_path / n).write_text("x", encoding="utf-8")
+    assert checks.missing_deliverables(req, "Bitti.", tmp_path, time.time()) == ["todo/index.html", "todo/style.css",
+                                                                                   "todo/app.js"]
+    (tmp_path / "web" / "todo").mkdir(parents=True)
+    for n in ("index.html", "style.css", "app.js"):
+        (tmp_path / "web" / "todo" / n).write_text("x", encoding="utf-8")
+    assert checks.missing_deliverables(req, "Bitti.", tmp_path, time.time()) == []
+    en = "Build a to-do app in the todo/ folder: index.html and app.js."
+    assert checks.in_named_folder(en) == ["todo/index.html", "todo/app.js"]
+    assert checks.in_named_folder("src/ klasörüne a.py, lib/ klasörüne b.py yaz") == []  # two folders: not said which
+    assert checks.in_named_folder("index.html dosyasını düzelt") == []
+
+
 def test_argv_with_a_shell_command_runs_in_that_shell():
     from app.tools.registry import _shell_join
     assert (_shell_join("powershell", ["Move-Item", "-Path", "app/(tabs)/index.tsx", "-Destination", "a b.tsx"])

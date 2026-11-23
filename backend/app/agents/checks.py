@@ -746,7 +746,38 @@ def missing_deliverables(request: str, answer: str, root: Path, since: float) ->
     # in `code` marks a file to create; a bare word like "Node.js" or "next.config" in a sentence does not.
     asked = {n.replace("\\", "/") for n in REQUESTED_SOURCE.findall(request)}
     out += [n for n in sorted(asked) if n not in out and not _on_disk(root, n)]
+    # Files the request puts in a folder it names: in that folder (anywhere in the project), not just by name.
+    out += [n for n in in_named_folder(request) if n not in out and not _in_folder(root, n)]
     return out[:4]
+
+
+def _in_folder(root: Path, rel: str) -> bool:
+    if (root / rel).is_file():
+        return True
+    want = tuple(fold_name(x) for x in rel.split("/"))
+    skip = {"node_modules", ".git", ".venv", "venv", "__pycache__", ".session"}
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in skip]
+        here = Path(d)
+        if fold_name(here.name) == want[0] and any(fold_name(f) == want[-1] for f in files):
+            return True
+    return False
+
+
+# "todo/ klasöründe ... index.html, style.css ve app.js" / "in the todo/ folder: index.html, app.js": one folder the
+# request names, and files it lists by bare name, go in that folder. evren:auto wrote all three into the chat folder's
+# root twice (eval web_app) and nothing told it.
+REQUESTED_FOLDER = re.compile(r"(?:`|(?<![\w./\\-]))([\w.-]+)[/\\]`?\s*(?:klas[öo]r|dizin|folder|directory)", re.I)
+BARE_SOURCE = re.compile(r"(?:`|(?<![\w./\\-]))([\w-]+\.(?:ts|tsx|js|jsx|py|php|dart|kt|swift|java|go|rs|vue|svelte|"
+                         r"css|html?|md|json))(?=`|[\s,;:)]|\.(?:\s|$)|$)", re.I)
+
+
+def in_named_folder(request: str) -> list[str]:
+    folders = {m.lower() for m in REQUESTED_FOLDER.findall(request)}
+    if len(folders) != 1:  # none, or several folders: which file goes where is not said
+        return []
+    folder = REQUESTED_FOLDER.search(request).group(1)
+    return [f"{folder}/{n}" for n in dict.fromkeys(BARE_SOURCE.findall(request))]
 
 
 NOT_MADE = re.compile(r"olu[şs]tur(ul)?ama|olu[şs]turulmad|[üu]retil(e)?me|[üu]retemed|yap[ıi]lamad|ba[şs]ar[ıi]s[ıi]z|"

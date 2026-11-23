@@ -455,8 +455,17 @@ async def _type(ctx, args):
     return msg, {}
 
 
+def key_text(args: dict) -> str:
+    """The keys of a browser_key call. A weak model put the key in "key" (or "ref") and left "keys" empty:
+    {"key": "F5", "keys": ""} was refused three times in a row (eval web_app, evren:auto). A ref that is not an element
+    id (e12, ref_12) is a key name."""
+    ref = str(args.get("ref") or "")
+    return str(args.get("keys") or args.get("text") or args.get("key") or args.get("press")
+               or ("" if re.fullmatch(r"ref_?\d+|e\d+", ref) else ref) or "")
+
+
 async def _key(ctx, args):
-    keys = _keys(str(args.get("keys") or args.get("text") or ""))
+    keys = _keys(key_text(args))
     if not keys:
         raise BrowserError("Give keys, e.g. Enter, Escape, ctrl+a, Tab.")
     page = AGENT.page

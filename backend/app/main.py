@@ -1486,6 +1486,19 @@ async def undo_task(sid: str, run_id: str):
     return res
 
 
+@app.get("/api/sessions/{sid}/traces/{run_id}")
+async def task_trace(sid: str, run_id: str):
+    """One task's trace (turns and steps in order) with its counts; see agents/trace.py."""
+    from .agents import trace
+    if not re.fullmatch(r"[\w-]{4,64}", run_id or ""):
+        raise fail(400, "bad_run", "invalid task id")
+    _session(sid)
+    lines = trace.load(sid, run_id)
+    if not lines:
+        raise fail(404, "no_trace", "no trace for this task")
+    return {"summary": trace.summary(lines), "events": lines}
+
+
 @app.post("/api/sessions/{sid}/rollback/{sha}")
 async def rollback(sid: str, sha: str, project_id: str | None = None):
     try:
