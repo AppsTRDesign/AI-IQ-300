@@ -561,6 +561,7 @@
   "global_rules_hint": "Saved when you leave the field.",
   "step_memory": "Rule saved",
   "tool_remember": "Saving rule",
+  "tool_recall": "Reading the chat ledger",
   "preview_new": "New file",
   "preview_overwrite": "Will be overwritten",
   "preview_edit": "Edit",

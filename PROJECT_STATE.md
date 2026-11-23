@@ -29,6 +29,17 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
 
+## v0.18.8 (2026-11-23): chat ledger
+pytest 322.
+- **`backend/app/agents/ledger.py`:** at task end the orchestrator records the steps into `.session/ledger.json`:
+  - env facts of the system tools (date left out)
+  - files with size (deleted ones dropped; newest last; max 80)
+  - commands (40), failures (12), tool counts, task log (20), open to-dos
+- **Prompt view:** `prompting.py` puts `ledger.view()` in place of the old PROJECT_STATE.md head. The old file is still read for older chats.
+  - Size: 900 chars lean, 1800 chars full.
+  - Live servers come from the process manager.
+- **`recall` tool:** in the memory group, read-only. Takes `part` and `query`. GROUP_WORDS["memory"] also matches questions about earlier work.
+
 ## v0.18.7 (2026-11-23): Mermaid diagrams, flowchart skill, split system tools, log fixes
 pytest 318. Chat diagram checked in the browser (inline, expand, edit code, dark theme, no console errors).
 - **Diagrams:** `frontend/src/components/Diagram.jsx` (inline diagram, hover menu, full-screen viewer with zoom / pan /

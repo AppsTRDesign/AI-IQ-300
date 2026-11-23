@@ -369,6 +369,21 @@ A skills install command copies `SKILL.md` instructions into an agent's skills f
 
 **How it works:** a picker lists the skills (grouped, searchable, with descriptions; already imported ones are marked). Each picked skill is saved with its source, so importing again updates it instead of making a copy; a built-in skill with the same name is never overwritten (the new one gets the owner's name in front). Files next to a skill (references, scripts) are listed as links the model opens when the skill points to them. Every skill adds a short line (~40 tokens) to the model's prompt, so the picker shows the total and allows at most 60 at once - pick only what you will use. Flags such as `--global`, `--force`, `--cursor`, `--claude` or `--dest` are ignored: skills always go to the app's own Skills.
 
+## 🆕 New in v0.18.8 (chat ledger: the model does not forget earlier work)
+
+- **Chat ledger, written by the app:** after each task the app records what really happened. The model never writes it, so it costs no output tokens and cannot hold made-up facts. It records:
+  - environment facts from the system tools, one line each
+  - every file the chat made, with its size (deleted files drop out)
+  - commands, tools used, failures and items left open
+  - one line per task
+- **A small view in every prompt:** the next task sees a compact summary of the ledger, about 200–500 tokens (shorter for small local models). It also lists the servers this chat still has running, read live. So the model:
+  - does not call `system_info` again
+  - does not list the folder again
+  - does not forget its files once older steps are shortened
+- **Stable prompt:** the ledger changes only between tasks, so the prompt stays cache friendly.
+- **`recall` tool:** the full record, or one part of it (files, commands, failures, tasks, environment), optionally filtered by a word. Questions like "which files did you make earlier?" open it automatically.
+- Stored per chat in `chat/<id>/.session/ledger.json` and deleted with the chat. Lasting rules still go to `AIIQ.md` with `remember`: the ledger holds facts, not rules.
+
 ## 🆕 New in v0.18.7 (diagrams in the chat, flowchart skill, fast system tools)
 
 - **Mermaid diagrams in the chat:**

@@ -806,6 +806,24 @@ async def remember(ctx, args, body):
     return ToolResult(True, f"Saved as a global rule: {rule}", {"scope": "global", "rule": rule})
 
 
+@tool("recall", '<tool name="recall" part="files|commands|failures|tasks|env|tools|open|all" query="optional word"></tool>',
+      "Read this chat's ledger: what earlier tasks really did, recorded by the app (environment facts, every file made "
+      "with its size, commands run, failures, one line per task, items left open, servers still running). Use it "
+      "instead of guessing or re-checking when the user refers to earlier work, or before redoing something.",
+      {"part": S("Which part (default all)", enum=["all", "env", "files", "commands", "failures", "tasks", "tools", "open"]),
+       "query": S("Only lines that contain this text (a file name, a tool, a word)")}, main="query")
+async def recall(ctx, args, body):
+    from ..agents import ledger
+    sid = (ctx.owner or "").split(":")[0]
+    if not sid:
+        return ToolResult(False, "No chat record here.")
+    try:
+        text = ledger.full(sid, str(args.get("part") or "all").lower(), str(args.get("query") or body or "").strip())
+    except ValueError:
+        return ToolResult(False, "No chat record here.")
+    return ToolResult(True, clip(text, 6000))
+
+
 @tool("use_skill", '<tool name="use_skill">skill-name</tool>',
       "Load the full instructions of a skill listed under 'Available skills' when the request matches it; then follow them.",
       {"name": S("Skill name")}, main="name", required=("name",))
@@ -879,7 +897,7 @@ NEED_GROUPS = ["web", "media", "design", "browser", "places", "docs", "memory", 
       "Only the tools this request needs are loaded. To get more, open groups: web (search, research, fetch_url, "
       "web_screenshot), media (inspect_media: see/hear images, videos, audio), design (stock_photo: real photos for "
       "pages; web_screenshot), browser (act in a real browser window), places (maps, nearby venues, the user's location), "
-      "docs (make/read PDF, Word, Excel, PowerPoint), memory (remember rules, save skills/agents), project (symbols, "
+      "docs (make/read PDF, Word, Excel, PowerPoint), memory (remember rules, recall earlier tasks of this chat, save skills/agents), project (symbols, "
       "impact), team (agent team, ask another model), mcp (connected MCP servers), mcp_setup (mcp_search: find an "
       "MCP server for any service on the registry / npm / GitHub; mcp_add: connect it), system (system_info overview, hardware_info, software_info, mobile_info), mobile (mobile_env: Android emulator / iOS simulator, "
       "Maestro UI tests for mobile apps).",

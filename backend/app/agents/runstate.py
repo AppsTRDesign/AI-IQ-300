@@ -210,7 +210,7 @@ def _step(run: Run, kind: str, title: str, status: str = "done", detail: str = "
 TOOL_TITLES = {"write_file": "file", "read_file": "read", "read_document": "read", "my_location": "places", "system_info": "system", "hardware_info": "system", "software_info": "system", "mobile_info": "system","list_dir": "list", "run": "command", "start": "process",
                "stop": "stop", "web_search": "search", "research": "search", "fetch_url": "fetch", "browser_check": "visual",
                "make_doc": "document", "doc_template": "document", "delete_file": "delete", "use_skill": "skill", "edit_file": "edit",
-               "search_code": "grep", "symbols": "grep", "ask_model": "delegate", "remember": "memory",
+               "search_code": "grep", "symbols": "grep", "ask_model": "delegate", "remember": "memory", "recall": "memory",
                "impact": "grep", "mcp": "mcp", "mcp_add": "mcp", "google": "google", "team": "team", "web_screenshot": "screenshot", "stock_photo": "photo", "generate_image": "image_gen", "edit_video": "video_edit", "animate_image": "video_gen", "generate_video": "video_gen", "mobile_env": "command", "mcp_search": "mcp", "inspect_media": "inspect", "speech_to_text": "transcribe", "text_to_speech": "speech","save_catalog": "catalog",
                "places": "places", **{n: "browser" for n in BROWSER_TOOLS}}
 

@@ -197,7 +197,7 @@ GROUP_TOOLS = {
     "browser": set(BROWSER_TOOLS),
     "places": {"places", "my_location"},
     "docs": {"make_doc", "read_document", "doc_template", "render_diagram"},
-    "memory": {"remember", "save_catalog"},
+    "memory": {"remember", "save_catalog", "recall"},
     "project": {"impact", "symbols"},
     "team": {"team", "ask_model"},
     "mcp": {"mcp"},
@@ -239,7 +239,10 @@ GROUP_WORDS = {
     "docs": re.compile(r"pdf|word|docx|excel|xlsx|pptx|powerpoint|sunum|belge|d[öo]k[üu]man|rapor|tablo|slayt|"
                        r"document|report|spreadsheet|presentation|slide", re.I),
     "memory": re.compile(r"hat[ıi]rla|unutma|her\s*zaman|bundan\s*sonra|kural|remember|always|from\s*now\s*on|rule|"
-                         r"skill|yetenek|ajan|agent|katalog|catalog", re.I),
+                         r"skill|yetenek|ajan|agent|katalog|catalog|"
+                         # questions about earlier work of the chat (the ledger's recall tool)
+                         r"daha\s*[öo]nce|[öo]nceki|ge[çc]en\s*sefer|ne(ler)?\s*yapt[ıi]n|hangi\s*dosya|"
+                         r"previous(ly)?|earlier|last\s*time|what\s*did\s*you\s*(do|make|change)|which\s*files?", re.I),
     "team": re.compile(r"tak[ıi]m|ekip|paralel|ajanlar|ba[şs]ka\s*model|team|parallel|agents|another\s*model|"
                        r"b[üu]y[üu]k\s*proje|kapsaml[ıi]|large\s*project", re.I),
     "project": re.compile(r".", re.S),  # a project chat: always (availability decides)

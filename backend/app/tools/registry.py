@@ -90,7 +90,7 @@ def tool(name: str, usage: str, description: str, params: dict | None = None, ma
 
 
 # Tools that change nothing on the computer: offered alone for plain knowledge questions.
-READ_ONLY = {"read_file", "list_dir", "search_code", "symbols", "impact", "web_search", "fetch_url", "research", "use_skill", "web_screenshot",
+READ_ONLY = {"recall", "read_file", "list_dir", "search_code", "symbols", "impact", "web_search", "fetch_url", "research", "use_skill", "web_screenshot",
              "places", "read_document", "my_location", "system_info", "hardware_info", "software_info", "mobile_info", "browser_snapshot", "browser_find", "browser_inspect",
              "browser_screenshot", "browser_scroll", "browser_wait"}
 
@@ -462,7 +462,7 @@ from .media_tools import stock_photo, _provider_of, inspect_media, generate_imag
 from .doc_tools import PLACEHOLDER, placeholder_marks, _anchor_images, make_doc, doc_template  # noqa: E402,F401
 from .diagram import render_diagram  # noqa: E402,F401
 from .agent_tools import symbols, impact, mcp, mcp_add, mcp_search, team, ask_model, remember, use_skill, save_catalog, TODO_STATES, NEED_GROUPS, need_tools, todo_patch, loose_json, todo  # noqa: E402,F401
-_ORDER = ["write_file", "edit_file", "search_code", "read_file", "read_document", "list_dir", "delete_file", "run", "start", "stop", "web_search", "fetch_url", "research", "my_location", "system_info", "hardware_info", "software_info", "mobile_info", "places", "browser_check", "web_screenshot", "stock_photo", "inspect_media", "generate_image", "edit_video", "animate_image", "generate_video", "mobile_env", "speech_to_text", "text_to_speech", "make_doc", "doc_template", "symbols", "impact", "mcp", "mcp_add", "mcp_search", "team", "ask_model", "remember", "use_skill", "save_catalog", "need_tools", "todo", "browser_navigate", "browser_snapshot", "browser_find", "browser_click", "browser_type", "browser_key", "browser_form", "browser_scroll", "browser_wait", "browser_tabs", "browser_screenshot", "browser_inspect", "browser_handoff", "browser_batch"]
+_ORDER = ["write_file", "edit_file", "search_code", "read_file", "read_document", "list_dir", "delete_file", "run", "start", "stop", "web_search", "fetch_url", "research", "my_location", "system_info", "hardware_info", "software_info", "mobile_info", "places", "browser_check", "web_screenshot", "stock_photo", "inspect_media", "generate_image", "edit_video", "animate_image", "generate_video", "mobile_env", "speech_to_text", "text_to_speech", "make_doc", "doc_template", "symbols", "impact", "mcp", "mcp_add", "mcp_search", "team", "ask_model", "remember", "recall", "use_skill", "save_catalog", "need_tools", "todo", "browser_navigate", "browser_snapshot", "browser_find", "browser_click", "browser_type", "browser_key", "browser_form", "browser_scroll", "browser_wait", "browser_tabs", "browser_screenshot", "browser_inspect", "browser_handoff", "browser_batch"]
 _now = dict(TOOLS)
 TOOLS.clear()
 TOOLS.update({k: _now[k] for k in _ORDER if k in _now})

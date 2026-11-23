@@ -561,6 +561,7 @@
   "global_rules_hint": "Alandan çıkınca kaydedilir.",
   "step_memory": "Kural kaydedildi",
   "tool_remember": "Kural kaydediliyor",
+  "tool_recall": "Sohbet defteri okunuyor",
   "preview_new": "Yeni dosya",
   "preview_overwrite": "Üzerine yazılacak",
   "preview_edit": "Düzenleme",

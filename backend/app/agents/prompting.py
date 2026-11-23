@@ -26,7 +26,7 @@ from ..tools.symbols import project_map
 from ..tools.registry import figures as registry_figures
 from ..tools.registry import READ_ONLY, TOOLS, ToolContext, ToolResult, clip, split_args, todo_patch, tool_schemas, tools_prompt
 from ..tools.browser_tools import BROWSER_TOOLS, label as _browser_label
-from . import catalog
+from . import catalog, ledger
 from .stream_parser import LEAK, THINK_OPENERS, StreamSplitter, ToolCall, attrs, extract_inline_calls, parse_tool
 
 # Prompt texts and the intent/check rules live in their own modules; their names are re-exported here.
@@ -261,7 +261,10 @@ def _system_prompt(role: str, root, session_id: str, project: dict | None, skill
             parts[-1] += "\n\n# Code map (definitions per file)\n" + code_map
         sizes["project"] = sizes.get("project", 0) + tokens.count(parts[-1])
     state = sessions.state_file(session_id)
-    if state.exists():
+    if led := ledger.view(session_id, lean):  # the app's own record of earlier tasks (env, files, servers, failures)
+        parts.append(led)
+        sizes["state"] = tokens.count(parts[-1])
+    elif state.exists():  # chats from before the ledger (v0.18.7)
         parts.append("# Session state\n" + state.read_text(encoding="utf-8", errors="replace")[:900 if lean else 2000])
         sizes["state"] = tokens.count(parts[-1])
     skills = catalog.skills()

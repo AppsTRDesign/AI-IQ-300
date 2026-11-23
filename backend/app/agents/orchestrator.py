@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from .. import approvals, db, netwatch, sessions, tokens, workspace
 from ..config import load_settings, redact
 from ..process_manager import manager as proc_manager
+from . import ledger
 from ..events import bus
 from ..llm import memguard, modelstats, router
 from ..llm.usage import cooldown as usage_cooldown
@@ -2084,6 +2085,10 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     name = project["name"] if project else (session.get("title") or "Chat")
                     workspace.write_state(sessions.state_file(session["id"]), root, name, clean_text[:200],
                                           ctx.files_changed, ctx.commands, status)
+                if run.steps:  # the chat ledger: environment, files, commands, failures, tasks (next prompts carry it)
+                    ledger.record(session["id"], root, request=clean_text, answer=answer or "", status=status,
+                                  steps=run.steps, files=ctx.files_changed, commands=ctx.commands, todos=run.todos,
+                                  model=model or "")
                 title = db.query("SELECT title FROM sessions WHERE id=?", (session["id"],))
                 sessions.write_meta({**session, "title": title[0]["title"] if title else ""}, model=model,
                                     last_status=status, context_stats=run.stats)

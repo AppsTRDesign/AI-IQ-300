@@ -42,7 +42,7 @@ flowchart TD
   subgraph P3["3 · Check and finish"]
     direction TB
     V{"Is the work really done?<br/>files · pages · tests · promises"} -->|"No"| FIX["Back to work<br/>debugger hint, real error text"]
-    V -->|"Yes"| SAVE["Checkpoint and history<br/>resume after a stop"]
+    V -->|"Yes"| SAVE["Checkpoint and chat ledger<br/>resume after a stop · nothing forgotten"]
   end
 
   FIX --> LOOP
@@ -64,7 +64,8 @@ flowchart TD
   Tools run (in parallel when they can), the to-do list follows the work, and guards stop repeats, loops, babble and
   file rewrites that would lose content.
 - **Check and finish.** A reply that only promises work, or claims files and tests that do not exist, goes back to the
-  loop with the real error. A finished task is saved as a checkpoint and shown with its steps.
+  loop with the real error. A finished task is saved as a checkpoint and shown with its steps. The app also writes the chat ledger (files,
+  commands, environment, failures), so the next task starts knowing what was done.
 
 ## 2. One model turn
 
@@ -129,6 +130,7 @@ reads the files of the earlier ones. A model that hits its quota is swapped for 
 | Running tools, to-do list, repeat guard | `agents/tooling.py` |
 | Output guards (repeat, babble, word salad) | `agents/guards.py` |
 | Checkpoints, resume, cut files | `agents/continuity.py` |
+| Chat ledger (what earlier tasks did; `recall`) | `agents/ledger.py` |
 | Agent teams | `agents/team.py` |
 | Providers, routing, quotas, model families | `llm/providers.py`, `llm/router.py`, `llm/usage.py`, `llm/families.py` |
 | RAM / VRAM guard for local models | `llm/memguard.py` |

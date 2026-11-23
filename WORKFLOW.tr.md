@@ -42,7 +42,7 @@ flowchart TD
   subgraph P3["3 · Denetle ve bitir"]
     direction TB
     V{"İş gerçekten bitti mi?<br/>dosyalar · sayfalar · testler · sözler"} -->|"Hayır"| FIX["İşe geri dön<br/>hata ayıklayıcı ipucu, gerçek hata metni"]
-    V -->|"Evet"| SAVE["Kontrol noktası ve geçmiş<br/>durdurmadan sonra devam"]
+    V -->|"Evet"| SAVE["Kontrol noktası ve sohbet defteri<br/>durdurmadan sonra devam · unutma yok"]
   end
 
   FIX --> LOOP
@@ -64,7 +64,8 @@ flowchart TD
   gizler. Araçlar (mümkünse paralel) çalışır, yapılacaklar listesi işi izler; korumalar tekrarları, döngüleri,
   saçmalamayı ve içerik kaybettirecek dosya yeniden yazımlarını durdurur.
 - **Denetle ve bitir.** Yalnızca söz veren ya da olmayan dosya ve testleri iddia eden cevap, gerçek hata metniyle
-  döngüye geri döner. Biten görev kontrol noktası olarak kaydedilir ve adımlarıyla gösterilir.
+  döngüye geri döner. Biten görev kontrol noktası olarak kaydedilir ve adımlarıyla gösterilir. Uygulama sohbet defterini de yazar
+  (dosyalar, komutlar, ortam, hatalar); sonraki görev neyin yapıldığını bilerek başlar.
 
 ## 2. Bir model turu
 
@@ -129,6 +130,7 @@ Her üye havuzdaki bir modelde kendi araç döngüsünü çalıştırır. Aynı 
 | Araçları çalıştırma, yapılacaklar, tekrar koruması | `agents/tooling.py` |
 | Çıktı korumaları (tekrar, saçmalama, kelime salatası) | `agents/guards.py` |
 | Kontrol noktaları, devam, kesilen dosyalar | `agents/continuity.py` |
+| Sohbet defteri (önceki görevler ne yaptı; `recall`) | `agents/ledger.py` |
 | Ajan ekipleri | `agents/team.py` |
 | Sağlayıcılar, yönlendirme, kotalar, model aileleri | `llm/providers.py`, `llm/router.py`, `llm/usage.py`, `llm/families.py` |
 | Yerel modeller için RAM / VRAM koruması | `llm/memguard.py` |

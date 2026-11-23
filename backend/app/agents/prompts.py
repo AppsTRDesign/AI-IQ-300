@@ -66,7 +66,8 @@ CAPABILITIES = CAP_HEAD + """
 - docs: make_doc (PDF, Word, PowerPoint, Excel, HTML with a designed template), read_document, render_diagram
   (Mermaid diagram -> PNG/SVG file)
 - places: maps and nearby venues (places), the user's location (my_location)
-- memory: remember (the user's lasting rules), save_catalog (create skills and agents)
+- memory: remember (the user's lasting rules), recall (this chat's ledger: earlier tasks' files, commands,
+  failures, environment), save_catalog (create skills and agents)
 - project: symbols and impact (code map of the project)
 - team: an agent team on several cloud models, ask_model (another model answers)
 - mcp: tools of connected MCP servers; mcp_setup: mcp_search finds a server for any service (official registry, npm,
@@ -126,7 +127,7 @@ read_document | media: inspect_media (see/hear any image, video, audio), speech_
 generate_image, edit_video (pro videos: {"photos": [...], "title", "duration", "music"}) | design: stock_photo (real
 photos for pages) | browser: act on websites (click, type, sign in) | GitHub libraries: gh search repos "<what>" --sort
 stars, read the README, install as it says with non-interactive flags (-y), try its example first |
-places: maps, nearby venues, my_location | memory: remember (the user's lasting rules), save_catalog |
+places: maps, nearby venues, my_location | memory: remember (the user's lasting rules), recall (earlier tasks of this chat), save_catalog |
 project: symbols, impact | team: an agent team on other models, ask_model | mcp, mcp_setup: MCP servers (mcp_search
 finds one for any service, mcp_add connects it yourself) |
 system: system_info (quick overview + date), hardware_info, software_info (CLIs, packages, MCP, skills), mobile_info | mobile: mobile_env (Android emulator, iOS simulator on macOS, Maestro

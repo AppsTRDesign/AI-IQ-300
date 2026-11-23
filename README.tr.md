@@ -369,6 +369,21 @@ Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasör�
 
 **Nasıl çalışır:** Bir seçim penceresi becerileri listeler (gruplu, aranabilir, açıklamalı; daha önce aktarılanlar işaretli). Seçilen her beceri kaynağıyla kaydedilir; tekrar içe aktarmak kopya oluşturmaz, günceller. Aynı adlı yerleşik bir beceri asla ezilmez (yenisinin önüne sahibinin adı eklenir). Becerinin yanındaki dosyalar (referanslar, betikler) bağlantı olarak eklenir; beceri onlara yönlendirince model açar. Her beceri modelin istemine kısa bir satır ekler (~40 token); pencere toplamı gösterir ve tek seferde en fazla 60 beceriye izin verir - yalnızca kullanacaklarınızı seçin. `--global`, `--force`, `--cursor`, `--claude`, `--dest` gibi bayraklar yok sayılır: beceriler her zaman uygulamanın kendi Beceriler bölümüne gider.
 
+## 🆕 v0.18.8 ile gelenler (sohbet defteri: model önceki işi unutmaz)
+
+- **Uygulamanın yazdığı sohbet defteri:** her görevden sonra uygulama gerçekte olanı kaydeder. Defteri model yazmaz; çıktı tokenı harcamaz ve uydurma bilgi içeremez. Kaydedilenler:
+  - sistem araçlarından ortam bilgileri, her biri tek satır
+  - sohbetin oluşturduğu her dosya, boyutuyla (silinenler düşer)
+  - komutlar, kullanılan araçlar, hatalar ve açık kalan maddeler
+  - her görev için tek satır
+- **Her istemde küçük bir özet:** sonraki görev defterin yaklaşık 200–500 tokenlık özetini görür (küçük yerel modellerde daha kısa). Sohbetin hâlâ çalışan sunucuları da canlı olarak okunup listelenir. Böylece model:
+  - `system_info`'yu tekrar çağırmaz
+  - klasörü tekrar listelemez
+  - eski adımlar kısaltılınca dosyalarını unutmaz
+- **Kararlı istem:** defter yalnızca görevler arasında değişir; istem önbelleğe uygun kalır.
+- **`recall` aracı:** tam kaydı ya da bir bölümünü (dosyalar, komutlar, hatalar, görevler, ortam) okur, istenirse bir kelimeyle süzer. "Daha önce hangi dosyaları yaptın?" gibi sorular aracı kendiliğinden açar.
+- Her sohbet için `chat/<id>/.session/ledger.json` dosyasında saklanır ve sohbetle birlikte silinir. Kalıcı kurallar yine `remember` ile `AIIQ.md` dosyasına gider; defter kural değil, olgu tutar.
+
 ## 🆕 v0.18.7 ile gelenler (sohbette şemalar, akış şeması yeteneği, hızlı sistem araçları)
 
 - **Sohbette Mermaid şemaları:**
