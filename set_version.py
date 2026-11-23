@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+BADGE = re.compile(r"(img\.shields\.io/badge/(?:version|s%C3%BCr%C3%BCm|sürüm)-)[\w.]+(-)")
 
 
 def check() -> int:
@@ -31,6 +32,12 @@ def check() -> int:
         f = ROOT / name
         if f.exists() and not re.search(pattern, f.read_text(encoding="utf-8")):
             problems.append(f"{name} has no section for v{version}")
+    for name in ("README.md", "README.tr.md"):
+        f = ROOT / name
+        for m in BADGE.finditer(f.read_text(encoding="utf-8") if f.exists() else ""):
+            badge = f.read_text(encoding="utf-8")[m.end(1):m.start(2)]
+            if badge != version:
+                problems.append(f"{name} version badge shows {badge}, VERSION has {version}")
     tag = (sys.argv[2] if len(sys.argv) > 2 else "").strip()
     if tag.startswith("v") and tag.lstrip("v") != version:
         problems.append(f"release tag {tag} does not match VERSION {version}")
@@ -54,13 +61,13 @@ def main() -> None:
     data = json.loads(pkg.read_text(encoding="utf-8"))
     data["version"] = version
     pkg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    for name in ("README.md", "README.tr.md"):
-        f = ROOT / "tanitim" / name
+    # The root READMEs are the ones GitHub shows: their badge stayed at 0.18.6 for four releases.
+    for f in (ROOT / "README.md", ROOT / "README.tr.md", ROOT / "tanitim" / "README.md", ROOT / "tanitim" / "README.tr.md"):
         if f.exists():
             s = f.read_text(encoding="utf-8")
-            s = re.sub(r"(img\.shields\.io/badge/(?:version|s%C3%BCr%C3%BCm|sürüm)-)[\w.]+(-)", rf"\g<1>{version}\2", s)
+            s = BADGE.sub(rf"\g<1>{version}\2", s)
             f.write_text(s, encoding="utf-8")
-    print(f"version {version}: VERSION, frontend/package.json, tanitim/README badges")
+    print(f"version {version}: VERSION, frontend/package.json, README badges (root and tanitim/)")
 
 
 if __name__ == "__main__":

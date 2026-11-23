@@ -78,7 +78,11 @@ def _unescape_big(value: str, quote: str) -> str:
 # An opening tag whose short attributes all closed on one line, followed (only whitespace between) by the next call:
 # the model never wrote </tool> for the first one. Read as one block, the first call's last attribute ran to the end of
 # the second (research query="Kozan hava durumu\">\n<tool name=\"todo" was searched on the web, seen live).
-_OPEN_LINE = re.compile(r'<tools?\s+name\s*=\s*"[\w.-]+"(?:\s+[\w.-]+\s*=\s*(?:"[^"\n]*"|\'[^\'\n]*\'))*\s*/?>')
+# A value may also be a bare JSON list or object on the same line: <tool name="run" argv=["git", "init"]> followed by
+# the next call swallowed every later call of the reply into the first one's body, unrun (nemotron-3-ultra on NVIDIA:
+# no .gitignore, no commit, 20 turns spent finding out why).
+_OPEN_LINE = re.compile(r'<tools?\s+name\s*=\s*"[\w.-]+"'
+                        r'(?:\s+[\w.-]+\s*=\s*(?:"[^"\n]*"|\'[^\'\n]*\'|\[[^\]\n]*\]|\{[^\n]*?\}(?=[\s/>])))*\s*/?>')
 _NEXT_CALL = re.compile(r'\s*<tools?\s+name\s*=\s*"[\w.-]+"')
 _SHORT_BIG = ("query", "code", "command", "script", "search", "items")
 
@@ -313,7 +317,8 @@ def _is_call(block: str) -> bool:
 # Raw tool syntax that must never reach the user (any model, any provider).
 LEAK = re.compile(r"<parameter=|<function=|</?tool_call>|\[TOOL_CALLS\]|<\|tool_call|<tool\s+name=|\"arguments\"\s*:\s*\{|"
                   r"<tools?\s*=|</?tools\b|\[/?tools?(\s*name)?\s*=|\[/tools?\]|"
-                  r"<\|channel\|>|<\|message\|>|<｜DSML｜|<invoke name=|minimax:tool_call|<\|python_tag\|>",
+                  r"<\|channel\|>|<\|message\|>|<｜DSML｜|<invoke name=|minimax:tool_call|<\|python_tag\|>|"
+                  r"\bargument\s+key\s*=\s*\"[\w.-]+\"\s+type\s*=|<\|call>\|",
                   re.I)
 
 
@@ -364,6 +369,9 @@ def extract_inline_calls(text: str, tool_names: set[str]) -> tuple[list[ToolCall
     text = re.sub(r"```(?:json)?\s*(\{[^`]*?\"name\"[^`]*\})\s*```", repl, text, flags=re.S)
     if not calls and text.strip().startswith("{") and text.strip().endswith("}"):
         text = re.sub(r"^\s*(\{.*\})\s*$", repl, text, flags=re.S)
+    if not calls and _NEMO_ARG.search(text):
+        found, text = nemotron_args(text, tool_names)
+        calls.extend(found)
     if not calls:
         found, text = cli_calls(text, tool_names)
         calls.extend(found)
@@ -379,6 +387,55 @@ def extract_inline_calls(text: str, tool_names: set[str]) -> tuple[list[ToolCall
         text = re.sub(r"```(?:json)?\s*(\{(?:(?!```).)*?\"(?:clips|scenes|photos)\"\s*:(?:(?!```).)*\})\s*```",
                       timeline, text, flags=re.S)
     return calls, text.strip()
+
+
+# Nemotron 3.5 Super (NVIDIA) wrote its calls as typed argument blocks, often with the brackets lost on the way:
+#   argument key="name" type="string"runargumentargument key="arguments" type="array"[{"key":"command",...}]argument
+#   <|call>|  ...  calltools
+# Nothing ran and the task ended "ok" with that text as its answer (skill_git, 0/2). A call starts at its "name" key;
+# its "arguments" key holds a list of {key, type, value} or an object; other keys in the same call are flat arguments.
+_NEMO_ARG = re.compile(r'<?\s*argument\s+key\s*=\s*"([\w.-]+)"(?:\s+type\s*=\s*"(\w+)")?\s*>?(.*?)'
+                       r'(?:<\s*/\s*argument\s*>|/?argument>?(?=\s*(?:<?\s*argument\s+key|<\|call|</?call|call\s*(?:tools)?\s*$|$))'
+                       r'|(?=<?\s*argument\s+key\s*=)|$)', re.S)
+_NEMO_END = re.compile(r'\s*(?:<\|call\|?>\|?|</?call>|</?tools?>|\bcall\s*tools\b|\bcalltools\b|\s)*$')
+
+
+def _typed(value: str, kind: str | None):
+    value = value.strip()
+    if kind in ("array", "object", "number", "integer", "boolean") or value[:1] in "[{":
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def nemotron_args(text: str, tool_names: set[str]) -> tuple[list[ToolCall], str]:
+    calls: list[ToolCall] = []
+    cur: dict | None = None
+    first = last = None
+    for m in _NEMO_ARG.finditer(text):
+        key, val = m.group(1), _typed(m.group(3), m.group(2))
+        first = m.start() if first is None else first
+        last = m.end()
+        if key == "name" and isinstance(val, str):
+            cur = {"name": val.strip(), "args": {}}
+            calls.append(cur)  # type: ignore[arg-type]
+        elif cur is not None and key in ("arguments", "parameters", "args"):
+            if isinstance(val, list):
+                for it in val:
+                    if isinstance(it, dict) and "key" in it:
+                        cur["args"][str(it["key"])] = it.get("value", "")
+            elif isinstance(val, dict):
+                cur["args"].update(val)
+        elif cur is not None:
+            cur["args"][key] = val
+    found = [ToolCall(c["name"], {}, "", {k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+                                         if not isinstance(v, (int, float, bool)) else v for k, v in c["args"].items()})
+             for c in calls if c["name"] in tool_names]
+    if not found or first is None:
+        return [], text
+    return found, (text[:first] + _NEMO_END.sub("", text[last:])).strip()
 
 
 # A tool "called" as a command line or function call in the text, as weak models do when they do not use the

@@ -397,6 +397,10 @@ async def stream_chat(model_id: str, messages: list[dict], opts: dict | None = N
                 _MAIN_ACTIVE[pname] = max(0, _MAIN_ACTIVE.get(pname, 1) - 1)
         usage.record(model_id, tokens["input"], tokens["output"])  # quota windows (5 h / week)
     except ProviderError as e:
+        if e.code == "rate_limit" and prov is not None:
+            free = model.endswith(":free") and int(prov.cfg.get("free_rpm") or 0)
+            if rpm := int(free or prov.cfg.get("rpm") or 0):  # paced and still a 429: less room than the cap
+                usage.note_rate_limit(f"{pname}:free" if free else pname, rpm)
         if e.code == "model_retired" and prov is not None and not retired_retry:
             # The provider retired this model for new users and usually names the successor ("Please update your
             # code to use models/gemini-3.8-flash"): it is hidden from the lists, the request goes to the successor,

@@ -8,6 +8,10 @@
    "stream": "<tool name=\"research\" query=\"Kozan hava durumu\">\n<tool name=\"todo\">[{\"content\": \"Konumu al\", \"status\": \"completed\"}]</tool>",
    "tools": ["research", "todo"], "text_not": ["<tool", "Konumu al"]},
 
+  {"name": "unclosed calls with a bare JSON list attribute (nemotron-3-ultra git task)",
+   "stream": "<tool name=\"run\" argv=[\"git\", \"init\", \"-b\", \"main\"]>\n<tool name=\"write_file\" path=\".gitignore\">.env\n__pycache__/\n</tool>\n<tool name=\"run\" argv=[\"git\", \"add\", \".\"]>\n<tool name=\"run\" argv=[\"git\", \"commit\", \"-m\", \"İlk sürüm\"]>\n</tool>",
+   "tools": ["run", "write_file", "run", "run"], "text_not": ["<tool", "__pycache__"]},
+
   {"name": "MiniMax invoke wrapper",
    "stream": "Bakıyorum <minimax:tool_call><invoke name=\"web_search\"><parameter name=\"query\">istanbul hava</parameter></invoke></minimax:tool_call> tamam",
    "tools": ["web_search"], "args": {"query": "istanbul hava"}, "text_not": ["invoke", "minimax", "parameter"]},

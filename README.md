@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.18.6-2563eb" alt="version">
+  <img src="https://img.shields.io/badge/version-0.20.1-2563eb" alt="version">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -21,6 +21,22 @@
 AI IQ 300 is a **software development and automation hub** that runs on your own computer behind a clean ChatGPT/Claude-style chat. Give it a goal: it creates folders and files, runs PowerShell/CMD/Python/Node/PHP commands, debugs errors, tests the app in a browser and reports back. Your data never leaves your computer unless you choose a cloud provider.
 
 > Say "build a full e-commerce site in PHP". The project structure, database, UI and tests are built step by step. The model splits the work into a to-do list and you follow every step live in the chat.
+
+## 📊 Benchmark: nine real tasks, scored from real output
+
+Two NVIDIA models ran the same nine tasks in AI IQ 300 (v0.20.1, 2026-11-23, one model at a time). The model's words were not scored. Each check looks at what really exists afterwards: files on disk, hidden tests that run, a real browser clicking the page, documents opened with their own readers, git itself, Mermaid drawing the diagram, every cited web page opened.
+
+| Model | Fully passed | Checks | Time | App errors |
+|---|---|---|---|---|
+| `nemotron-3.5-super-vl-120b-a12b` | **9/9 (100%)** | 65/65 | 7.6 min | none |
+| `nemotron-3-ultra-550b-a55b` | **9/9 (100%)** | 65/65 | 32.8 min | none |
+
+<p align="center"><img src="eval/benchmark/heatmap.en.svg" alt="Task × model: checks passed" width="100%"></p>
+<p align="center"><img src="eval/benchmark/time.en.svg" alt="Where the time went, per task" width="100%"></p>
+
+- **Tasks:** a to-do web app tested in a browser, broken Python fixed against hidden tests, a rename across five modules, a Word + PDF report, the connection really cut mid-task, web research with every source checked, a security code review, a Mermaid flowchart, and git branches.
+- **What counts is the success rate and no app errors.** The time mostly depends on the provider: 80% of the 550B run was NVIDIA's free queue (about 26 s before each first token). The app itself took 0-1% of the time.
+- Full report with hover details: [eval/benchmark/report.en.html](eval/benchmark/report.en.html) (download and open) · data: [results.json](eval/benchmark/results.json) · method and history: [eval/BENCHMARK.md](eval/BENCHMARK.md) · run it yourself: [eval/README.md](eval/README.md).
 
 ## 🎬 Promo video
 
@@ -368,6 +384,18 @@ A skills install command copies `SKILL.md` instructions into an agent's skills f
 **Where:** paste the command into the import box on the **Skills** page, or into the MCP server form - there the Save button is replaced by **Import skills**. A server card that failed with such a command gets the same button (and the useless server entry can be removed after the import).
 
 **How it works:** a picker lists the skills (grouped, searchable, with descriptions; already imported ones are marked). Each picked skill is saved with its source, so importing again updates it instead of making a copy; a built-in skill with the same name is never overwritten (the new one gets the owner's name in front). Files next to a skill (references, scripts) are listed as links the model opens when the skill points to them. Every skill adds a short line (~40 tokens) to the model's prompt, so the picker shows the total and allows at most 60 at once - pick only what you will use. Flags such as `--global`, `--force`, `--cursor`, `--claude` or `--dest` are ignored: skills always go to the app's own Skills.
+
+## 🆕 New in v0.20.1 (models follow the app: no runaway turns, no guessed paths, nine-task benchmark)
+
+Four benchmark rounds on two NVIDIA models found these. Each is fixed, and the last round passed 9/9 tasks on both models.
+- **No runaway turns:** in one turn a model wrote 131,072 tokens of blank output inside a tool call (995 s), and the next request carried all of it (a 141K-token prompt) - the task looked "forgetful". The blank-stream check now also covers tool-call arguments. The repeat check looks at every big argument. A model that keeps writing long after its calls is stopped and its calls run. Blank runs are not sent back. The same five-file task went from 17 minutes to 36 s.
+- **Real paths, not guesses:** a plain chat now gets its working folder's file list in the prompt (it had none, and models invented `models/product.py` for `shop/models.py`). The rules say paths come from the list or a tool result, and to wait for results after calling.
+- **Never edit from memory:** the record given after a break said "do not read these files again", even when their content was no longer in the conversation. Models then edited from memory. Now a file is read again in that case, and the chat ledger says it is a record, not the files.
+- **Search results are read:** models answered from 200-character snippets (`web_search` only). It now also reads the top two sources, and the cards show "read".
+- **Nemotron 3.5's own call format** (`argument key=… type=…`, brackets lost on the way) is parsed. Before, nothing ran and the task ended "ok" with that text as its answer.
+- **Rate limits that learn:** a 429 while paced lowers the provider's per-minute rate for 10 minutes, for when something else uses the same key. Two runs on one key had waited 1,171 s of backoff in one task.
+- **Git with no commit yet:** `git branch` prints nothing and `git checkout main` fails before the first commit. The app now says so, instead of leaving the model to run git branch/log 60 times.
+- **Benchmark:** nine tasks (new: web research with every cited page opened, code review, Mermaid flowchart, git). There are three separate scores and a split of where the time went (provider wait, generation, tools, waits after errors, app). An assessment line per model is added, along with charts and an interactive HTML report. `--merge` joins runs and `--rescore` scores a kept run again after a checker fix.
 
 ## 🆕 New in v0.20.0 (agent evaluation, task traces, clean document headings)
 

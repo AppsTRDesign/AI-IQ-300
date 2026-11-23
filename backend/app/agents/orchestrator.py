@@ -1281,15 +1281,33 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     run.perf["retry_ms"] = run.perf.get("retry_ms", 0.0) + (time.monotonic() - t_wait) * 1000
                     _step(run, "retry", e.code, "done", str(e), data={"seconds": wait, "attempt": retries}, step_id=sid)
                     continue
-                if unreachable and net_waits < 2 and re.search(r"getaddrinfo|Name or service|nodename|No address|"
-                                                               r"network is unreachable|10051|10065|ConnectError", str(e), re.I):
-                    # This computer lost its internet (DNS fails for every host): the task ended after two quick retries.
-                    # Wait for the connection to come back (up to 5 minutes), then go on where it stopped.
+                if unreachable and re.search(r"getaddrinfo|Name or service|nodename|No address|network is unreachable|"
+                                             r"10051|10065|11001|11002|ConnectError|ConnectTimeout", str(e), re.I):
+                    # The provider's address does not resolve / connect. Either this computer is offline (wait until it
+                    # is back, as long as it takes) or only part of the network is down while the probe hosts answer
+                    # (a DNS outage for some names, a router dropping some routes): the task used to end after two
+                    # quick retries (nemotron runs, a real 1-minute outage: two tasks lost). It now waits with a
+                    # growing pause (5 s .. 30 s) and asks the same model again, until it gets through or the user
+                    # stops the task. No model switch: the same provider would be down for all of its models.
                     net_waits += 1
-                    sid = _step(run, "retry", "offline", "running", str(e), data={"seconds": 300, "attempt": net_waits})
-                    back = await netwatch.wait_online(run.cancel, 300)
-                    _step(run, "retry", "offline", "done", str(e), data={"seconds": 300, "attempt": net_waits}, step_id=sid)
+                    pause = min(30, 5 * 2 ** min(3, net_waits - 1))
+                    sid = _step(run, "retry", "offline", "running", str(e), data={"seconds": pause, "attempt": net_waits,
+                                                                                  "until_online": True})
+                    t_wait = time.monotonic()
+                    if not await netwatch.check_now():
+                        back = await netwatch.wait_online(run.cancel)
+                    else:
+                        try:
+                            await asyncio.wait_for(run.cancel.wait(), pause)
+                        except asyncio.TimeoutError:
+                            pass
+                        back = not run.cancel.is_set()
+                    gone = int(time.monotonic() - t_wait)
+                    run.perf["retry_ms"] = run.perf.get("retry_ms", 0.0) + gone * 1000
+                    _step(run, "retry", "offline", "done", str(e),
+                          data={"seconds": gone, "attempt": net_waits, "until_online": True}, step_id=sid)
                     if back:
+                        broke()  # a half-written reply is kept and continued
                         retries = 0
                         continue
                 raise
@@ -1815,7 +1833,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                     unresolved = track_syntax(name, res)
                     if not res.ok and name == "run" and not (res.data or {}).get("repeat_ok"):
                         failure = res.output
-                messages += [{"role": "assistant", "content": raw},
+                # Blank runs are not sent back: a turn of thousands of empty lines made the next prompt 131K tokens.
+                messages += [{"role": "assistant", "content": re.sub(r"[ \t]{200,}", " ", re.sub(r"(?:[ \t]*\n){6,}", "\n\n\n", raw))},
                              {"role": "user", "content": "Tool results:\n" + "\n".join(results)}]
                 _checkpoint(run, messages, first_run_msg, clean_text)
             tool_turns += 1

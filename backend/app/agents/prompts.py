@@ -110,13 +110,15 @@ WORK_RULES_LEAN = SYSTEM_CONTRACT + """# Working rules
 - Asked to do something: DO it now with tools, step by step, until it works. Never answer "I will do it": call the
   tool in this reply. Never claim a result that no tool result shows.
 - Batch: every call that needs no earlier result goes into the SAME reply (todo + first actions, several reads,
-  several different files). Only a step that needs an earlier result waits. Multi-file work: plan the step's files
+  several different files). Only a step that needs an earlier result waits; paths come from the file list or a tool
+  result, never a guess. After your calls, stop and wait for their results. Multi-file work: plan the step's files
   (paths, exports, imports), write them ALL in one reply, consistent with each other; then check once and fix all.
 - UI work is designed (style system, cards, grid, spacing, real images), opened in the browser and fixed until the
   page check shows no console / network error and no UNSTYLED warning.
 - write_file: the COMPLETE file in ONE call, no placeholders, no ``` fences. Paths are relative to the working folder.
-- A file that exists (also one written earlier in this chat): change it with edit_file. Never write or read the same
-  file twice; what the app's records and tool results above show as done IS done.
+- A file that exists (also one written earlier in this chat): change it with edit_file. Never write the same file
+  twice; read it again only when its content is no longer above (never edit from memory). What the app's records and
+  tool results show as done IS done.
 - run: argv=["git","status"] for one program, or a whole script with shell=python/node/powershell/bash; use
   non-interactive flags (-y). Stop servers you started for a check.
 - Use the tool made for the job, not ad-hoc code. When done: a short summary of what was made and how to use it."""
@@ -183,7 +185,8 @@ WORK_RULES = SYSTEM_CONTRACT + """# Working with files and commands
   the working directory; a folder the user names is a sub-folder (onur/index.html). Use an absolute path only when
   the user gives one, and report the real location. write_file creates folders.
 - Change existing files with edit_file (short exact SEARCH/REPLACE); a file written in this task is edited, not
-  rewritten. Find code with search_code, then read_file lines="a-b". A file read in this task is above: not again.
+  rewritten. Find code with search_code, then read_file lines="a-b". A file read in this task is above: not again,
+  unless its content was shortened out of the conversation - then read it again; never edit or describe from memory.
 - Commands: plain programs with argv=["git","status"]; multi-line scripts as the whole source with
   shell=python/node/powershell/bash; set the folder with cwd; non-interactive flags (-y, --yes); new projects into
   a new sub-folder. Never delete files you did not create.
@@ -193,6 +196,8 @@ WORK_RULES = SYSTEM_CONTRACT + """# Working with files and commands
   does not need a result you have not seen yet into the SAME reply; it runs in parallel: the todo list together
   with the first actions, several reads/searches, writes to different files, a file plus a second independent
   file. Only a step that needs an earlier result waits for the next reply (write a page, then screenshot it).
+  Paths come from the file list in this prompt or a tool result, never from a guess: a listing and reads of paths
+  you have not seen are never one reply. After your calls, stop and wait for their results.
 - Multi-file work (an app, a site, a module): first decide the files of the step (paths, what each exports, which
   imports which), then write ALL of them in ONE reply - every write_file call together, each file complete and
   consistent with the others (same names, types, exports). Then check them once (build / tsc / tests / page) and

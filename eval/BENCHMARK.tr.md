@@ -4,6 +4,53 @@
 
 [Ajan değerlendirmesinin](README.tr.md) gerçek modellerdeki sonuçları. Her satır bir görevin bir çalıştırmasıdır ve yalnızca gerçek çıktıya göre puanlanır. En yenisi üstte.
 
+## 2026-11-23 · v0.20.1 · iki NVIDIA modeli · dokuz görev · Türkçe görev metinleri · modeller tek tek
+
+| Model | Tam geçen | Kontrol bazında | Görev bazında | Süre | Uygulama hatası |
+|---|---|---|---|---|---|
+| `nvidia/nemotron-3.5-super-vl-120b-a12b` | **9/9 (%100)** | 65/65 | %100 | 7,6 dk | yok |
+| `nvidia/nemotron-3-ultra-550b-a55b` | **9/9 (%100)** | 65/65 | %100 | 32,8 dk | yok |
+
+![Görev × model: geçen kontroller](benchmark/heatmap.tr.svg)
+
+![Süre nereye gitti](benchmark/time.tr.svg)
+
+Etkileşimli rapor [benchmark/report.tr.html](benchmark/report.tr.html) dosyasında; indirip tarayıcıda aç. Üzerine gelince ayrıntılar, açık ve koyu tema ve tüm kontroller orada. Veriler [benchmark/results.json](benchmark/results.json) dosyasında.
+
+**Önemli olan başarı oranı ve uygulama hatası olmaması.** Süre çoğunlukla uygulamaya değil sağlayıcıya bağlı:
+- **550B:** sürenin %80'i NVIDIA'nın ücretsiz kuyruğunda bekleyerek geçti; her ilk token'dan önce yaklaşık 26 sn. Model %17 yazdı, uygulama %0.
+- **3.5 Super:** sürenin %72'si modelin yazmasıydı; uygulama %1.
+
+| Görev | 3.5 Super | Süre (bekleme / üretim) | 550B | Süre (bekleme / üretim) |
+|---|---|---|---|---|
+| Web uygulaması (tarayıcı testi) | **8/8** | 80 sn (17 / 49) | **8/8** | 331 sn (253 / 38) |
+| Bozuk Python düzeltme | **3/3** | 37 sn (4 / 31) | **3/3** | 200 sn (163 / 33) |
+| 5 dosyalı değişiklik | **4/4** | 36 sn (9 / 26) | **4/4** | 273 sn (246 / 25) |
+| Word + PDF | **7/7** | 37 sn (7 / 28) | **7/7** | 130 sn (85 / 36) |
+| Bağlantı kopması | **9/9** | 79 sn (9 / 57) | **9/9** | 168 sn (128 / 26) |
+| Web araştırması | **10/10** | 50 sn (12 / 31) | **10/10** | 206 sn (152 / 27) |
+| Kod incelemesi | **7/7** | 56 sn (9 / 46) | **7/7** | 242 sn (148 / 93) |
+| Mermaid akış şeması | **7/7** | 28 sn (2 / 25) | **7/7** | 128 sn (106 / 21) |
+| Git dalları | **10/10** | 52 sn (14 / 34) | **10/10** | 294 sn (249 / 43) |
+
+Beceri seçimi puan değil, nottur. İki model de inceleme, akış şeması ve git için beceri yüklemedi, işi becerisiz doğru yaptı.
+
+### Dört tur: ne bulundu, ne düzeltildi
+
+| Tur | Bulunan | Düzeltme (v0.20.1) |
+|---|---|---|
+| 2 | 3.5 Super: 5 dosyalı değişiklik **1.040 sn** sürdü. Bir tur, araç çağrısı argümanlarının içinde 131.072 token boşluk yazdı (boş akış denetiminin dışında); sonraki istek hepsini taşıdı (141K token'lık istem) | Araç çağrısı parçalarında boşluk denetimi; her büyük argümanda tekrar denetimi; son tam çağrıdan 24K karakter sonra akış kesilir; boşluk dizileri geri gönderilmez → **36 sn** |
+| 2 | 3.5 Super, `shop/models.py` yerine `models/product.py` tahmin etti | Düz sohbet istemde dosya listesini alır; "yollar listeden ya da araç sonucundan gelir, sonra sonuçları bekle" |
+| 2 | Kopma kaydı "bu dosyaları yeniden okuma" diyordu; modeller ezberden düzenledi | İçerik sohbette yoksa yeniden okunur; kayıt defteri dosyaların kendisi değil, bir kayıt olduğunu söyler |
+| 2 | 3.5 Super, git: 0/2, hiçbir şey çalışmadı. Parantezleri kaybolmuş `argument key="name" type="string"run…` yazdı | Bu biçim için ayrıştırıcı; çağrı kurulamazsa sızıntı sayılır (yeniden dener) |
+| 2 | 3.5 Super `sqlite.org/license.html` (404) kaynak gösterdi | – (modelin hatası; denetleyici her kaynağı açar) → 3. ve 4. turda 10/10 |
+| 2 | Çalışma sırasında gerçek bir ağ kopması görevleri bitirdi: DNS dalı iki denemede vazgeçiyordu, benzetilmiş ağ bayrağı gerçek kesintiyi gizliyordu | DNS hataları ağ dönene kadar bekleyip yeniden dener (devre kesici yok); bayrak gerçek kesintiyi asla gizlemez |
+| 3 | 550B, git: **1.602 sn**, 1.171 sn'si 429 geri çekilmesi (tek anahtarda iki çalışma), ardından henüz commit'i olmayan bir depoda 60 git branch/log çağrısı | 429'dan sonra hız 10 dk düşürülür; çalıştırma sonucu commit'siz depoyu açıklar → **294 sn** |
+| 3, 4 | Denetleyiciler: başlık + gövde olarak yazılan bulgu "derecesiz" sayıldı; boş liste satırı "Ekle"yi bozuk gösterdi; paralel araç süresi toplandı | Denetleyiciler düzeltildi, çalıştırmalar kendi dosyalarıyla `--rescore` ile yeniden puanlandı; araç süresi duvar saati |
+| – | Kullanıcılar arama kartlarında "okundu" görmedi: modeller `web_search` kullanıp özetlerden cevap verdi | `web_search` ilk iki kaynağı okur |
+
+Yukarıdaki sonuç 4. turdur. 3. turda 3.5 Super zaten 9/9 (denetleyici düzeltmesinden sonra), 550B 8/9 (git) almıştı.
+
 ## 2026-11-23 · v0.20.0 · `evren:auto` · Türkçe görev metinleri · yalnızca CPU'lu PC (model bulutta çalışır)
 
 | Görev | Kontrol | Durum | Süre | Tur | Çıktı token | Araç çağrısı (hata) | Yeniden deneme | Model değişimi |
@@ -34,7 +81,9 @@
 ## Kendin çalıştır
 
 ```powershell
-.venv\Scripts\python.exe eval\run_eval.py --models "evren:auto,nvidia:nvidia/nemotron-3.5-super-vl-120b-a12b"
+.venv\Scripts\python.exe eval\run_eval.py --models "nvidia:nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
 
-Rapor `eval/reports/<tarih-saat>/` klasörüne yazılır (`report.md`, `report.json`, iz kayıtları). Sonuçlarını tarih, sürüm, model ve dil ile buraya ekle.
+Aynı API anahtarını paylaşan modelleri paralel değil, tek tek çalıştır: anahtarın hız sınırını paylaşırlar ve
+beklemeler süreleri bozar. Rapor `eval/reports/<tarih-saat>/` klasörüne yazılır (`report.html`, `report.md`,
+`report.json`, grafikler, iz kayıtları). Sonuçlarını tarih, sürüm, model ve dil ile buraya ekle.

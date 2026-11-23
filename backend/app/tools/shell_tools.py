@@ -392,6 +392,12 @@ async def _spawn(ctx: ToolContext, args: dict, body: str, background: bool):
         # would reach the program as part of the text.
         direct = [_unquote_arg(str(x)) for x in direct]
         asked_shell = args.get("shell")
+        interp = {"python": "python", "node": "node", "php": "php"}.get(asked_shell or "")
+        if interp and Path(direct[0]).stem.lower() not in (interp, "python3", "py", "nodejs") \
+                and (direct[0].startswith("-") or Path(direct[0]).suffix.lower() in (".py", ".js", ".mjs", ".cjs", ".php")):
+            # shell="python" argv=["-m", "shop.cli"] means `python -m shop.cli`: "-m" was taken for a program
+            # ("program '-m' is not installed", nemotron-3-ultra). The interpreter the shell names comes first.
+            direct = [interp, *direct]
         if (asked_shell in ("bash", "powershell", "powershell5", "pwsh", "cmd")
                 and not shutil.which(direct[0], path=policy.minimal_env().get("PATH"))
                 and not Path(direct[0]).is_file()):
@@ -626,9 +632,46 @@ async def run(ctx, args, body):
     where = _real_places(ctx, out) if info.exit_code not in (0, None) else ""
     if info.exit_code not in (0, None):
         where += error_context(ctx, out)
+    where += git_unborn_note(ctx.root, args.get("cwd"), body or " ".join(map(str, args.get("argv") or [])), out)
     return ToolResult(info.state == "exited" and not broken,
                       f"exit_code={info.exit_code} state={info.state}\n{clip(out)}{broken}{where}",
                       {"process_id": info.id, "exit_code": info.exit_code})
+
+
+_GIT_LOST = re.compile(r"does not have any commits yet|did not match any file\(s\) known to git|not a valid object name|"
+                       r"unknown revision|ambiguous argument 'HEAD'", re.I)
+
+
+def git_unborn_note(root, cwd, command: str, out: str) -> str:
+    """A git repository with no commit yet: `git branch` prints nothing, `git log` fails and `git checkout main` says
+    "pathspec did not match". nemotron-3-ultra skipped the first commit and ran git branch / log / reflog 60 times over
+    26 minutes, reading the empty answers as a broken repository. The app says what the state really is."""
+    if not re.match(r"\s*(?:&\s*)?git(?:\.exe)?\b", command or "") or re.search(r"\bcommit\b", command or ""):
+        return ""
+    text = re.sub(r"^exit_code=.*$", "", out or "", flags=re.M).strip()
+    if text and not _GIT_LOST.search(text):
+        return ""
+    try:
+        d = (Path(root) / (cwd or ".")).resolve()
+        for p in (d, *d.parents):
+            if (p / ".git" / "HEAD").is_file():
+                git = p / ".git"
+                break
+        else:
+            return ""
+        head = (git / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+        if not head.startswith("ref: "):
+            return ""
+        ref = head[5:].strip()
+        packed = (git / "packed-refs").read_text(encoding="utf-8", errors="replace") if (git / "packed-refs").is_file() else ""
+        if (git / ref).is_file() or f" {ref}" in packed:
+            return ""
+    except OSError:
+        return ""
+    branch = ref.removeprefix("refs/heads/")
+    return (f"\n[App note: this repository has no commit yet (the current branch '{branch}' is unborn). Until the first "
+            "`git commit`, git branch shows nothing, git log fails and no other branch can be checked out - nothing is "
+            "broken. Stage the files (git add) and commit first.]")
 
 
 # Lookups whose exit code 1 means "nothing found" (where / which / Get-Command / npm ls / pip show / grep...).

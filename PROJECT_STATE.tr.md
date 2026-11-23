@@ -11,6 +11,28 @@ Otonom, çoklu ajan destekli, yerel ve bulut LLM'leri ile çalışan tam kapsaml
 - **Son Başarılı İşlem:** v0.10.0 — profesyonel belge motoru (Chromium PDF/HTML + KaTeX, tasarımlı DOCX/PPTX/XLSX), ayarlanabilir akış zaman aşımları ve parçalı yazma, run_state.json ile kesinti sonrası devam, paralel araç yürütme, canlı todos, çok dilli niyet tablosu, zengin mesaj kutusu, mesaj sayfalama/kopyala/sil/alıntı, sağ tık menüleri, gruplu değişiklik kartı, medya oynatıcılar, servis kartları, kota/bakiye ekranı.
 - **Önceki:** v0.6 — kesintisiz orkestrasyon (devam ettirme, sessiz araç yazımında heartbeat, görev içi bağlam kırpma/özetleme, canlı bağlam sayımı, takılı adım temizliği, tekrar eden çağrı koruması, asılsız dosya iddiası koruması), todo aracı + canlı yapılacaklar listesi, otomatik yetenek algılama (use_skill), bilgi sorularında salt-okuma araçlar, arama alaka filtresi + Bing URL çözümü, canlı gruplu adımlar, model seçiciden bağlam düzenleme (ayarlarla senkron), aç/kapat popover'lar, çizim ekranı, klasör yükleme, hedef modu, belge kartları ve önizleme (xlsx/docx/pdf/pptx), kökteki gereksiz docs/ kaldırıldı.
 
+## v0.20.1 (2026-11-23): iki modelli benchmark, akış ve bellek düzeltmeleri
+- **Benchmark (4. tur, modeller tek tek):** 3.5 Super ve 550B ikisi de 9/9 görev, 65/65 kontrol, uygulama hatası yok. Sonuçlar, grafikler ve rapor `eval/benchmark/` içinde ve kök README'lerde.
+- **`streaming.py`:**
+  - Boş akış denetimi araç çağrısı parçalarını da kapsar.
+  - `AFTER_CALL_CHARS=24000`: son tam çağrıdan bu kadar sonra akış kesilir (`ai_note_after_calls` notu).
+- **`continuity._file_loop_check`:** yalnızca `content`'e değil, en uzun metin argümanına bakar.
+- **`orchestrator`:** metin protokolü ham çıktısı geçmişe dönmeden önce boşluk dizileri daraltılır.
+- **Bellek:**
+  - `prompting`: düz sohbetler çalışma klasörünün dosya ağacını alır.
+  - `prompts`: yollar yalnızca listeden ya da araç sonucundan, sonra sonuçları bekle; içeriği sohbetten çıkmış dosya yeniden okunur.
+  - Kopma kaydı artık "yeniden okuma" demiyor; kayıt defteri görünümü dosyaların kendisi değil, bir kayıt olduğunu söylüyor.
+- **`stream_parser.nemotron_args`:** `argument key=… type=…` çağrı biçimi; çağrı kurulamazsa LEAK.
+- **`web_search`:** ilk 2 kaynağı okur (`web.research(sources=2, deadline=8)`) ve kartları okundu işaretler.
+- **`usage.note_rate_limit` / `effective_rpm`:** 429'dan sonra hız 10 dk düşürülür.
+- **`shell_tools.git_unborn_note`:** çalıştırma sonucu henüz commit'i olmayan depoyu açıklar.
+- **`trace.time_split`:** araç süresi duvar saatidir.
+- **Eval:**
+  - `verdict()` değerlendirmesi; `--rescore --kept`; birleştirme görev adlarını yeniden yazar.
+  - `_chunks` Markdown bölümlerini ayırır; `check_web` boş liste satırını saymaz.
+- **`set_version`:** kök README rozetlerini de günceller ve denetler.
+- **Testler:** `test_nemotron_args`, `test_blank_stream` (+2), `test_trace_tools_wall`, `test_pace_adaptive`, `test_git_unborn_note`.
+
 ## v0.20.0 (2026-11-23): ajan değerlendirmesi, iz kayıtları, belge başlıkları
 - **`agents/trace.py`:**
   - Her görevin sonunda `record`, `.session/traces/<run>.jsonl` yazar: bir run satırı, model turu başına bir satır (`run.perf`'ten) ve adım başına bir satır, zaman sırasıyla. Uzun değerler kısaltılır, ilk hata satırı tutulur.

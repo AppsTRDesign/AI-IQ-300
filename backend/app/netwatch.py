@@ -57,8 +57,10 @@ def enabled() -> bool:
 def probe() -> bool:
     """True when this computer reaches the internet (blocking, ~0.1 s online, at most ~4 s offline)."""
     sim = os.environ.get("AIIQ_NET_SIM")  # end-to-end tests: while this file exists the computer counts as offline
-    if sim:
-        return not os.path.exists(sim)
+    if sim and os.path.exists(sim):
+        return False
+    # Without the file the real connection is probed: the evaluation sets AIIQ_NET_SIM for every task, and a real
+    # outage during one was taken for "online" (the provider was then called unreachable and the task ended).
     if not enabled():
         return True
     px = _proxy()

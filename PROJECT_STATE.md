@@ -29,6 +29,28 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
 
+## v0.20.1 (2026-11-23): two-model benchmark, stream and memory fixes
+- **Benchmark (4th round, one model at a time):** 3.5 Super and 550B both 9/9 tasks, 65/65 checks, no app errors. The results, charts and report are in `eval/benchmark/` and in the root READMEs.
+- **`streaming.py`:**
+  - The blank-stream check also covers tool-call deltas.
+  - `AFTER_CALL_CHARS=24000`: the stream is cut that far after the last complete call (note `ai_note_after_calls`).
+- **`continuity._file_loop_check`:** looks at the longest string argument, not only `content`.
+- **`orchestrator`:** blank runs are collapsed before raw text-protocol output goes back into history.
+- **Memory:**
+  - `prompting`: plain chats get the working folder's file tree.
+  - `prompts`: paths only from the list or a tool result, then wait for results; read a file again once its content is gone from the conversation.
+  - The break record no longer says "do not read again", and the ledger view says it is a record, not the files.
+- **`stream_parser.nemotron_args`:** the `argument key=… type=…` call format; LEAK when no call can be built.
+- **`web_search`:** reads the top 2 sources (`web.research(sources=2, deadline=8)`) and marks the cards read.
+- **`usage.note_rate_limit` / `effective_rpm`:** pacing lowers the rate for 10 min after a 429.
+- **`shell_tools.git_unborn_note`:** the run result explains a repository with no commit yet.
+- **`trace.time_split`:** tool time is wall time.
+- **Eval:**
+  - `verdict()` assessment; `--rescore --kept`; merge re-titles tasks.
+  - `_chunks` splits Markdown sections; `check_web` ignores the empty-state row.
+- **`set_version`:** also updates and checks the root README badges.
+- **Tests:** `test_nemotron_args`, `test_blank_stream` (+2), `test_trace_tools_wall`, `test_pace_adaptive`, `test_git_unborn_note`.
+
 ## v0.20.0 (2026-11-23): agent evaluation, traces, document headings
 - **`agents/trace.py`:**
   - At the end of each task, `record` writes `.session/traces/<run>.jsonl`: a run line, one line per model turn (from `run.perf`), and one per step in time order. Long values are cut, and the first error line is kept.

@@ -220,9 +220,12 @@ def _system_prompt(role: str, root, session_id: str, project: dict | None, skill
     available = {k: v for k, v in catalog.skills().items() if k not in skill_names}
     # Skill choice is the model's: every skill with its purpose, and the rule to load one only when the request's
     # GOAL needs it (trigger words loaded unrelated skills - a PDF about Android loaded mobile-app-test).
-    choose = ("# Skills - you choose: if the request's goal clearly needs one, call use_skill NAME first and follow "
-              "it; if none fits, use none (a word in the request is not a reason). The user can also force one with "
-              "/name.\n")
+    # A strong model (nemotron-3-ultra) loaded no skill for a code review, a flowchart or git work, each the very
+    # purpose of a listed skill: "use none" read as the default. The goal decides, both ways.
+    choose = ("# Skills - you choose: when the request's GOAL is a listed skill's purpose (a code review, a diagram, git "
+              "work, a sourced web report ...), call use_skill NAME first and follow it: it holds the tested steps and "
+              "the expected output. If no skill's purpose is the goal, use none (a word in the request is not a reason). "
+              "The user can also force one with /name.\n")
     if available and lean and (tools is None or "use_skill" in tools):
         parts.append(choose + "; ".join(f"{k}: {_short_desc(v, 70)}" for k, v in available.items()))
         sizes["skills"] = tokens.count(parts[-1])
@@ -260,6 +263,13 @@ def _system_prompt(role: str, root, session_id: str, project: dict | None, skill
         if code_map:  # where things are defined: search_code / symbols / read_file lines=... go straight there
             parts[-1] += "\n\n# Code map (definitions per file)\n" + code_map
         sizes["project"] = sizes.get("project", 0) + tokens.count(parts[-1])
+    elif root and (tools is None or tools & WORK_TOOLS):
+        # A plain chat's working folder had no listing at all: models guessed the layout (models/product.py,
+        # inventory/inventory.py for shop/*.py) and sent reads and edits to paths that never existed.
+        tree = workspace.summarize_tree(root, 25 if lean else 40)
+        if tree != "(empty)":
+            parts.append("# Files in the working folder (real paths; use exactly these)\n" + tree)
+            sizes["project"] = sizes.get("project", 0) + tokens.count(parts[-1])
     state = sessions.state_file(session_id)
     if led := ledger.view(session_id, lean):  # the app's own record of earlier tasks (env, files, servers, failures)
         parts.append(led)

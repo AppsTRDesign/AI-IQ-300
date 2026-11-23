@@ -2,7 +2,7 @@
 
 chat/<id>/.session/traces/<run_id>.jsonl
   line 1   {"type": "run", run, model, status, request, started, ended, timing, files, commands, error}
-  then     {"type": "turn", i, wait_ms, total_ms, out_tokens, tps}            one per model request
+  then     {"type": "turn", i, wait_ms, total_ms, in_tokens, out_tokens, tps} one per model request
            {"type": "step", t, ms, kind, tool, title, status, path, error}    one per step, in time order
 
 Written by the app from the task's own records (steps, per-turn timing), never by the model. Long values are cut,
@@ -46,7 +46,8 @@ def events(steps: list[dict], perf: dict | None) -> list[dict]:
     out: list[dict] = []
     for i, t in enumerate((perf or {}).get("turns") or []):
         out.append({"type": "turn", "i": i + 1, **{k: (round(t[k]) if isinstance(t.get(k), float) else t.get(k))
-                                                   for k in ("wait_ms", "total_ms", "out_tokens", "tps") if k in t}})
+                                                   for k in ("wait_ms", "total_ms", "in_tokens", "out_tokens", "tps")
+                                                   if k in t}})
     for s in sorted(steps or [], key=lambda s: s.get("t0") or s.get("ts") or 0):
         d = s.get("data") or {}
         ev = {"type": "step", "t": round(s.get("t0") or s.get("ts") or 0, 3), "ms": s.get("ms"), "kind": s.get("kind"),
@@ -103,6 +104,42 @@ def load(session_id: str, run_id: str) -> list[dict]:
     return out
 
 
+def time_split(lines: list[dict]) -> dict:
+    """Where a task's time went, in seconds, so a slow task shows whether the provider or the work was slow:
+    wait_s       until each request's first token: provider queue + reading the prompt (grows with in_tokens)
+    gen_s        streaming the answers after the first token (output speed)
+    tools_s      running tools;  retry_s  waiting after provider errors;  app_s  the rest (the app's own work)
+    max_wait_s   the slowest single wait;  wait_per_1k  wait seconds per 1,000 prompt tokens (median of turns
+                 with a known prompt size); a high value with small prompts points at the provider (queue/latency)."""
+    head = next((x for x in lines if x.get("type") == "run"), {})
+    timing = head.get("timing") or {}
+    turns = [x for x in lines if x.get("type") == "turn"]
+    s = lambda ms: round((ms or 0) / 1000, 1)  # noqa: E731
+    wait = sum(t.get("wait_ms") or 0 for t in turns) if turns else timing.get("model_wait_ms")
+    model = sum(t.get("total_ms") or 0 for t in turns) if turns else timing.get("model_ms")
+    per_k = sorted((t["wait_ms"] / 1000) / (t["in_tokens"] / 1000) for t in turns
+                   if (t.get("in_tokens") or 0) >= 500 and t.get("wait_ms"))
+    # Tools of one turn run in parallel: their wall time, not the sum of their durations (four research calls of
+    # 20 s each showed 66 s of tools in a 59 s task).
+    spans = sorted((x["t"], x["t"] + x["ms"] / 1000) for x in lines
+                   if x.get("type") == "step" and x.get("tool") and x.get("t") and x.get("ms"))
+    tools_ms, end = timing.get("tools_ms"), None
+    if spans:
+        wall = 0.0
+        for a, b in spans:
+            if end is None or a > end:
+                wall += b - a
+                end = b
+            elif b > end:
+                wall += b - end
+                end = b
+        tools_ms = wall * 1000
+    return {"wait_s": s(wait), "gen_s": s(max(0, (model or 0) - (wait or 0))), "tools_s": s(tools_ms),
+            "retry_s": s(timing.get("retry_ms")), "app_s": s(timing.get("overhead_ms")),
+            "max_wait_s": s(max((t.get("wait_ms") or 0 for t in turns), default=timing.get("slowest_wait_ms") or 0)),
+            "wait_per_1k": round(per_k[len(per_k) // 2], 2) if per_k else None}
+
+
 def summary(lines: list[dict]) -> dict:
     """Counts from a trace: turns, tool calls (failed), tokens out, retries, model switches, error kinds."""
     head = next((x for x in lines if x.get("type") == "run"), {})
@@ -113,7 +150,7 @@ def summary(lines: list[dict]) -> dict:
         if x.get("status") == "error":
             errs[x["tool"]] = errs.get(x["tool"], 0) + 1
     timing = head.get("timing") or {}
-    return {"status": head.get("status"), "model": head.get("model"), "seconds": round((timing.get("total_ms") or 0) / 1000, 1),
+    return {**time_split(lines),"status": head.get("status"), "model": head.get("model"), "seconds": round((timing.get("total_ms") or 0) / 1000, 1),
             "turns": timing.get("turns") or sum(x.get("type") == "turn" for x in lines),
             "out_tokens": timing.get("out_tokens") or 0, "tool_calls": len(tools),
             "tool_errors": sum(errs.values()), "errors_by_tool": errs,

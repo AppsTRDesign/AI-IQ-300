@@ -1352,6 +1352,7 @@
   "step_photo": "Photo downloaded",
   "step_photo_running": "Searching photos",
   "ai_note_loop": "The model began repeating the same text; the repeats were removed and its answer was ended there.",
+  "ai_note_after_calls": "The model kept writing after its tool calls; the calls run now and it continues with their results.",
   "diffs_search": "Search file names or code…",
   "diffs_found": "{n} files",
   "diffs_none": "No matching files.",

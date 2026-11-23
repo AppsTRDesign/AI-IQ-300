@@ -762,6 +762,15 @@ class BrowserAgent:
             if name:
                 cands += [page.get_by_placeholder(name, exact=True), page.get_by_label(name, exact=True),
                           page.locator(f'[name="{name}"]'), page.get_by_text(name, exact=True)]
+            if role in ARIA_ROLES and role in ("textbox", "searchbox", "combobox", "button"):
+                # a field / button without a name (or whose name changed with its text): the only one of its kind
+                # on the page is the same element (a to-do app's single input, re-rendered after Add)
+                only = page.get_by_role(role)
+                try:
+                    if await only.count() == 1:
+                        cands.append(only)
+                except Exception:
+                    pass
             for c in cands:
                 try:
                     if n := await c.count():

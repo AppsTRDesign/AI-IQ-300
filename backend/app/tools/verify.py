@@ -78,6 +78,10 @@ async def _probe(path: Path) -> str | None:
     return None
 
 
+EMPTY_OK = {"__init__.py", ".gitkeep", ".keep", "py.typed", ".nojekyll", ".gitignore", ".env", "conftest.py",
+            "requirements.txt", "__main__.py"}
+
+
 def _looks_text(head: bytes) -> bool:
     if not head or b"\x00" in head:
         return False
@@ -96,6 +100,10 @@ async def problem(path: Path) -> str | None:
         return None
     s = path.suffix.lower()
     if size == 0:
+        # empty by convention: a package marker or a folder keeper is not a broken output ("touch shop/__init__.py"
+        # was reported as an invalid file)
+        if path.name.lower() in EMPTY_OK:
+            return None
         return "empty (0 bytes)"
     try:
         with path.open("rb") as f:

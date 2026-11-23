@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/sürüm-0.18.6-2563eb" alt="sürüm">
+  <img src="https://img.shields.io/badge/sürüm-0.20.1-2563eb" alt="sürüm">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -21,6 +21,22 @@
 AI IQ 300, bilgisayarınızda çalışan ve ChatGPT/Claude tarzı sade bir sohbet arayüzüne sahip bir **yazılım geliştirme ve otomasyon merkezidir**. Ona bir hedef verirsiniz: klasörleri ve dosyaları oluşturur, PowerShell/CMD/Python/Node/PHP komutlarını çalıştırır, hataları ayıklar, uygulamayı tarayıcıda test eder ve sonucu size raporlar. Siz bir bulut sağlayıcı seçmedikçe verileriniz bilgisayarınızdan çıkmaz.
 
 > "PHP ile tam bir e-ticaret sitesi kur" deyin; proje yapısı, veritabanı, arayüz ve test adım adım oluşur. Model işi bir yapılacaklar listesine böler, her adımı sohbette canlı izlersiniz.
+
+## 📊 Benchmark: dokuz gerçek görev, gerçek çıktıdan puan
+
+İki NVIDIA modeli AI IQ 300'de aynı dokuz görevi yaptı (v0.20.1, 2026-11-23, modeller sırayla). Modelin söyledikleri puanlanmadı. Her kontrol, görevden sonra gerçekten var olana bakar: diskteki dosyalar, gizli testler, sayfaya tıklayan gerçek bir tarayıcı, kendi okuyucularıyla açılan belgeler, git'in kendisi, şemayı çizen Mermaid ve tek tek açılan her kaynak sayfa.
+
+| Model | Tam geçen | Kontrol | Süre | Uygulama hatası |
+|---|---|---|---|---|
+| `nemotron-3.5-super-vl-120b-a12b` | **9/9 (%100)** | 65/65 | 7,6 dk | yok |
+| `nemotron-3-ultra-550b-a55b` | **9/9 (%100)** | 65/65 | 32,8 dk | yok |
+
+<p align="center"><img src="eval/benchmark/heatmap.tr.svg" alt="Görev × model: geçen kontroller" width="100%"></p>
+<p align="center"><img src="eval/benchmark/time.tr.svg" alt="Her görevin süresi nereye gitti" width="100%"></p>
+
+- **Görevler:** tarayıcıda test edilen yapılacaklar uygulaması, gizli testlere karşı düzeltilen bozuk Python, beş modülde yeniden adlandırma, Word + PDF rapor, görevin ortasında gerçekten kesilen bağlantı, her kaynağı denetlenen web araştırması, güvenlik odaklı kod incelemesi, Mermaid akış şeması ve git dalları.
+- **Ölçüt başarı oranı ve uygulama hatası olmamasıdır.** Süre çoğunlukla sağlayıcıya bağlı: 550B koşusunun %80'i NVIDIA'nın ücretsiz kuyruğunda geçti (her isteğin ilk token'ından önce ortalama 26 sn). Uygulamanın kendi payı sürenin %0-1'i.
+- Üzerine gelince ayrıntı gösteren tam rapor: [eval/benchmark/report.tr.html](eval/benchmark/report.tr.html) (indirip açın) · veri: [results.json](eval/benchmark/results.json) · yöntem ve geçmiş: [eval/BENCHMARK.tr.md](eval/BENCHMARK.tr.md) · kendiniz çalıştırın: [eval/README.tr.md](eval/README.tr.md).
 
 ## 🎬 Tanıtım videosu
 
@@ -368,6 +384,30 @@ Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasör�
 **Nerede:** Komutu **Beceriler** sayfasındaki içe aktarma kutusuna ya da MCP sunucu formuna yapıştırın; formda Kaydet yerine **Becerileri içe aktar** düğmesi çıkar. Böyle bir komutla "Başlatılamadı" olan sunucu kartında da aynı düğme vardır (içe aktarmadan sonra işe yaramayan sunucu kaydı silinebilir).
 
 **Nasıl çalışır:** Bir seçim penceresi becerileri listeler (gruplu, aranabilir, açıklamalı; daha önce aktarılanlar işaretli). Seçilen her beceri kaynağıyla kaydedilir; tekrar içe aktarmak kopya oluşturmaz, günceller. Aynı adlı yerleşik bir beceri asla ezilmez (yenisinin önüne sahibinin adı eklenir). Becerinin yanındaki dosyalar (referanslar, betikler) bağlantı olarak eklenir; beceri onlara yönlendirince model açar. Her beceri modelin istemine kısa bir satır ekler (~40 token); pencere toplamı gösterir ve tek seferde en fazla 60 beceriye izin verir - yalnızca kullanacaklarınızı seçin. `--global`, `--force`, `--cursor`, `--claude`, `--dest` gibi bayraklar yok sayılır: beceriler her zaman uygulamanın kendi Beceriler bölümüne gider.
+
+## 🆕 v0.20.1 ile gelenler (modeller uygulamaya uyuyor: başıboş tur yok, tahmin edilen yol yok, dokuz görevli benchmark)
+
+İki NVIDIA modeliyle yapılan dört benchmark turunun bulduğu sorunlar aşağıda. Hepsi düzeltildi; son turda iki model de 9/9 görevi geçti.
+- **Başıboş tur yok:** bir model tek turda bir araç çağrısının içine 131.072 token boş çıktı yazdı (995 sn). Sonraki istek bunun hepsini taşıdı (141K token'lık istem) ve görev "unutkan" göründü. Artık:
+  - boş akış denetimi araç çağrısı argümanlarına da bakıyor
+  - tekrar denetimi her büyük argümana bakıyor
+  - çağrılarından sonra uzun süre yazmayı sürdüren modelin akışı kesilip çağrıları çalıştırılıyor
+  - boş satır yığınları geri gönderilmiyor
+
+  Aynı beş dosyalı görev 17 dakikadan 36 saniyeye indi.
+- **Tahmin değil, gerçek yollar:** düz bir sohbet artık çalışma klasörünün dosya listesini istemde alıyor. Önceden hiç almıyordu ve modeller `shop/models.py` yerine `models/product.py` uyduruyordu. Kurallar artık yolların listeden ya da bir araç sonucundan geldiğini, çağrıdan sonra sonuçların beklendiğini söylüyor.
+- **Asla hafızadan düzenleme:** bir kopmadan sonra verilen kayıt, içerikleri artık konuşmada olmasa bile "bu dosyaları yeniden okuma" diyordu; modeller de hafızadan düzenliyordu. Artık bu durumda dosya yeniden okunuyor. Sohbet defteri de "bu bir kayıttır, dosyaların kendisi değil" diyor.
+- **Arama sonuçları okunuyor:** modeller 200 karakterlik özetlerden cevap veriyordu (yalnızca `web_search`). Artık en iyi iki kaynak da okunuyor; kartlarda "okundu" görünüyor.
+- **Nemotron 3.5'in kendi çağrı biçimi** (`argument key=… type=…`, köşeli ayraçları yolda kaybolmuş) ayrıştırılıyor. Önceden hiçbir şey çalışmıyor, görev bu metni cevap sayıp "ok" bitiyordu.
+- **Öğrenen hız sınırı:** hız denetimi altındayken gelen 429, aynı anahtarı başka bir şey de kullandığı için sağlayıcının dakikalık hızını 10 dakikalığına düşürüyor. Tek anahtarla iki koşu, bir görevde 1.171 sn geri çekilme beklemişti.
+- **Henüz commit'i olmayan git:** ilk commit'ten önce `git branch` hiçbir şey yazmaz, `git checkout main` de hata verir. Artık uygulama bunu söylüyor; model de git branch/log'u 60 kez çalıştırıp durmuyor.
+- **Benchmark:**
+  - dokuz görev (yeni olanlar: atıf yapılan her sayfası açılan web araştırması, kod incelemesi, Mermaid akış şeması, git)
+  - üç ayrı puan
+  - sürenin nereye gittiği (sağlayıcı beklemesi, üretim, araçlar, hata sonrası bekleme, uygulama)
+  - model başına bir değerlendirme satırı
+  - grafikler ve etkileşimli bir HTML rapor
+  - koşuları birleştiren `--merge`, bir denetleyici düzeltmesinden sonra saklanmış bir koşuyu yeniden puanlayan `--rescore`
 
 ## 🆕 v0.20.0 ile gelenler (ajan değerlendirmesi, görev iz kayıtları, temiz belge başlıkları)
 

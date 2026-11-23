@@ -62,10 +62,11 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
     t_req = time.monotonic()
     if run.perf["prep_ms"] is None:
         run.perf["prep_ms"] = (t_req - run.t0) * 1000
-    turn = {"model": model, "wait_ms": None, "total_ms": 0.0}
+    turn = {"model": model, "wait_ms": None, "total_ms": 0.0, "in_tokens": int(run.prompt_est or 0)}
     # Output speed (tokens per second): characters written since the first token, ~3.5 per token, replaced by the
     # provider's own output count at the end. Cheap: a counter per event, no tokenizer on the stream.
     gen = {"chars": 0, "t1": None, "out": None}
+    blank = {"n": 0, "since": 0.0}  # whitespace streamed since the last visible character
 
     def tps_now() -> float | None:
         if not gen["t1"] or gen["chars"] < 40:
@@ -331,10 +332,14 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
             if t in ("thinking", "text"):
                 gen["chars"] += len(evt.get("text") or "")
                 gen["t1"] = gen["t1"] or time.monotonic()
+                _blank_check(blank, evt.get("text") or "", model, run)
             elif t in ("tool_call_start", "tool_call_progress"):
                 gen["chars"] += len(evt.get("delta") or "")
                 gen["streamed"] = gen.get("streamed") or bool(evt.get("delta"))
                 gen["t1"] = gen["t1"] or time.monotonic()
+                # Blank output inside a native call's arguments (JSON-escaped "\n\n\n..." or spaces between keys):
+                # nemotron-3.5-super wrote 131,072 tokens of it in one turn (995 s) and the next request carried them.
+                _blank_check(blank, re.sub(r"\\[nrt]", " ", evt.get("delta") or ""), model, run)
             elif t == "tool_call" and not gen.get("streamed"):
                 # A provider that sends the call whole at the end (EVREN): its arguments are output too, or the speed
                 # of a turn that only wrote a file showed nothing (or only the speed of its few words of text).
@@ -384,6 +389,8 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                         run.session["usage_input"] = base = int(run.prompt_est * (known or 1.0))
                     else:
                         run.session["usage_input"] = base = evt["input"]
+                    turn["in_tokens"] = base  # prompt size of this request: wait time is read against it (trace)
+                    if not cached:
                         LAST_REAL[run.session["id"]] = (model, evt["input"])
                         run.anchor = (model, run.prompt_est, evt["input"])
                         if run.prompt_est > 500 and r <= 1.6 and not (evt.get("partial") and known and r < known):
@@ -406,6 +413,18 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                 grow()
                 for kind, text in splitter.feed(evt["text"]):
                     handle(kind, text)
+                    if kind == "tool":
+                        gen["call_at"] = gen["chars"]
+                # Calls are written and the model keeps going without another one (nemotron-3.5-super: 15 calls, then
+                # minutes of output up to the 131,072-token limit): the stream ends here and the calls run now; their
+                # results are what the rest of its writing needed anyway.
+                if (gen.get("call_at") is not None and not splitter.open
+                        and gen["chars"] - gen["call_at"] > AFTER_CALL_CHARS):
+                    _step(run, "note", "loop", "done", ui_text(
+                        opts.get("lang") or load_settings().get("language") or "en", "ai_note_after_calls",
+                        "The model kept writing after its tool calls; the calls run now and it continues with "
+                        "their results."))
+                    break
                 # A model stuck in a loop writes the same paragraph again and again (dozens of times, minutes of
                 # tokens): checked every ~800 new characters; the stream is ended and the repeats are removed.
                 size = sum(map(len, visible)) + sum(map(len, thinking))
@@ -543,6 +562,31 @@ PROBE_CUT_FIRST = 90
 # The defaults above; Settings > Agent > model connection overrides them (an AIIQ_PROBE_* variable wins, for tests).
 _WD = {"silent_tool_limit": ("SILENT_TOOL_LIMIT", 20), "midcall_stall": ("MIDCALL_STALL", 30),
        "probe_after": ("PROBE_AFTER", 5), "probe_first": ("PROBE_FIRST", 10), "probe_cut": ("PROBE_CUT", 10)}
+
+
+# A stream that sends only blank lines is alive to every silence check and still writes nothing: nemotron-3.5-super
+# streamed ~5,000 newlines over 14 minutes after "reading all files at once" and the task never moved. It is treated as
+# a stall: cut, and the same model continues. Whitespace-only runs this long never occur in real output.
+AFTER_CALL_CHARS = 24000  # characters written after the last complete call of a turn before the calls are run
+BLANK_CHARS = 1500  # whitespace characters in a row
+BLANK_SECS = 60     # or this long with only whitespace (at least BLANK_MIN characters of it)
+BLANK_MIN = 200
+
+
+def _blank_check(blank: dict, text: str, model: str, run) -> None:
+    if not text:
+        return
+    if text.strip():
+        blank.update(n=0, since=0.0)
+        return
+    now = time.monotonic()
+    blank["since"] = blank["since"] or now
+    blank["n"] += len(text)
+    secs = now - blank["since"]
+    if blank["n"] >= BLANK_CHARS or (blank["n"] >= BLANK_MIN and secs >= BLANK_SECS):
+        run.stalls += 1
+        raise ProviderError("stalled", f"{model}: the stream sent only blank lines ({blank['n']} characters in "
+                                       f"{int(secs)} s); cut and continued")
 
 
 def wd(key: str) -> float:

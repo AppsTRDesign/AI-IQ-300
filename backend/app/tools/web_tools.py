@@ -47,7 +47,8 @@ NO_QUERY = ("Not searched: the call has no search words (its value was a piece o
 
 
 @tool("web_search", '<tool name="web_search">query</tool>',
-      "Search the web (several engines merged). Returns titles, URLs and snippets. Use research for reading sources.",
+      "Search the web (several engines merged). Returns titles, URLs and snippets, and the text of the top two "
+      "sources (read for you). Use research for more sources, fetch_url for one page.",
       {"query": S("Search query")}, main="query", required=("query",))
 async def web_search(ctx, args, body):
     from . import web
@@ -55,11 +56,19 @@ async def web_search(ctx, args, body):
         return ToolResult(False, NO_QUERY)
     if msg := await registry._network_gate(ctx, {"tool": "web_search", "query": q}):
         return ToolResult(False, msg)
-    results, engines = await web.search(q)
+    # The top two results are read as well: models answered from the snippets alone (web_search only, no page read,
+    # in the user's chats), so facts and dates came from 200-character fragments and nothing on the cards was "read".
+    r = await web.research(q, sources=2, deadline=8)  # a quick search stays quick: slow pages are left as snippets
+    results, engines, pages = r["results"], r["engines"], r["pages"]
+    read = {p["url"] for p in pages}
     text = "\n".join(f"- {x['title']} <{x['url']}>\n  {x['snippet']}" for x in results)
-    return ToolResult(bool(results), text or "no results (all engines failed or returned nothing)",
-                      {"results": [{"title": x["title"], "url": x["url"], "snippet": _card_text(x.get("snippet", ""))}
-                                   for x in results[:12]], "engines": engines})
+    if pages:
+        text += "\n\nRead for you (the top sources):\n\n" + "\n\n".join(
+            f"## {p['title']}\nURL: {p['url']}\n{p['excerpt'][:2500]}" for p in pages)
+    cards = [{"title": x["title"], "url": x["url"], "snippet": _card_text(x.get("snippet", "")),
+              **({"read": True} if x["url"] in read else {})} for x in results[:12]]
+    return ToolResult(bool(results), clip(text, 9000) if text else "no results (all engines failed or returned nothing)",
+                      {"results": cards, "engines": engines, "sources": [p["url"] for p in pages]})
 
 
 @tool("fetch_url", '<tool name="fetch_url" url="https://..." query="optional: what to look for"></tool>',

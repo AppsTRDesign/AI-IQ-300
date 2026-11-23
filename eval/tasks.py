@@ -33,6 +33,7 @@ class Task:
     net_drop: bool = False  # the runner cuts the model's connection mid-task
     timeout_s: int = 1800
     tags: list[str] = field(default_factory=list)
+    setup: Callable[[Path], None] | None = None  # extra files a seed in git cannot carry (.env, __pycache__)
 
 
 def _sha(p: Path) -> str:
@@ -110,11 +111,12 @@ def check_web(ws: Path, run: dict) -> list[Check]:
                         ", ".join(k for k, v in parts.items() if not v)))
             added = kept = False
             if all(parts.values()):
-                n0 = page.locator("#list li").count()
                 page.fill("#new-todo", "Süt al 42")
                 page.click("#add")
                 page.wait_for_timeout(400)
-                added = page.locator("#list li").count() == n0 + 1 and "Süt al 42" in page.inner_text("#list")
+                # One list item holds the text. Not "one more item than before": an empty-state row ("Henüz görev
+                # yok", which the app's design rules ask for) is replaced by the first item, so the count stays 1.
+                added = page.locator("#list li", has_text="Süt al 42").count() == 1
                 page.reload(wait_until="load")
                 page.wait_for_timeout(500)
                 kept = "Süt al 42" in page.inner_text("#list")
@@ -247,6 +249,228 @@ def check_net(ws: Path, run: dict) -> list[Check]:
     return out
 
 
+# ------------------------------------------------------------------------------------------------ shared helpers
+def _steps(run: dict) -> list[dict]:
+    return [x for x in run.get("trace") or [] if x.get("type") == "step"]
+
+
+def _skills_used(run: dict) -> set[str]:
+    out = set()
+    for x in _steps(run):
+        if (x.get("tool") == "use_skill" or x.get("kind") == "skill") and x.get("status") == "done":
+            # the step's title is the skill's name (the name in the tag body is not kept in args)
+            a = x.get("args") or {}
+            name = str(a.get("name") or a.get("skill") or x.get("title") or "")
+            out.add(name.strip().lstrip("/").split(" ")[0].lower())
+    return {s for s in out if s}
+
+
+INFO = "info: "  # a check row whose name starts with this is reported, never scored
+
+
+def _skill_check(run: dict, *names: str) -> Check:
+    """Which skill the model loaded. Reported, not scored: the app leaves the choice to the model on purpose, and
+    nemotron-3-ultra did every skill task right without loading one (all content checks passed)."""
+    used = _skills_used(run)
+    return (f"{INFO}loaded the {' / '.join(names)} skill (use_skill in the trace)", bool(used & set(names)),
+            ", ".join(sorted(used)) or "no skill loaded")
+
+
+def _chunks(text: str) -> list[str]:
+    """Lines, blank-line paragraphs and Markdown sections: a finding is one table row, one bullet, one paragraph or
+    one heading with its body ("### 1. Kritik — SQL Enjeksiyonu" over "Konum: app/db.py:6" was scored as unrated)."""
+    paras = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    sections = [s for s in re.split(r"\n(?=#{1,6}\s)", text) if s.strip()]
+    return [ln for ln in text.splitlines() if ln.strip()] + paras + sections
+
+
+# ------------------------------------------------------------------------------------------------ 6. web research
+_URL = re.compile(r"https?://[^\s<>()\[\]\"'`|]+")
+_FACTS = [  # (name, pattern on lowercased text) - stable facts that need several sources
+    ("Python 3.13.0 release date (2024-10-07)",
+     r"2024-10-07|\b7\.? (ekim|october),? 2024|october 7,? 2024|\b0?7[./]10[./]2024"),
+    ("PEP that makes the GIL optional (PEP 703)", r"pep[\s\-]*0?703"),
+    ("Rust 1.0 release date (2015-05-15)", r"2015-05-15|\b15\.? (mayıs|may),? 2015|may 15,? 2015|\b15[./]0?5[./]2015"),
+    ("SQLite's licence (public domain)", r"public[\s-]domain|kamu mal|kamuya açık"),
+]
+
+
+def _url_alive(url: str) -> tuple[bool, str]:
+    import httpx
+    try:
+        r = httpx.get(url, follow_redirects=True, timeout=20,
+                      headers={"User-Agent": "Mozilla/5.0 (AI IQ 300 eval link check)"})
+        # 401/403/429: the page exists and refuses robots; only a missing page or a dead site is an invented source
+        return r.status_code < 400 or r.status_code in (401, 403, 429), str(r.status_code)
+    except Exception as e:  # noqa: BLE001
+        return False, type(e).__name__
+
+
+def check_research(ws: Path, run: dict) -> list[Check]:
+    f = ws / "research" / "report.md"
+    text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
+    out: list[Check] = [("research/report.md exists", bool(text), "")]
+    low = text.lower()
+    chunks = _chunks(text)
+    cited = 0
+    for name, pat in _FACTS:
+        hit = re.search(pat, low)
+        out.append((name, bool(hit), ""))
+        if hit and any(re.search(pat, c.lower()) and (_URL.search(c) or re.search(r"\[\d+\]", c)) for c in chunks):
+            cited += 1
+    days = [int(n.replace(".", "").replace(",", "")) for n in re.findall(r"\b\d{1,2}[.,]?\d{3}\b", text)]
+    out.append(("days between the two releases computed (3433)", any(3432 <= d <= 3434 for d in days), ""))
+    out.append(("every fact has its source next to it", cited == len(_FACTS), f"{cited}/{len(_FACTS)}"))
+    urls = list(dict.fromkeys(u.rstrip(".,;:") for u in _URL.findall(text)))
+    domains = {re.sub(r"^www\.", "", u.split("/")[2].lower()) for u in urls}
+    out.append((">= 4 sources from >= 3 sites", len(urls) >= 4 and len(domains) >= 3, f"{len(urls)} URLs, {len(domains)} sites"))
+    dead = []
+    for u in urls[:8]:
+        ok, why = _url_alive(u)
+        if not ok:
+            dead.append(f"{u} ({why})")
+    out.append(("the cited pages really exist (no 404 / dead site)", bool(urls) and not dead, "; ".join(dead)[:200]))
+    web = [x for x in _steps(run) if x.get("tool") in ("research", "web_search", "fetch_url", "browser_open", "browser_navigate")]
+    out.append(("searched the web (>= 2 web tool calls)", len(web) >= 2, f"{len(web)} calls"))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ 7. skill: code review
+_FINDINGS = [  # (name, file, words that name the problem)
+    ("SQL injection in db.py", "db.py", r"sql[\s-]*(injection|enjeksiyon)|parametri[sz]|parameteri[sz]|placeholder|\?\s*yer"),
+    ("path traversal in files.py", "files.py", r"travers|\.\./|dizin (geçiş|dışı)|path (injection|manipulation)|yol (geçiş|enjeksiyon|manipülasyon)"),
+    ("hard-coded secret in config.py", "config.py", r"secret|gizli|hard[\s-]?cod|sabit|kodda|anahtar|ortam değişken|environment"),
+    ("off-by-one page start in pages.py", "pages.py", r"off[\s-]*by[\s-]*one|page\s*-\s*1|\(page-1\)|bir (eksik|fazla)|ilk sayfa|first page|skip|atla"),
+]
+
+
+def check_review(ws: Path, run: dict) -> list[Check]:
+    f = ws / "review.md"
+    text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
+    out: list[Check] = [("review.md exists", bool(text), "")]
+    chunks = [c.lower() for c in _chunks(text)]
+    for name, file, words in _FINDINGS:
+        out.append((f"found: {name}", any(file in c and re.search(words, c) for c in chunks), ""))
+    sev = any("db.py" in c and re.search(r"sql", c) and re.search(r"crit|kritik|high|yüksek|ciddi", c) for c in chunks)
+    out.append(("SQL injection rated critical / high", sev, ""))
+    seed = TASKS_DIR / "skill_review" / "seed" / "app"
+    changed = [p.name for p in sorted(seed.glob("*.py")) if _sha(ws / "app" / p.name) != _sha(p)]
+    out.append(("code left unchanged (review only)", not changed, ", ".join(changed)))
+    out.append(_skill_check(run, "code-review"))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ 8. skill: flowchart
+_MERMAID_JS = HERE.parent / "frontend" / "node_modules" / "mermaid" / "dist" / "mermaid.min.js"
+_PARSE = """async (t) => {
+  mermaid.initialize({startOnLoad: false});
+  try {
+    const d = await mermaid.mermaidAPI.getDiagramFromText(t);
+    if (!d.db.getVertices) return {type: d.type};
+    let v = d.db.getVertices(); v = v instanceof Map ? [...v.values()] : Object.values(v);
+    await mermaid.render('chk', t);
+    return {type: d.type, nodes: v.map(n => [n.id, n.type, n.text || '']),
+            edges: d.db.getEdges().map(e => [e.start, e.end, e.text || ''])};
+  } catch (err) { return {error: String((err && err.message) || err).slice(0, 200)}; }
+}"""
+
+
+def _has_cycle(edges: list) -> bool:
+    graph: dict[str, list[str]] = {}
+    for a, b, _ in edges:
+        graph.setdefault(a, []).append(b)
+    state: dict[str, int] = {}
+
+    def visit(n: str) -> bool:
+        state[n] = 1
+        for m in graph.get(n, []):
+            if state.get(m) == 1 or (m not in state and visit(m)):
+                return True
+        state[n] = 2
+        return False
+    return any(n not in state and visit(n) for n in list(graph))
+
+
+def check_flowchart(ws: Path, run: dict) -> list[Check]:
+    f = ws / "diagrams" / "order.mmd"
+    text = f.read_text(encoding="utf-8", errors="replace") if f.is_file() else ""
+    text = re.sub(r"^\s*```(?:mermaid)?\s*\n|\n\s*```\s*$", "", text.strip()) if text else ""
+    out: list[Check] = [("diagrams/order.mmd exists", bool(text), "")]
+    if not text:
+        return out + [_skill_check(run, "flowchart")]
+    if not _MERMAID_JS.is_file():
+        return out + [("Mermaid parses it", False, "frontend/node_modules missing (npm install)"), _skill_check(run, "flowchart")]
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            b = pw.chromium.launch()
+            page = b.new_page()
+            page.set_content("<html><body></body></html>")
+            page.add_script_tag(content=_MERMAID_JS.read_text(encoding="utf-8"))
+            r = page.evaluate(_PARSE, text)
+            b.close()
+    except Exception as e:  # noqa: BLE001
+        r = {"error": f"{type(e).__name__}: {e}"[:200]}
+    out.append(("Mermaid parses and draws it", "error" not in r, r.get("error", "")))
+    nodes, edges = r.get("nodes") or [], r.get("edges") or []
+    out.append(("it is a flowchart", str(r.get("type", "")).startswith("flowchart"), str(r.get("type", ""))))
+    out.append((">= 7 steps", len(nodes) >= 7, f"{len(nodes)} nodes"))
+    out.append(("two decisions as diamonds", sum(n[1] == "diamond" for n in nodes) >= 2,
+                f"{sum(n[1] == 'diamond' for n in nodes)} diamonds"))
+    labels = [str(e[2]).lower() for e in edges]
+    yes_no = sum(bool(re.search(r"^(evet|yes)\b", x)) for x in labels) >= 2 and sum(bool(re.search(r"^(hayır|no)\b", x)) for x in labels) >= 2
+    out.append(("decision exits labelled yes / no", yes_no, ", ".join(x for x in labels if x)[:120]))
+    out.append(("the restock loop goes back to the stock check (a cycle)", _has_cycle(edges), ""))
+    out.append(_skill_check(run, "flowchart"))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ 9. skill: git
+def _setup_git(ws: Path) -> None:
+    (ws / ".env").write_text("DEBUG=1\nTOKEN=local-only-test-value\n", encoding="utf-8")
+    (ws / "__pycache__").mkdir(exist_ok=True)
+    (ws / "__pycache__" / "app.cpython-312.pyc").write_bytes(b"\x00eval cache\x00")
+
+
+def _git(ws: Path, *a: str) -> tuple[int, str]:
+    try:
+        r = subprocess.run(["git", "-c", "core.quotepath=off", *a], cwd=ws, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30)
+        return r.returncode, (r.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+
+
+def check_git(ws: Path, run: dict) -> list[Check]:
+    out: list[Check] = [("a git repository", (ws / ".git").is_dir(), "")]
+    if not (ws / ".git").is_dir():
+        return out + [_skill_check(run, "git")]
+    rc, branches = _git(ws, "branch", "--format=%(refname:short)")
+    names = set(branches.split())
+    out.append(("branches main and feature/login", {"main", "feature/login"} <= names, ", ".join(sorted(names))))
+    rc, subjects = _git(ws, "log", "main", "--format=%s")
+    out.append(("main has the commit 'İlk sürüm'", "İlk sürüm" in subjects.splitlines() or "Initial version" in subjects.splitlines(),
+                subjects.replace("\n", " | ")[:120]))
+    files = {}
+    for b in ("main", "feature/login"):
+        files[b] = set(_git(ws, "ls-tree", "-r", "--name-only", b)[1].splitlines())
+    tracked = files["main"] | files["feature/login"]
+    out.append((".env not committed", ".env" not in tracked, ""))
+    out.append(("__pycache__ not committed", not any(p.startswith("__pycache__/") for p in tracked), ""))
+    gi = _git(ws, "show", "main:.gitignore")[1]
+    out.append((".gitignore on main ignores .env and __pycache__", ".env" in gi and "__pycache__" in gi, ""))
+    login = _git(ws, "show", "feature/login:login.py")[1]
+    out.append(("feature/login has login.py with login(user, password)",
+                bool(re.search(r"def\s+login\s*\(\s*user\s*,\s*password", login)), ""))
+    out.append(("main does not have login.py", "login.py" not in files["main"], ""))
+    head = _git(ws, "rev-parse", "--abbrev-ref", "HEAD")[1]
+    out.append(("back on main at the end", head == "main", head))
+    dirty = [ln for ln in _git(ws, "status", "--porcelain")[1].splitlines() if ".session" not in ln]
+    out.append(("nothing left uncommitted", not dirty, "; ".join(dirty)[:120]))
+    out.append(_skill_check(run, "git"))
+    return out
+
+
 TASKS: list[Task] = [
     Task("web_app", {"tr": "Web uygulaması", "en": "Web app"},
          {"tr": "todo/ klasöründe küçük bir yapılacaklar web uygulaması yap: index.html, style.css ve app.js. "
@@ -291,6 +515,48 @@ TASKS: list[Task] = [
           "en": "Write four files in the notes/ folder, each at least five sentences about one planet: a.md "
                 "Mercury, b.md Venus, c.md Mars, d.md Jupiter. Write them in order, one at a time."},
          check_net, net_drop=True, tags=["network", "continuity"]),
+    Task("research", {"tr": "Karmaşık web araştırması", "en": "Complex web research"},
+         {"tr": "Web'de araştır ve research/report.md dosyasına bir araştırma notu yaz. Cevaplanacaklar: (1) Python 3.13.0 "
+                "hangi tarihte yayınlandı? (2) CPython'da GIL'i isteğe bağlı yapan PEP'in numarası kaç? (3) Rust 1.0 hangi "
+                "tarihte yayınlandı? (4) SQLite hangi lisansla dağıtılıyor? (5) Rust 1.0 ile Python 3.13.0 arasında kaç gün "
+                "var? Her bilginin aynı satırında kaynağının tam URL'si olsun; en az 4 kaynak ve en az 3 farklı site kullan. "
+                "Tarihleri YYYY-AA-GG biçiminde yaz. Sonda bir Kaynaklar bölümü olsun.",
+          "en": "Research on the web and write a research note in research/report.md. Answer: (1) On what date was Python "
+                "3.13.0 released? (2) What is the number of the PEP that makes the GIL optional in CPython? (3) On what "
+                "date was Rust 1.0 released? (4) Under what licence is SQLite distributed? (5) How many days are there "
+                "between Rust 1.0 and Python 3.13.0? Put each fact's source as a full URL on the same line; use at least 4 "
+                "sources from at least 3 different sites. Write dates as YYYY-MM-DD. End with a Sources section."},
+         check_research, tags=["web", "research"]),
+    Task("skill_review", {"tr": "Yetenek: kod incelemesi", "en": "Skill: code review"},
+         {"tr": "app/ klasöründeki Python kodunu hata ve güvenlik açısından incele. Bulduğun her sorunu ciddiyet sırasına "
+                "göre review.md dosyasına yaz: dosya:satır, sorun, nasıl bir hataya yol açtığı ve düzeltme önerisi. Kodu "
+                "değiştirme, yalnızca raporla.",
+          "en": "Review the Python code in the app/ folder for bugs and security problems. Write every problem you find to "
+                "review.md sorted by severity: file:line, the problem, what failure it causes and the suggested fix. Do not "
+                "change the code, only report."},
+         check_review, seed="skill_review/seed", tags=["skill", "review", "security"]),
+    Task("skill_flowchart", {"tr": "Yetenek: akış şeması", "en": "Skill: flowchart"},
+         {"tr": "Şu sipariş sürecinin akış şemasını Mermaid ile çiz ve diagrams/order.mmd dosyasına da kaydet: Sipariş "
+                "gelir. Stok var mı? Yoksa tedarikçiye sipariş verilir, stok gelene kadar beklenir ve yeniden stok "
+                "kontrolüne dönülür. Stok varsa ödeme alınır. Ödeme başarılı mı? Başarısızsa müşteriye bildirilir ve süreç "
+                "biter. Başarılıysa sipariş kargolanır, müşteriye kargo bilgisi gönderilir ve süreç biter. Karar "
+                "çıkışlarını Evet / Hayır diye etiketle.",
+          "en": "Draw a flowchart of this order process with Mermaid and also save it to diagrams/order.mmd: An order "
+                "comes in. Is it in stock? If not, it is ordered from the supplier, we wait until the stock arrives and go "
+                "back to the stock check. If it is in stock, payment is taken. Did the payment succeed? If not, the "
+                "customer is told and the process ends. If it did, the order is shipped, the customer gets the tracking "
+                "info and the process ends. Label the decision exits Yes / No."},
+         check_flowchart, tags=["skill", "diagram"]),
+    Task("skill_git", {"tr": "Yetenek: git", "en": "Skill: git"},
+         {"tr": "Bu klasörde bir git deposu başlat, ana dalın adı main olsun. .env dosyası ve __pycache__ klasörü depoya "
+                "girmesin diye bir .gitignore ekle. Tüm dosyaları 'İlk sürüm' mesajıyla commit et. Sonra feature/login "
+                "adında bir dal aç, içinde login(user, password) fonksiyonu olan bir login.py ekle ve bu dalda commit et. "
+                "En sonda main dalına geri dön; commit edilmemiş bir şey kalmasın.",
+          "en": "Start a git repository in this folder with main as the main branch's name. Add a .gitignore so the .env "
+                "file and the __pycache__ folder stay out of the repository. Commit all files with the message 'Initial "
+                "version'. Then create a branch named feature/login, add a login.py with a login(user, password) "
+                "function and commit it on that branch. At the end switch back to main; leave nothing uncommitted."},
+         check_git, seed="skill_git/seed", setup=_setup_git, tags=["skill", "git"]),
 ]
 
 BY_ID = {t.id: t for t in TASKS}

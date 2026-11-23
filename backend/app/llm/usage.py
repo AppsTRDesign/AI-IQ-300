@@ -266,6 +266,22 @@ async def account(pid: str, cfg: dict) -> dict | None:
 
 
 _SENT: dict[str, list[float]] = {}
+# A 429 while pacing: something else uses the same key (another copy of the app, a phone, a script), so the real room
+# is smaller than the cap. The cap is lowered to what fit before the 429 for 10 minutes. Without this, two runs on one
+# NVIDIA key went on at 40 a minute each and waited 1,171 s on 429 backoffs in one task.
+_LOWER: dict[str, tuple[float, int]] = {}
+
+
+def note_rate_limit(pid: str, rpm: int) -> None:
+    now = time.time()
+    sent = sum(1 for t in _SENT.get(pid, []) if now - t < 60)
+    cur = effective_rpm(pid, rpm)
+    _LOWER[pid] = (now + 600, max(2, min(cur - 1, int(sent * 0.75)) if sent else max(2, cur // 2)))
+
+
+def effective_rpm(pid: str, rpm: int) -> int:
+    until, low = _LOWER.get(pid, (0.0, rpm))
+    return min(rpm, low) if until > time.time() else rpm
 
 
 async def pace(pid: str, rpm: int, cancel=None) -> None:
@@ -274,7 +290,7 @@ async def pace(pid: str, rpm: int, cancel=None) -> None:
     while True:
         now = time.time()
         sent = [t for t in _SENT.get(pid, []) if now - t < 60]
-        if len(sent) < rpm:
+        if len(sent) < effective_rpm(pid, rpm):
             sent.append(now)
             _SENT[pid] = sent
             return

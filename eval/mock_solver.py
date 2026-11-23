@@ -135,8 +135,70 @@ PLANETS_EN = {
 }
 
 
+RESEARCH = """# Research note
+
+1. Python 3.13.0 was released on 2024-10-07. Source: https://www.python.org/downloads/release/python-3130/
+2. The GIL is made optional by PEP 703 (free-threaded CPython). Source: https://peps.python.org/pep-0703/
+3. Rust 1.0 was released on 2015-05-15. Source: https://blog.rust-lang.org/2015/05/15/Rust-1.0.html
+4. SQLite is in the public domain. Source: https://www.sqlite.org/copyright.html
+5. Days between 2015-05-15 and 2024-10-07: 3433 (computed with Python's datetime).
+
+## Sources
+
+- https://www.python.org/downloads/release/python-3130/
+- https://peps.python.org/pep-0703/
+- https://blog.rust-lang.org/2015/05/15/Rust-1.0.html
+- https://www.sqlite.org/copyright.html
+"""
+REVIEW = """# Review
+
+| Severity | Where | Problem | Failure | Fix |
+|---|---|---|---|---|
+| Critical | app/db.py:12 | SQL injection: the name is put into the query with an f-string | `' OR '1'='1` returns any user | parameterized query with `?` |
+| High | app/files.py:8 | Path traversal: the file name is joined unchecked | `../../secret` reads files outside uploads | resolve the path and require it inside UPLOADS |
+| High | app/config.py:3 | Hard-coded secret key in the code | anyone with the repo can sign sessions | read SECRET_KEY from an environment variable |
+| Medium | app/pages.py:7 | Off-by-one: start = page * per_page | page 1 skips the first page of items | start = (page - 1) * per_page |
+"""
+FLOW = """flowchart TD
+  S(["Order comes in"]) --> A{"In stock?"}
+  A -->|No| B["Order from the supplier"] --> C["Wait for the stock"] --> A
+  A -->|Yes| D["Take payment"] --> E{"Payment succeeded?"}
+  E -->|No| F["Tell the customer"] --> X(["End"])
+  E -->|Yes| G["Ship the order"] --> H["Send tracking info"] --> X
+"""
+GIT = '''import subprocess
+def g(*a):
+    subprocess.run(["git", "-c", "user.name=eval", "-c", "user.email=eval@example.invalid", *a], check=True)
+g("init", "-b", "main")
+open(".gitignore", "w", encoding="utf-8").write(".env\\n__pycache__/\\n.session/\\n")
+g("add", "-A")
+g("commit", "-m", "MSG")
+g("checkout", "-b", "feature/login")
+open("login.py", "w", encoding="utf-8").write("def login(user, password):\\n    return bool(user and password)\\n")
+g("add", "login.py")
+g("commit", "-m", "Add login")
+g("checkout", "main")
+print("done")
+'''
+
+
 def script(first: str) -> tuple[list[str], float]:
-    en = "Build a small" in first or "stats.py is broken" in first or "In this project" in first or "Write a short report" in first or "Write four files" in first
+    en = any(k in first for k in ("Build a small", "stats.py is broken", "In this project", "Write a short report",
+                                  "Write four files", "Research on the web", "Review the Python", "Draw a flowchart",
+                                  "Start a git"))
+    if "research/report.md" in first:
+        return ['<tool name="research">Python 3.13.0 release date</tool>',
+                '<tool name="fetch_url" url="https://peps.python.org/pep-0703/"></tool>',
+                w("research/report.md", RESEARCH), "Done: research/report.md."], 0
+    if "review.md" in first:
+        return ['<tool name="use_skill">code-review</tool>', w("review.md", REVIEW), "Review written."], 0
+    if "diagrams/order.mmd" in first:
+        return ['<tool name="use_skill">flowchart</tool>', w("diagrams/order.mmd", FLOW),
+                f"```mermaid\n{FLOW}```"], 0
+    if "feature/login" in first:
+        msg = "Initial version" if en else "İlk sürüm"
+        return ['<tool name="use_skill">git</tool>', f'<tool name="run" shell="python">{GIT.replace("MSG", msg)}</tool>',
+                "Repository ready, back on main."], 0
     if "todo/" in first:
         return [w("todo/index.html", INDEX) + w("todo/style.css", CSS) + w("todo/app.js", JS), "Hazır: todo/ çalışıyor."], 0
     if "stats.py" in first:

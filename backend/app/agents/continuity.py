@@ -176,7 +176,10 @@ def _file_loop_check(run: "Run", loop_check: list) -> None:
     if not got:
         return
     from ..tools.editing import collapse_repeats
-    _, removed = collapse_repeats(got[1].get("content", "")[-30000:])
+    # The longest argument, not only "content": an edit_file's old/new text looped the same way (nemotron-3.5-super,
+    # 131,072 tokens in one turn of a five-file rename).
+    longest = max((v for v in got[1].values() if isinstance(v, str)), key=len, default="")
+    _, removed = collapse_repeats(longest[-30000:])
     if removed >= 9:
         run.file_loops += 1
         raise ProviderError("looping", f"the model repeated the same block {removed} times while writing "
@@ -515,9 +518,12 @@ def _ledger(run: "Run") -> str:
             for t in run.todos))
     if not lines:
         return ""
-    return (f"{RECORD_TAG}\n" + "\n".join(lines)[:3500] + "\nAll of this is DONE and stays valid. Do not write, read, "
-            "run or look up any of it again; change a written file only with edit_file. Go on with the first step that "
-            "is not done yet.")
+    # "Do not read any of it again" made models invent file contents after a break: the earlier read was no longer in
+    # the (trimmed or handed-over) conversation and reading was forbidden, so they edited from memory and failed.
+    return (f"{RECORD_TAG}\n" + "\n".join(lines)[:3500] + "\nAll of this is DONE and stays valid. Do not write, run or "
+            "look up any of it again; change a written file only with edit_file. A file whose content is not in this "
+            "conversation any more is read again before you change or describe it (never from memory). Go on with the "
+            "first step that is not done yet.")
 
 
 def _load_checkpoint(session_id: str) -> dict | None:

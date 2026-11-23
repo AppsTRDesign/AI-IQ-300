@@ -748,7 +748,7 @@ def _domain(url: str) -> str:
     return re.sub(r"^www\.", "", urlparse(url).hostname or "").lower()
 
 
-async def research(query: str, sources: int = 4) -> dict:
+async def research(query: str, sources: int = 4, deadline: float | None = None) -> dict:
     """Search, then read the top sources in parallel; returns excerpts with their URLs. Sources are spread over
     different sites (one page per site first), stubs and blocked pages are skipped and replaced by the next
     results, and reading stops at a deadline with whatever arrived."""
@@ -763,7 +763,7 @@ async def research(query: str, sources: int = 4) -> dict:
         seen.add(_domain(r["url"]))
     queue = (first + later)[: sources * 2 + 2]
     tasks = {asyncio.create_task(fetch(r["url"], 3500, query)): r for r in queue}
-    deadline = time.monotonic() + RESEARCH_DEADLINE
+    deadline = time.monotonic() + (deadline or RESEARCH_DEADLINE)
     try:
         while tasks and len(pages) < sources and (left := deadline - time.monotonic()) > 0:
             done, _ = await asyncio.wait(tasks, timeout=left, return_when=asyncio.FIRST_COMPLETED)

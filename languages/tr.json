@@ -1352,6 +1352,7 @@
   "step_photo": "Fotoğraf indirildi",
   "step_photo_running": "Fotoğraf aranıyor",
   "ai_note_loop": "Model aynı metni tekrar tekrar yazmaya başladı; tekrarlar silindi ve cevabı orada bitirildi.",
+  "ai_note_after_calls": "Model araç çağrılarından sonra yazmayı sürdürdü; çağrılar şimdi çalışıyor, model sonuçlarıyla devam ediyor.",
   "diffs_search": "Dosya adı veya kod içinde ara…",
   "diffs_found": "{n} dosya",
   "diffs_none": "Eşleşen dosya yok.",
