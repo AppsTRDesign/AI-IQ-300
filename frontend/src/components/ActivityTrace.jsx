@@ -14,6 +14,12 @@ import Markdown from "./Markdown";
 import ThinkText from "./ThinkText";
 import Collapsible from "./Collapsible";
 
+// "2026-11-23-03-47" in the user's own time (toISOString is UTC: a 03:47 export was named 00-47).
+const localStamp = (d = new Date()) => {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}-${p(d.getMinutes())}`;
+};
+
 const KIND = {
   thinking: [Brain, "thinking"], plan: [ListChecks, "step_plan"], file: [FileCode2, "step_file"],
   read: [FileText, "step_read"], list: [FolderTree, "step_list"], command: [Terminal, "step_command"],
@@ -26,6 +32,7 @@ const KIND = {
   edit: [FilePen, "step_edit"], grep: [FileSearch, "step_grep"], delegate: [Users, "step_delegate"], memory: [BookMarked, "step_memory"],
   mcp: [Plug, "step_mcp"], google: [Cloud, "step_google"], team: [Users, "step_team"], screenshot: [Camera, "step_screenshot"], catalog: [Sparkles, "step_catalog"],
   places: [MapPin, "step_places"], photo: [Image, "step_photo"], system: [Cpu, "step_system"], system_info: [Cpu, "step_system"],
+  hardware_info: [Cpu, "step_system"], software_info: [Cpu, "step_system"], mobile_info: [Cpu, "step_system"],
   // made, not searched: a picture or a clip the AI generates, a video cut together, a voice-over, a check of a file
   image_gen: [Wand2, "step_image_gen"], video_gen: [Clapperboard, "step_video_gen"], video_edit: [Film, "step_video_edit"],
   inspect: [ScanEye, "step_inspect"], speech: [AudioLines, "step_speech"], transcribe: [FileAudio, "step_transcribe"],
@@ -390,7 +397,7 @@ function TraceExport({ steps, timing }) {
   const save = (e) => {
     e.stopPropagation();
     const url = URL.createObjectURL(new Blob([md()], { type: "text/markdown;charset=utf-8" }));
-    const a = Object.assign(document.createElement("a"), { href: url, download: `steps-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md` });
+    const a = Object.assign(document.createElement("a"), { href: url, download: `steps-${localStamp()}.md` });
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   };

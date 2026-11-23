@@ -495,7 +495,7 @@ async def _spawn(ctx: ToolContext, args: dict, body: str, background: bool):
     return info, None
 
 
-READ_TOOLS_AS_CMD = {"list_dir", "read_file", "search_code", "system_info"}
+READ_TOOLS_AS_CMD = {"list_dir", "read_file", "search_code", "system_info", "hardware_info", "software_info", "mobile_info"}
 
 
 async def _tool_as_command(ctx, args, body) -> ToolResult | None:

@@ -68,6 +68,8 @@ async def lifespan(app: FastAPI):
     from . import hostinfo, toolchain
     toolchain.setup_paths()
     hostinfo.warm()
+    from .tools import sysinfo
+    sysinfo.warm()  # hardware details + package lists read once in the background: system_info answers at once
     # ffmpeg / composer fetched in the background when missing, then the tool list in the prompt is refreshed
     asyncio.create_task(toolchain.ensure()).add_done_callback(lambda _t: hostinfo.refresh())  # OS build, shells and tool versions for the system prompt, detected once in the background
     from . import mcp_client

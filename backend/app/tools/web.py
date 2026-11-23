@@ -388,6 +388,28 @@ async def search(query: str, limit: int = 8, report: dict | None = None) -> tupl
     return merged[: limit * 2], used
 
 
+SNIPPET_MAX = 420
+GLUE_MARK = re.compile(r"\s*(See full list on \S+|Tüm listeyi \S+ sitesinde görün|Devamını oku|Read more)\b", re.I)
+
+
+def tidy_result(r: dict) -> dict:
+    """One result's own title and snippet. Scraped pages (ddgs' Bing / Yahoo backends) sometimes glue the next
+    results onto one: a title "A … Fixes ...assistant-ui · The frontend library" (another site's title after a
+    "..."), a snippet that runs on through five other pages ("See full list on github.com ..."). The model then
+    read another product's description as the answer (it took AI IQ 300 for a React library)."""
+    title = str(r.get("title") or "")
+    if (m := re.search(r"\s?(\.\.\.|…)(?=[^\s.…])", title)) and m.start() >= 12:
+        title = title[:m.start()].rstrip(" -|·") + "…"
+    snip = str(r.get("snippet") or "")
+    if (m := GLUE_MARK.search(snip)):
+        snip = snip[:m.start()].rstrip()
+    if len(snip) > SNIPPET_MAX:
+        cut = snip[:SNIPPET_MAX]
+        end = max(cut.rfind(". "), cut.rfind("? "), cut.rfind("! "))
+        snip = (cut[:end + 1] if end > 120 else cut.rstrip()) + " …"
+    return {**r, "title": title[:160], "snippet": snip}
+
+
 def _fuse(lists: list[tuple[str, list[dict]]], terms: set[str]) -> list[dict]:
     """Reciprocal rank fusion (a page several engines return ranks higher), then the relevance gate."""
     fused: dict[str, dict] = {}
@@ -395,6 +417,7 @@ def _fuse(lists: list[tuple[str, list[dict]]], terms: set[str]) -> list[dict]:
         for rank, r in enumerate(res):
             if not r.get("url", "").startswith("http"):
                 continue
+            r = tidy_result(r)
             key = re.sub(r"^https?://(www\.)?|/$", "", r["url"]).lower()
             item = fused.setdefault(key, {**r, "engine": name, "engines": [], "score": 0.0})
             if name in item["engines"]:

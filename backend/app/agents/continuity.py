@@ -131,7 +131,7 @@ WRITERS = ("write_file", "make_doc")
 
 
 # Tools whose arguments are a few words: thousands of characters streaming into one of them is a loop.
-TINY_ARGS = frozenset({"my_location", "system_info", "need_tools", "web_search", "research", "fetch_url", "read_file",
+TINY_ARGS = frozenset({"my_location", "system_info", "hardware_info", "software_info", "mobile_info","need_tools", "web_search", "research", "fetch_url", "read_file",
                        "list_dir", "delete_file", "stop", "process", "browser_navigate", "browser_click", "browser_key",
                        "browser_scroll", "browser_wait", "browser_tabs", "browser_snapshot", "browser_screenshot",
                        "web_screenshot", "stock_photo", "places", "read_document"})

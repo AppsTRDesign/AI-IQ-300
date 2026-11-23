@@ -91,7 +91,7 @@ def tool(name: str, usage: str, description: str, params: dict | None = None, ma
 
 # Tools that change nothing on the computer: offered alone for plain knowledge questions.
 READ_ONLY = {"read_file", "list_dir", "search_code", "symbols", "impact", "web_search", "fetch_url", "research", "use_skill", "web_screenshot",
-             "places", "read_document", "my_location", "system_info", "browser_snapshot", "browser_find", "browser_inspect",
+             "places", "read_document", "my_location", "system_info", "hardware_info", "software_info", "mobile_info", "browser_snapshot", "browser_find", "browser_inspect",
              "browser_screenshot", "browser_scroll", "browser_wait"}
 
 
@@ -457,11 +457,12 @@ from . import doc_tools  # noqa: E402,F401
 from . import agent_tools  # noqa: E402,F401
 from .shell_tools import _did_you_mean, DEFAULT_SHELL, POWERSHELLS, PYTHON, SCRIPT_SHELLS, HEREDOC, HERE_CLOSE, route_heredoc, _powershell, PS_SHIM, PS_TRAILER, _split_chain, ps_chain, ps_script, CLI_LINE, SCRIPT_ONLY, CD_ONLY, PY_START, PS_HINT, FFMPEG_NO_Y, looks_python, PIP_CALL, venv_pip, build_argv, INSTALL_HINT, _unquote_arg, _shell_join, _spawn, ERR_AT, error_context, run, MISSING_PATH, _real_places, SERVER_CMD, READY, wait_ready, start, _script_text, _port_of, _port_busy, stop  # noqa: E402,F401
 from .file_tools import write_file, _write_file, edit_file, search_code, read_file, read_document, list_dir, delete_file  # noqa: E402,F401
-from .web_tools import web_search, fetch_url, DOWNLOAD_EXT, _github_repo, _download, research, my_location, system_info, places, browser_check, local_page_instead, web_screenshot  # noqa: E402,F401
+from .web_tools import web_search, fetch_url, DOWNLOAD_EXT, _github_repo, _download, research, my_location, system_info, hardware_info, software_info, mobile_info, places, browser_check, local_page_instead, web_screenshot  # noqa: E402,F401
 from .media_tools import stock_photo, _provider_of, inspect_media, generate_image, edit_video, animate_image, generate_video, mobile_env, speech_to_text, text_to_speech  # noqa: E402,F401
 from .doc_tools import PLACEHOLDER, placeholder_marks, _anchor_images, make_doc, doc_template  # noqa: E402,F401
+from .diagram import render_diagram  # noqa: E402,F401
 from .agent_tools import symbols, impact, mcp, mcp_add, mcp_search, team, ask_model, remember, use_skill, save_catalog, TODO_STATES, NEED_GROUPS, need_tools, todo_patch, loose_json, todo  # noqa: E402,F401
-_ORDER = ["write_file", "edit_file", "search_code", "read_file", "read_document", "list_dir", "delete_file", "run", "start", "stop", "web_search", "fetch_url", "research", "my_location", "system_info", "places", "browser_check", "web_screenshot", "stock_photo", "inspect_media", "generate_image", "edit_video", "animate_image", "generate_video", "mobile_env", "speech_to_text", "text_to_speech", "make_doc", "doc_template", "symbols", "impact", "mcp", "mcp_add", "mcp_search", "team", "ask_model", "remember", "use_skill", "save_catalog", "need_tools", "todo", "browser_navigate", "browser_snapshot", "browser_find", "browser_click", "browser_type", "browser_key", "browser_form", "browser_scroll", "browser_wait", "browser_tabs", "browser_screenshot", "browser_inspect", "browser_handoff", "browser_batch"]
+_ORDER = ["write_file", "edit_file", "search_code", "read_file", "read_document", "list_dir", "delete_file", "run", "start", "stop", "web_search", "fetch_url", "research", "my_location", "system_info", "hardware_info", "software_info", "mobile_info", "places", "browser_check", "web_screenshot", "stock_photo", "inspect_media", "generate_image", "edit_video", "animate_image", "generate_video", "mobile_env", "speech_to_text", "text_to_speech", "make_doc", "doc_template", "symbols", "impact", "mcp", "mcp_add", "mcp_search", "team", "ask_model", "remember", "use_skill", "save_catalog", "need_tools", "todo", "browser_navigate", "browser_snapshot", "browser_find", "browser_click", "browser_type", "browser_key", "browser_form", "browser_scroll", "browser_wait", "browser_tabs", "browser_screenshot", "browser_inspect", "browser_handoff", "browser_batch"]
 _now = dict(TOOLS)
 TOOLS.clear()
 TOOLS.update({k: _now[k] for k in _ORDER if k in _now})

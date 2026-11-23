@@ -33,7 +33,11 @@ STRAY = re.compile(r"<system>[^<\n]{0,60}</system>|</?system>|</?tool_call>|</fu
                    r"|</parameter>|<parameter=[\w.-]+>|</tools?>|</?arg_(?:key|value)>|</?invoke\b[^>\n]{0,80}>"
                    r"|</?｜DSML｜[\w]*[^>\n]{0,80}>|<｜[\w▁ ]{1,40}｜>"
                    # Kimi K2 section markers, MiniMax's wrapper, Llama 3's python tag / end-of-message tokens
-                   r"|<\|tool_calls_section_(?:begin|end)\|>|</?[\w-]+:tool_calls?>|<\|python_tag\|>|<\|e[om]t?_id\|>")
+                   r"|<\|tool_calls_section_(?:begin|end)\|>|</?[\w-]+:tool_calls?>|<\|python_tag\|>|<\|e[om]t?_id\|>"
+                   # Chat-template tokens of other families left in the text (Nemotron: "<|close|>think<|sep|>
+                   # <|close|>message<|sep|>" at the end of a note), with the role word the token names
+                   r"|<\|(?:close|sep|open|im_start|im_end|im_sep|eot|eos|bos|endoftext|end_of_turn|start_of_turn)\|>"
+                   r"(?:think|message|assistant|user|system|model)?")
 # A reasoning closer with no opener: the template opened the block in the prompt (DeepSeek-R1 / QwQ style), so
 # everything shown before it was reasoning.
 LONE_CLOSE = re.compile(r"</(?:think|thinking|reasoning)>")
@@ -142,7 +146,7 @@ STRAY_HEADS = ("</parameter>", "<parameter=", "</tool>", "</tools>", f"<{DSML}",
                "</invoke", "<invoke", "<｜", "</minimax", "<minimax")
 # Any short tag-shaped tail ("</minimax:", "<|tool_ca"): a vendor's call wrapper split between two chunks went to
 # the chat in halves, STRAY never saw it whole (a note that was only "</minimax:tool_call>", nemotron on NVIDIA).
-TAG_TAIL = re.compile(r"</?[A-Za-z_][\w:.|-]{0,40}$")
+TAG_TAIL = re.compile(r"</?[A-Za-z_][\w:.|-]{0,40}$|<\|[\w|]{0,24}$|<\|\w{1,24}\|>\w{0,10}$")
 
 
 @dataclass

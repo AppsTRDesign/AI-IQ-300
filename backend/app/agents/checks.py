@@ -193,10 +193,10 @@ WEB_WORDS = re.compile(
     r"d[öo]k[üu]mantasyon|ekran\s*g[öo]r[üu]nt|screenshot|pdf|kar[şs][ıi]la[şs]t[ıi]r|compare|review|yorum", re.I)
 GROUP_TOOLS = {
     "web": {"web_search", "research", "fetch_url", "web_screenshot", "read_document"},
-    "design": {"stock_photo", "web_screenshot", "generate_image"},
+    "design": {"stock_photo", "web_screenshot", "generate_image", "render_diagram"},
     "browser": set(BROWSER_TOOLS),
     "places": {"places", "my_location"},
-    "docs": {"make_doc", "read_document", "doc_template"},
+    "docs": {"make_doc", "read_document", "doc_template", "render_diagram"},
     "memory": {"remember", "save_catalog"},
     "project": {"impact", "symbols"},
     "team": {"team", "ask_model"},
@@ -206,8 +206,8 @@ GROUP_TOOLS = {
     # "foto" opens this group, so the photo search must be offered with it (it was missing: the model then claimed
     # downloads that never happened)
     "media": {"inspect_media", "speech_to_text", "text_to_speech", "generate_image", "edit_video", "stock_photo",
-              "animate_image", "generate_video"},
-    "system": {"system_info"},
+              "animate_image", "generate_video", "render_diagram"},
+    "system": {"system_info", "hardware_info", "software_info", "mobile_info"},
     "mobile": {"mobile_env"},
 }
 GROUPED = set().union(*GROUP_TOOLS.values())
@@ -609,7 +609,8 @@ def tool_hint(request: str) -> str:
         return ""
     hints = []
     if GROUP_WORDS["system"].search(request):
-        hints.append("system_info returns this computer's hardware, OS and installed software / packages in one call")
+        hints.append("system_info gives a quick overview of this computer and app; hardware_info / software_info / "
+                     "mobile_info give the details (no systeminfo/wmic commands)")
     if DELIVER_VERB.search(request):
         for rx, _exts, kind in DELIVERABLES:
             if rx.search(request):

@@ -576,6 +576,68 @@ async def _run_tool(run: Run, ctx: ToolContext, name: str, args: dict, body: str
     return res
 
 
+def mcp_route(name: str, args: dict, body: str):
+    """An MCP server's tool called by its own name ("github/search_repositories", "github__search_repositories",
+    "github.search_repositories") instead of through mcp: the app answered "Unknown tool", the model concluded the
+    GitHub tools were off and fell back to web searches. Routed to mcp when that server is connected."""
+    m = re.fullmatch(r"([\w-]+?)(?:/|__|\.|:)([\w.-]+)", name or "")
+    if not m:
+        return None
+    try:
+        from .. import mcp_client
+        servers = set(mcp_client.servers_cfg() or {})
+    except Exception:  # noqa: BLE001
+        return None
+    server = next((s for s in servers if s.lower() == m.group(1).lower()), None)
+    if not server:
+        return None
+    inner = {k: v for k, v in (args or {}).items() if k != "_raw"}
+    arguments = body.strip() if body and body.strip().startswith("{") else json.dumps(inner, ensure_ascii=False)
+    return "mcp", {"server": server, "tool": m.group(2), "arguments": arguments}, ""
+
+
+def _query_words(q: str) -> frozenset:
+    return frozenset(w for w in re.findall(r"\w+", q.lower()) if len(w) > 1 or w.isdigit())
+
+
+def near_duplicate_search(run, query: str) -> str | None:
+    """The third search that is only a reshuffle of earlier ones ("AI IQ 300 GitHub", "AI IQ 300 model GitHub",
+    "GitHub AI IQ 300 model repository"...: seven in a row, the same results each time) is not sent: the model gets
+    told to change the route. Word sets overlapping 60 % or more count as the same search."""
+    words = _query_words(query)
+    if not words:
+        return None
+    same = sum(1 for w in run.queries if len(words & w) / len(words | w) >= 0.6)
+    run.queries.append(words)
+    if same < 2:
+        return None
+    hint = ""
+    if "github" in words or "repo" in words or "repository" in words:
+        hint = (" For GitHub use the GitHub route instead: `gh search repos \"<name>\" --limit 10`, `gh repo view "
+                "<owner>/<repo>`, or fetch_url https://api.github.com/search/repositories?q=<name> (skill github).")
+    return ("Not searched: this is the same search as earlier ones with the words reshuffled, and those found nothing "
+            "new. Change the route (another source, a site's own search or API, a different angle) or answer with what "
+            "the results above show and say what could not be found." + hint)
+
+
+PATH_ALIASES = ("file_path", "filepath", "filePath", "file_name", "filename", "fileName", "file", "target_file",
+                "output_path", "output", "out", "dest", "destination")
+
+
+def path_alias(name: str, args: dict) -> dict:
+    """A tool that takes `path` called with another name for it (write_file file_path=..., filename=...): the call
+    failed with "Missing required argument 'path'" while the step title already showed the file (nemotron)."""
+    spec = TOOLS.get(name)
+    if not spec or "path" not in spec.params or str(args.get("path") or "").strip():
+        return args
+    for k in PATH_ALIASES:
+        if k not in spec.params and isinstance(args.get(k), str) and args[k].strip():
+            out = {kk: vv for kk, vv in args.items() if kk != k}
+            out["path"] = args[k].strip()
+            return out
+    return args
+
+
 def _unwrap_args(name: str, args: dict, body: str) -> tuple[dict, str]:
     """A call whose body is '<arguments>{"owner": ..}</arguments>' (nemotron, every GitHub call in a row): the wrapper
     goes. A JSON object inside becomes the tool's arguments, except for mcp / google, whose body is that JSON. Values
@@ -599,8 +661,11 @@ def _unwrap_args(name: str, args: dict, body: str) -> tuple[dict, str]:
 
 async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body: str,
                          allowed: set[str] | None = None) -> ToolResult:
+    if name not in TOOLS and (routed := mcp_route(name, args, body)):
+        name, args, body = routed
     if name not in TOOLS:
         return ToolResult(False, f"Unknown tool '{name}'. Available: {', '.join(TOOLS)}")
+    args = path_alias(name, args)
     if allowed is not None and name not in allowed and not run.restricted:
         # The model knows the tool from the capability map and called it before opening its group: open the group
         # and run the call, instead of an error that made it give up ("I have no text-to-speech tool"). A skill's
@@ -625,6 +690,9 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
                                 "use what you have, try a different source, or give the answer now.")
     if name in REPEAT_GUARD:
         run.seen.add(key)
+    if name in ("web_search", "research") and (msg := near_duplicate_search(run, str(args.get("query") or body or ""))):
+        run.repeats += 1
+        return ToolResult(False, msg)
     if name in ("list_dir", "read_file", "search_code"):
         # Nothing was written or run since the same call: its answer cannot have changed (a weak model listed two
         # folders in turn 40 times). Point it at what it already has instead of running it again.
@@ -746,10 +814,16 @@ async def _run_tool_once(run: Run, ctx: ToolContext, name: str, args: dict, body
 
                 def repeated(c: str) -> bool:  # the same item, perhaps reworded a little
                     k = norm(c)
+                    kw = set(k.split())
                     return any(k == n or k in n or n in k or difflib.SequenceMatcher(None, k, n).ratio() >= 0.8
+                               or (kw and len(kw & set(n.split())) / len(kw | set(n.split())) >= 0.5)
                                for n in new_keys)
-                kept = [{**t, "status": "completed" if t["status"] == "in_progress" else t["status"]}
-                        for t in run.todos if not repeated(t["content"])]
+                # Only finished work of the earlier list stays (in progress counts as finished: the model moved on).
+                # Its still-open items are the model's old plan, which the new list replaces: kept, they showed the
+                # same steps twice in other words (4 items became 7) and the open copies sent the model round again
+                # and again ("Next: draw the flowchart. Keep going." after the answer was given three times).
+                kept = [{**t, "status": "completed"} for t in run.todos
+                        if t["status"] in ("completed", "in_progress") and not repeated(t["content"])]
                 if kept:
                     todos = (kept + todos)[:40]
             # A big request planned as one or two items ("Create project structure", marked done at once while most

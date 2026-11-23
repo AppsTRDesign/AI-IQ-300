@@ -346,6 +346,13 @@ chat/      One folder per chat: chat/<chat id>/ (its files) + .session/ (its rec
 screenshots/ Banners and screenshots used by this README
 ```
 
+### 🔀 How a message is handled
+
+> Full workflow with a turn-by-turn sequence and the agent-team flow (GitHub draws the diagrams):
+> [WORKFLOW.md](WORKFLOW.md) · [Türkçe](WORKFLOW.tr.md)
+
+<p align="center"><img src="screenshots/workflow-en.png" width="640" alt="AI IQ 300 workflow"></p>
+
 ## 🧩 Skills from other tools' commands (npx skills, hf skills, gradio skills)
 
 A skills install command copies `SKILL.md` instructions into an agent's skills folder and exits - it is **not an MCP server**, so it cannot be started as one. AI IQ 300 recognizes these commands and imports them as **Skills** instead:
@@ -361,6 +368,31 @@ A skills install command copies `SKILL.md` instructions into an agent's skills f
 **Where:** paste the command into the import box on the **Skills** page, or into the MCP server form - there the Save button is replaced by **Import skills**. A server card that failed with such a command gets the same button (and the useless server entry can be removed after the import).
 
 **How it works:** a picker lists the skills (grouped, searchable, with descriptions; already imported ones are marked). Each picked skill is saved with its source, so importing again updates it instead of making a copy; a built-in skill with the same name is never overwritten (the new one gets the owner's name in front). Files next to a skill (references, scripts) are listed as links the model opens when the skill points to them. Every skill adds a short line (~40 tokens) to the model's prompt, so the picker shows the total and allows at most 60 at once - pick only what you will use. Flags such as `--global`, `--force`, `--cursor`, `--claude` or `--dest` are ignored: skills always go to the app's own Skills.
+
+## 🆕 New in v0.18.7 (diagrams in the chat, flowchart skill, fast system tools)
+
+- **Mermaid diagrams in the chat:**
+  - A ```mermaid block in an answer, or Mermaid code pasted into a message, is drawn as a diagram. The style matches the app: rounded soft nodes, pill edge labels, light and dark.
+  - A hover menu lets you copy the code, show the code, or download PNG / SVG.
+  - **Expand diagram** opens a full-screen view with zoom (buttons, wheel, keys), drag to pan and fit.
+  - **Edit code** puts a code editor next to a live preview, with an error line and a reset button.
+- **Flowchart skill:** models pick the right diagram type (flowchart, sequence, state, ER, Gantt, mind map…) and follow layout, quoting and colour rules, so the diagrams look professional and render without errors.
+- **`render_diagram` tool:** saves a diagram as a PNG or SVG file in the same style as the chat, for documents, PDFs and READMEs. An image model is never used for diagrams, because it writes unreadable fake text.
+- **Workflow page:** [WORKFLOW.md](WORKFLOW.md) shows how a message is handled, with diagrams.
+- **System info split into fast tools:**
+  - `system_info` (summary), `hardware_info`, `software_info` and `mobile_info`; each one starts with the current date and time.
+  - Results are cached and warmed at startup, so a repeat call returns at once.
+  - Each drive shows its physical disk and type (SSD / HDD, NVMe / SATA). CPU caches are shown in MB and the clock as the base clock.
+- **Fixes from real logs:**
+  - The same final answer is no longer written three times.
+  - A to-do list no longer grows with reworded copies of its items.
+  - Answers are no longer cut to a few letters ("Ak") when the reasoning held a planning list.
+  - Template tokens such as `<|close|>message` are hidden.
+  - A third near-identical web search is refused with a better route (for a repository, `gh`).
+  - MCP tools called by their own name (`github/search_repositories`) are routed to the MCP server.
+  - `file_path` / `filename` arguments work as `path`.
+  - Search results glued together by the search page are split.
+  - The model knows its own app, version and repository.
 
 ## 🆕 New in v0.18.6 (Google and GitHub tools, Drive uploads, finished answers that stay finished)
 

@@ -29,6 +29,22 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
 
+## v0.18.7 (2026-11-23): Mermaid diagrams, flowchart skill, split system tools, log fixes
+pytest 318. Chat diagram checked in the browser (inline, expand, edit code, dark theme, no console errors).
+- **Diagrams:** `frontend/src/components/Diagram.jsx` (inline diagram, hover menu, full-screen viewer with zoom / pan /
+  fit, Monaco edit mode with live preview, PNG / SVG export); `lib/mermaidText.js` detects pasted Mermaid;
+  `lib/diagramTheme.js` is the one theme source, also used by the backend.
+- **`render_diagram`** (`backend/app/tools/diagram.py`): headless Chromium + the app's Mermaid build and theme, PNG or
+  SVG, through the file-write gate. `generate_image` refuses diagram prompts.
+- **Flowchart skill** (`skills/flowchart.md`): type choice, shapes, quoting, subgraphs, semantic classes, checks.
+- **WORKFLOW.md / WORKFLOW.tr.md** with diagrams; `screenshots/workflow-*.png` in the READMEs.
+- **System tools:** `system_info` (summary / now / all), `hardware_info`, `software_info`, `mobile_info`; date first;
+  cached (hardware 30 min, software 10 min) and warmed at startup; drive letter -> physical disk type.
+- **Log fixes:** only-todo final turn ends the run (no triple answer); todo merge keeps only finished old items;
+  structure-aware babble cut ("Ak" truncation); `<|close|>message` template tokens hidden; near-duplicate search
+  brake; MCP tools by their own name; `file_path` / `filename` aliases; glued search results split; identity knows
+  the repo and version.
+
 ## v0.18.6 (2026-11-22): Google / GitHub integration, skills from other tools' commands
 Real-model tested (NVIDIA Nemotron, temp AIIQ_DATA instance). pytest 284.
 - **Google:** built-in `google` tool (Google REST APIs with the connected account: Gmail incl. drafts, Drive, Sheets,

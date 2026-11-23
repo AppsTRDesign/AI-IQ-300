@@ -346,6 +346,13 @@ chat/      Her sohbete bir klasör: chat/<sohbet kimliği>/ (dosyaları) + .sess
 screenshots/ Bu README'deki banner ve ekran görüntüleri
 ```
 
+### 🔀 Bir mesaj nasıl işlenir
+
+> Tur tur sıralama şeması ve ajan ekibi akışıyla tam çalışma şeması (GitHub şemaları çizer):
+> [WORKFLOW.tr.md](WORKFLOW.tr.md) · [English](WORKFLOW.md)
+
+<p align="center"><img src="screenshots/workflow-tr.png" width="640" alt="AI IQ 300 çalışma şeması"></p>
+
 ## 🧩 Başka araçların komutlarıyla beceri ekleme (npx skills, hf skills, gradio skills)
 
 Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasörüne kopyalayıp kapanır; bunlar **MCP sunucusu değildir**, o yüzden sunucu olarak başlatılamaz. AI IQ 300 bu komutları tanır ve **Beceriler** olarak içe aktarır:
@@ -361,6 +368,31 @@ Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasör�
 **Nerede:** Komutu **Beceriler** sayfasındaki içe aktarma kutusuna ya da MCP sunucu formuna yapıştırın; formda Kaydet yerine **Becerileri içe aktar** düğmesi çıkar. Böyle bir komutla "Başlatılamadı" olan sunucu kartında da aynı düğme vardır (içe aktarmadan sonra işe yaramayan sunucu kaydı silinebilir).
 
 **Nasıl çalışır:** Bir seçim penceresi becerileri listeler (gruplu, aranabilir, açıklamalı; daha önce aktarılanlar işaretli). Seçilen her beceri kaynağıyla kaydedilir; tekrar içe aktarmak kopya oluşturmaz, günceller. Aynı adlı yerleşik bir beceri asla ezilmez (yenisinin önüne sahibinin adı eklenir). Becerinin yanındaki dosyalar (referanslar, betikler) bağlantı olarak eklenir; beceri onlara yönlendirince model açar. Her beceri modelin istemine kısa bir satır ekler (~40 token); pencere toplamı gösterir ve tek seferde en fazla 60 beceriye izin verir - yalnızca kullanacaklarınızı seçin. `--global`, `--force`, `--cursor`, `--claude`, `--dest` gibi bayraklar yok sayılır: beceriler her zaman uygulamanın kendi Beceriler bölümüne gider.
+
+## 🆕 v0.18.7 ile gelenler (sohbette şemalar, akış şeması yeteneği, hızlı sistem araçları)
+
+- **Sohbette Mermaid şemaları:**
+  - Cevaptaki ```mermaid bloğu ya da mesaja yapıştırılan Mermaid kodu şema olarak çizilir. Stil uygulamayla uyumludur: yuvarlak yumuşak kutular, hap biçimli ok etiketleri, açık ve koyu tema.
+  - Üzerine gelince açılan menüden kod kopyalanır, kod gösterilir ya da PNG / SVG indirilir.
+  - **Diyagramı genişlet** tam ekran görünümü açar: yakınlaştırma (düğmeler, tekerlek, tuşlar), sürükleyerek kaydırma, sığdırma.
+  - **Kodu düzenle** kod düzenleyiciyi canlı önizlemenin yanına koyar; hata satırı ve sıfırlama düğmesi vardır.
+- **Akış şeması yeteneği:** modeller doğru şema türünü seçer (akış, sıralama, durum, ER, Gantt, zihin haritası…) ve yerleşim, tırnak ve renk kurallarına uyar; şemalar profesyonel görünür ve hatasız çizilir.
+- **`render_diagram` aracı:** şemayı sohbetteki stille PNG ya da SVG dosyası olarak kaydeder; belgeler, PDF'ler ve README'ler için. Şemalar için asla görsel modeli kullanılmaz, çünkü okunamayan sahte yazılar üretir.
+- **Çalışma şeması sayfası:** [WORKFLOW.tr.md](WORKFLOW.tr.md) bir mesajın nasıl işlendiğini şemalarla gösterir.
+- **Sistem bilgisi hızlı araçlara bölündü:**
+  - `system_info` (özet), `hardware_info`, `software_info` ve `mobile_info`; her biri o anki tarih ve saatle başlar.
+  - Sonuçlar önbelleğe alınır ve açılışta ısıtılır; tekrar çağrı anında döner.
+  - Her sürücü fiziksel diskini ve türünü gösterir (SSD / HDD, NVMe / SATA). İşlemci önbellekleri MB, saat hızı temel saat olarak gösterilir.
+- **Gerçek kayıtlardan düzeltmeler:**
+  - Aynı son cevap artık üç kez yazılmıyor.
+  - Yapılacaklar listesi, maddelerin yeniden yazılmış kopyalarıyla büyümüyor.
+  - Düşünme metninde plan listesi olunca cevap birkaç harfe ("Ak") kesilmiyor.
+  - `<|close|>message` gibi şablon belirteçleri gizleniyor.
+  - Üçüncü neredeyse aynı web araması daha iyi bir yol önerilerek reddediliyor (depo için `gh`).
+  - Kendi adıyla çağrılan MCP araçları (`github/search_repositories`) MCP sunucusuna yönlendiriliyor.
+  - `file_path` / `filename` argümanları `path` olarak çalışıyor.
+  - Arama sayfasının birbirine yapıştırdığı sonuçlar ayrılıyor.
+  - Model kendi uygulamasını, sürümünü ve deposunu biliyor.
 
 ## 🆕 v0.18.6 ile gelenler (Google ve GitHub araçları, Drive'a yükleme, bitince bitmiş kalan yanıtlar)
 

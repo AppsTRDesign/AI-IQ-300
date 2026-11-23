@@ -11,6 +11,22 @@ Otonom, çoklu ajan destekli, yerel ve bulut LLM'leri ile çalışan tam kapsaml
 - **Son Başarılı İşlem:** v0.10.0 — profesyonel belge motoru (Chromium PDF/HTML + KaTeX, tasarımlı DOCX/PPTX/XLSX), ayarlanabilir akış zaman aşımları ve parçalı yazma, run_state.json ile kesinti sonrası devam, paralel araç yürütme, canlı todos, çok dilli niyet tablosu, zengin mesaj kutusu, mesaj sayfalama/kopyala/sil/alıntı, sağ tık menüleri, gruplu değişiklik kartı, medya oynatıcılar, servis kartları, kota/bakiye ekranı.
 - **Önceki:** v0.6 — kesintisiz orkestrasyon (devam ettirme, sessiz araç yazımında heartbeat, görev içi bağlam kırpma/özetleme, canlı bağlam sayımı, takılı adım temizliği, tekrar eden çağrı koruması, asılsız dosya iddiası koruması), todo aracı + canlı yapılacaklar listesi, otomatik yetenek algılama (use_skill), bilgi sorularında salt-okuma araçlar, arama alaka filtresi + Bing URL çözümü, canlı gruplu adımlar, model seçiciden bağlam düzenleme (ayarlarla senkron), aç/kapat popover'lar, çizim ekranı, klasör yükleme, hedef modu, belge kartları ve önizleme (xlsx/docx/pdf/pptx), kökteki gereksiz docs/ kaldırıldı.
 
+## v0.18.7 (2026-11-23): Mermaid şemaları, akış şeması yeteneği, bölünmüş sistem araçları, kayıt düzeltmeleri
+pytest 318. Sohbet şeması tarayıcıda denetlendi (satır içi, genişletme, kod düzenleme, koyu tema, konsol hatası yok).
+- **Şemalar:** `frontend/src/components/Diagram.jsx` (satır içi şema, üzerine gelince menü, yakınlaştırma / kaydırma /
+  sığdırmalı tam ekran görüntüleyici, canlı önizlemeli Monaco düzenleme, PNG / SVG dışa aktarma);
+  `lib/mermaidText.js` yapıştırılan Mermaid'i tanır; `lib/diagramTheme.js` tek tema kaynağıdır, arka uç da kullanır.
+- **`render_diagram`** (`backend/app/tools/diagram.py`): başsız Chromium + uygulamanın Mermaid'i ve teması, PNG ya da
+  SVG, dosya yazma onayından geçer. `generate_image` şema isteklerini reddeder.
+- **Akış şeması yeteneği** (`skills/flowchart.md`): tür seçimi, şekiller, tırnaklar, alt gruplar, anlamlı renkler, denetim.
+- **WORKFLOW.md / WORKFLOW.tr.md** şemalarla; `screenshots/workflow-*.png` README'lerde.
+- **Sistem araçları:** `system_info` (özet / now / all), `hardware_info`, `software_info`, `mobile_info`; önce tarih;
+  önbellekli (donanım 30 dk, yazılım 10 dk), açılışta ısıtılır; sürücü harfi -> fiziksel disk türü.
+- **Kayıt düzeltmeleri:** yalnızca todo içeren son tur görevi bitirir (üçlü cevap yok); todo birleştirme yalnızca biten
+  eski maddeleri tutar; yapıya duyarlı saçmalama kesimi ("Ak" kesilmesi); `<|close|>message` şablon belirteçleri
+  gizlenir; benzer arama freni; kendi adıyla MCP araçları; `file_path` / `filename` takma adları; yapışık arama
+  sonuçları ayrılır; kimlik depoyu ve sürümü bilir.
+
 ## v0.18.6 (2026-11-22): Google / GitHub entegrasyonu, başka araçların komutlarıyla beceri
 Gerçek modelle test edildi (NVIDIA Nemotron, geçici AIIQ_DATA kopyası). pytest 284.
 - **Google:** yerleşik `google` aracı (bağlı hesapla Google REST API'leri: Gmail ve taslaklar, Drive, Sheets, Docs,

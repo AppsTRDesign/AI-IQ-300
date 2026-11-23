@@ -1334,6 +1334,18 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             if chat_only:  # small talk: never execute tools, even if the model writes them
                 tag_blocks, calls = [], []
             parsed = [parse_tool(b, TOOL_NAMES) for b in tag_blocks]
+            only_todo = bool(calls or tag_blocks) and all(n == "todo" for n in (
+                [c["name"] for c in calls] if calls else [p.name if p else "" for p in parsed]))
+            answer_now = "".join(visible).strip()
+            if (only_todo and used_tools and len(answer_now) >= 200 and not is_announcement(answer_now)
+                    and not is_promise(answer_now)):
+                # The final answer written next to a last tick of the list: the answer stands and the list is done.
+                # Run as a tool turn, the todo result said "Next: ... Keep going" and the model wrote the same final
+                # answer again, three times (nemotron, AI IQ 300 GitHub report).
+                run.todos = [{**t, "status": "completed"} for t in run.todos]
+                if run.todos:
+                    _emit(run, "todos", todos=run.todos)
+                tag_blocks, calls, parsed = [], [], []
             if not tag_blocks and not calls:
                 # Last chance for formats only detectable on the full text (Mistral, fenced JSON)...
                 inline, cleaned = ([], "") if chat_only else extract_inline_calls("".join(visible), set(TOOLS))

@@ -172,11 +172,24 @@ def _babble_cut(text: str) -> str | None:
         return None
     lines = text.split("\n")
     run_start, run_len = None, 0
+    in_code = False
     for i, ln in enumerate(lines):
-        s = ln.strip().strip("-_*#>").strip()
+        if ln.lstrip().startswith("```"):
+            in_code = not in_code
+            run_len = 0
+            continue
+        raw = ln.strip()
+        if not raw or in_code:
+            continue
+        # A list ("- A: Kullanıcı Mesajı", "1. Read the file") or a code / key-value line ("A -> B", "'A': (0, 1)")
+        # is structure, not babble: a model planning a flowchart in its reasoning listed 24 nodes and 22 edges, the
+        # check cut it as babble and the answer ended as "Ak".
+        structured = (re.match(r"^([-*+•]\s|\d+[.)]\s?)", raw) or re.search(r"[=(){}\[\]'\"`:→>]|->|\w\.\w", raw))
+        s = raw.strip("-_*#>").strip()
         if not s:
             continue
-        short = len(s) <= 40 and len(s.split()) <= 4 and not re.match(r"^(\d+[.)]|[|<{`$]|[\w./\\-]+\.\w{1,5}\b)", s)
+        short = (not structured and len(s) <= 40 and len(s.split()) <= 4
+                 and not re.match(r"^(\d+[.)]|[|<{`$]|[\w./\\-]+\.\w{1,5}\b)", s))
         if short:
             if run_len == 0:
                 run_start = sum(len(x) + 1 for x in lines[:i])

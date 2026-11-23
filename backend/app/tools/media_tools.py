@@ -115,14 +115,20 @@ async def inspect_media(ctx, args, body):
     return ToolResult(True, clip(media_inspect.report(res), 16000), data)
 
 
-@tool("generate_image", '<tool name="generate_image" path="images/hero.jpg" width="1280" height="768">detailed English prompt</tool>',
+DIAGRAM_PROMPT = re.compile(r"flow\s*-?\s*chart|flow\s*diagram|workflow\s+diagram|sequence\s+diagram|architecture\s+"
+                            r"diagram|block\s+diagram|mind\s*map|org(anization(al)?)?\s*chart|akış\s*şema|diyagram|"
+                            r"\bşema\b|uml\b|gantt", re.I)
+PHOTO_WORDS = re.compile(r"photo|realistic|3d\s+render|illustration\s+of\s+a\s+person|whiteboard\s+photo", re.I)
+
+
+@tool("generate_image",'<tool name="generate_image" path="images/hero.jpg" width="1280" height="768">detailed English prompt</tool>',
       "Create a new picture from a description. The services with a key the user saved (Gemini, Cloudflare FLUX, Hugging "
       "Face, Together, OpenAI, Stability) are used in order; a service that is out of quota or rate limited is skipped "
       "and the next one takes over; when none is available the free FLUX of Pollinations makes it (no key). The result "
       "says which service made the picture. Photo-realistic scenes, product shots, illustrations, 3D renders, a picture "
       "'like this one' (first describe the original with inspect_media, then write that description as the prompt). "
       "Write a detailed English prompt: subject, setting, lighting, camera/style (e.g. 'food photography, top view, soft "
-      "daylight'). For exact diagrams or text-heavy graphics draw with code (skia/drawsvg) instead.",
+      "daylight'). For flowcharts / process diagrams write a ```mermaid block in the answer (the chat draws it); for other exact or text-heavy graphics draw with code (skia/drawsvg).",
       {"prompt": S("Detailed English description of the picture"), "path": S("Output file (default images/generated.jpg)"),
        "width": {"type": "integer", "description": "Width in px (256-2048, default 1024)"},
        "height": {"type": "integer", "description": "Height in px (256-2048, default 1024)"},
@@ -132,6 +138,11 @@ async def generate_image(ctx, args, body):
     prompt = (args.get("prompt") or body or "").strip()
     if not prompt:
         return ToolResult(False, "Describe the picture to create.")
+    if DIAGRAM_PROMPT.search(prompt) and not PHOTO_WORDS.search(prompt):
+        # An image model draws boxes with unreadable fake text; a real flowchart is Mermaid code the chat draws.
+        return ToolResult(False, "Not generated: an image model cannot draw a readable flowchart or diagram. Write it "
+                                 "as a ```mermaid block in your answer instead (the chat draws it; use_skill flowchart "
+                                 "for a polished one); for a picture file use render_diagram with that Mermaid code.")
     if msg := await registry._network_gate(ctx, {"tool": "generate_image", "url": "https://image.pollinations.ai"}):
         return ToolResult(False, msg)
     rel = (args.get("path") or "images/generated.jpg").strip()

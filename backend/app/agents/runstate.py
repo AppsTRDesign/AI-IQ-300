@@ -51,6 +51,7 @@ class Run:
     todos: list[dict] = field(default_factory=list)  # live task list kept by the model (todo tool)
     seen: set = field(default_factory=set)  # read-only calls already made in this task (see REPEAT_GUARD)
     repeats: int = 0  # repeated read-only calls answered from memory; at 3 the web tools close for the task
+    queries: list = field(default_factory=list)  # word sets of this task's web searches (near-duplicate brake)
     fs_epoch: int = 0  # tools that can change the disk so far (a repeated list_dir / read_file before the next one is a loop)
     fail_streak: int = 0  # model turns whose tool calls failed in a row: every 4 the model must change the approach
     turn_idx: int = 0  # tool rounds so far (fail_streak counts one per round)
@@ -206,7 +207,7 @@ def _step(run: Run, kind: str, title: str, status: str = "done", detail: str = "
     return sid
 
 
-TOOL_TITLES = {"write_file": "file", "read_file": "read", "read_document": "read", "my_location": "places", "system_info": "system", "list_dir": "list", "run": "command", "start": "process",
+TOOL_TITLES = {"write_file": "file", "read_file": "read", "read_document": "read", "my_location": "places", "system_info": "system", "hardware_info": "system", "software_info": "system", "mobile_info": "system","list_dir": "list", "run": "command", "start": "process",
                "stop": "stop", "web_search": "search", "research": "search", "fetch_url": "fetch", "browser_check": "visual",
                "make_doc": "document", "doc_template": "document", "delete_file": "delete", "use_skill": "skill", "edit_file": "edit",
                "search_code": "grep", "symbols": "grep", "ask_model": "delegate", "remember": "memory",

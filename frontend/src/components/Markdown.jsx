@@ -9,6 +9,8 @@ import { Bot, Plug, Sparkles } from "lucide-react";
 import { useStore } from "../lib/store";
 import { docKind, fileType, isImage, isWebPage } from "../lib/fileTypes";
 import CodeBlock from "./CodeBlock";
+import Diagram from "./Diagram";
+import { isMermaid, mermaidLang } from "../lib/mermaidText";
 
 // Heuristic: a user message pasted as raw code (no fences) is framed as code too.
 export function looksLikeCode(text) {
@@ -89,7 +91,13 @@ const makeComponents = (chips) => ({
       if (viewer) return <FileRef path={content} viewer={viewer}>{children}</FileRef>;
       return <code>{children}</code>;
     }
-    return <CodeBlock code={content} language={(className || "").replace("language-", "")} />;
+    const lang = (className || "").replace("language-", "");
+    // A Mermaid block is drawn as a diagram once the answer is complete; while it is still being written it stays
+    // code (a half diagram does not parse and would flash errors).
+    if (mermaidLang(lang, content)) {
+      return chips ? <Diagram code={content} /> : <CodeBlock code={content} language="mermaid" />;
+    }
+    return <CodeBlock code={content} language={lang} />;
   },
   img({ src, alt }) {
     // A picture the model wrote with a path in the chat folder (images/x.jpg): served by the file API, not by the
@@ -161,6 +169,8 @@ export function closeMarkdown(text) {
 function Markdown({ text, mentions = false, live = false }) {
   const names = useMentionNames();
   const src = useMemo(() => {
+    // Mermaid code pasted without a fence (flowchart TD …) is drawn too.
+    if (!text.includes("```") && isMermaid(text)) return "```mermaid\n" + text.trim() + "\n```";
     if (looksLikeCode(text)) return "```\n" + text + "\n```";
     let out = prepareMath(live ? closeMarkdown(text) : text);
     if (!mentions) return out;

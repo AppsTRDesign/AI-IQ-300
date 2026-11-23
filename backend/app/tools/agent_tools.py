@@ -881,7 +881,7 @@ NEED_GROUPS = ["web", "media", "design", "browser", "places", "docs", "memory", 
       "pages; web_screenshot), browser (act in a real browser window), places (maps, nearby venues, the user's location), "
       "docs (make/read PDF, Word, Excel, PowerPoint), memory (remember rules, save skills/agents), project (symbols, "
       "impact), team (agent team, ask another model), mcp (connected MCP servers), mcp_setup (mcp_search: find an "
-      "MCP server for any service on the registry / npm / GitHub; mcp_add: connect it), system (system_info: this computer's hardware and OS), mobile (mobile_env: Android emulator / iOS simulator, "
+      "MCP server for any service on the registry / npm / GitHub; mcp_add: connect it), system (system_info overview, hardware_info, software_info, mobile_info), mobile (mobile_env: Android emulator / iOS simulator, "
       "Maestro UI tests for mobile apps).",
       {"groups": S("Comma separated group names: " + ", ".join(NEED_GROUPS))}, main="groups", required=("groups",))
 async def need_tools(ctx, args, body):  # handled by the orchestrator (it owns the task's tool offer)

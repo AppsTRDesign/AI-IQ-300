@@ -423,7 +423,9 @@ async def _stream_turn(run: Run, model: str, messages: list[dict], visible: list
                     if looped:
                         run.file_loops += 1  # the next request goes with a repeat penalty (see the request options)
                         lang_ = opts.get("lang") or load_settings().get("language") or "en"
-                        if opts.get("tools") and not tags and not calls and run.file_loops <= 4:
+                        # Also when the visible answer had barely started: ending there left a one-word answer ("Ak").
+                        if ((opts.get("tools") or len("".join(visible).strip()) < 60)
+                                and not tags and not calls and run.file_loops <= 4):
                             # In a task the loop is not the end of the work: ending the answer there made the app ask
                             # for the open to-dos, and the model, confused, closed them or looped again. The repeats
                             # are gone; the request is redone like a pause - the sound reasoning is carried over,

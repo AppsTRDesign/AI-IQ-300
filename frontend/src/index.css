@@ -56,6 +56,11 @@ body { margin: 0; background: var(--bg); color: var(--fg); -webkit-font-smoothin
 .prose-chat td, .prose-chat th { border: 1px solid var(--line); padding: 4px 10px; }
 .prose-chat blockquote { border-left: 3px solid var(--line); padding-left: 0.8rem; color: var(--muted); }
 
+/* Mermaid diagrams (Diagram.jsx): chat text rules must not reach the labels; inline ones fit the column */
+.diagram-svg p { margin: 0 !important; line-height: 1.35; }
+.diagram-svg svg { display: block; overflow: visible; }
+.diagram-inline svg { max-width: 100%; height: auto; max-height: 720px; }
+
 /* Colorized (Monaco) code inside chat */
 .code-colorized { font-family: var(--font-mono); font-size: 12.5px; line-height: 19px; white-space: pre; }
 

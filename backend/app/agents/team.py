@@ -291,7 +291,8 @@ async def _run_tool(ctx: ToolContext, name: str, arguments: dict) -> ToolResult:
     if name not in MEMBER_TOOLS or name not in TOOLS:
         return ToolResult(False, f"Tool {name} is not available to team members.")
     try:
-        args, body = split_args(name, arguments)
+        from .tooling import path_alias
+        args, body = split_args(name, path_alias(name, arguments))
         res = await TOOLS[name].fn(ctx, args, body)
     except PermissionError as e:
         res = ToolResult(False, f"DENIED: {e}")

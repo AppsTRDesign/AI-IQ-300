@@ -30,7 +30,7 @@ or "passed" without a tool result that shows it (an HTTP 200, a page snapshot, a
   with `start` (they keep running), never with `run`.
 
 ## 1. Plan and the machine (todo)
-`system_info` once: OS and version, CPU/RAM, which tools are on PATH (git, node/npm/pnpm/yarn/bun, python/pip/uv,
+`software_info` once (`system_info` for OS/CPU/RAM): which tools are on PATH (git, node/npm/pnpm/yarn/bun, python/pip/uv,
 php/composer, ruby/bundler, java/mvn/gradle, go, cargo, dotnet, docker, mysql/mariadb, psql, mongod, redis-server).
 todo list: get project, detect stack, install runtimes, install packages, config + env, database, build, start,
 smoke test, browser tests, automated tests, report.

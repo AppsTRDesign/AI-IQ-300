@@ -44,6 +44,8 @@ $r.system=Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Mode
 $r.os=Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture,InstallDate,LastBootUpTime
 $r.disks=@(Get-CimInstance Win32_DiskDrive | Select-Object Model,Size,InterfaceType,MediaType,SerialNumber)
 $r.physical=@(Get-PhysicalDisk | Select-Object FriendlyName,MediaType,BusType,Size,HealthStatus)
+$pds=@(Get-PhysicalDisk)
+$r.letters=@(Get-Partition | Where-Object DriveLetter | ForEach-Object { $n=[string]$_.DiskNumber; $pd=$pds | Where-Object { [string]$_.DeviceId -eq $n } | Select-Object -First 1; [pscustomobject]@{Letter=[string]$_.DriveLetter; Disk=[string]$pd.FriendlyName; MediaType=[string]$pd.MediaType; BusType=[string]$pd.BusType} })
 $r.net=@(Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' | Select-Object Name,Speed,NetEnabled)
 $r.monitors=@(Get-CimInstance -Namespace root\wmi WmiMonitorID | ForEach-Object { (($_.UserFriendlyName | Where-Object {$_ -ne 0} | ForEach-Object {[char]$_}) -join '') })
 $r.battery=@(Get-CimInstance Win32_Battery | Select-Object Name,EstimatedChargeRemaining)
@@ -92,8 +94,30 @@ def _mac() -> dict:
         return {}
 
 
-def collect() -> dict:
-    """Everything known about this computer; each source may be missing (no permission, no tool)."""
+def _label_volumes(out: dict) -> None:
+    """Each drive letter gets the physical disk it is on (model, SSD/HDD, bus), and the CPU its cache sizes in MB and
+    the clock as the base clock: a report once called every volume an SSD (F: is a hard disk), wrote L2 7680 KB as
+    "7.68 MB" and 2.5 GHz as the maximum speed."""
+    d = out.get("details") or {}
+    letters = {str(x.get("Letter") or "").upper(): x for x in d.pop("letters", None) or [] if isinstance(x, dict)}
+    for v in out.get("volumes", []):
+        x = letters.get(str(v.get("mount", ""))[:1].upper())
+        if x and x.get("Disk"):
+            kind = {"SSD": "SSD", "HDD": "HDD"}.get(str(x.get("MediaType")), "unknown type")
+            v["disk"] = f"{x['Disk']} ({kind}, {x.get('BusType') or '?'})"
+    for c in d.get("cpu") or []:
+        if not isinstance(c, dict):
+            continue
+        for k in ("L2CacheSize", "L3CacheSize"):
+            if isinstance(c.get(k), (int, float)) and c[k]:
+                c[k] = f"{c[k] / 1024:g} MB"
+        if isinstance(c.get("MaxClockSpeed"), (int, float)):
+            c["BaseClock"] = f"{c.pop('MaxClockSpeed') / 1000:g} GHz (base; turbo is higher)"
+
+
+def collect(details: bool = True) -> dict:
+    """Everything known about this computer; each source may be missing (no permission, no tool). details=False:
+    only the fast, live part (psutil), for hardware() which adds the cached details."""
     import psutil
     vm = psutil.virtual_memory()
     out: dict = {
@@ -116,8 +140,11 @@ def collect() -> dict:
             out["vram"] = {k: (_gb(x) if isinstance(x, int) and x > 10_000_000 else x) for k, x in v.items()}
     except Exception:  # noqa: BLE001 - optional
         pass
+    if not details:
+        return out
     if sys.platform == "win32":
         out["details"] = _windows()
+        _label_volumes(out)
     elif sys.platform == "darwin":
         out["details"] = _mac()
     else:
@@ -239,7 +266,7 @@ def _mobile_summary() -> dict | str:
                 "mobile_env action=status gives every path, the verified version sets and the running devices."}
 
 
-def environment(work_root=None) -> dict:
+def environment(work_root=None, mobile: bool = True) -> dict:
     """The software side of this computer and of the app, so a model never has to guess: where it works, which
     runtimes / CLIs / packages exist, which MCP servers, web search engines, media services, skills, agents and
     commands the app has, and how to get a project from GitHub."""
@@ -247,7 +274,9 @@ def environment(work_root=None) -> dict:
     from .. import hostinfo
     env: dict = {}
     host = hostinfo.info()
-    env["app"] = {"app_folder": str(ROOT), "data_folder": str(DATA_DIR), "app_python": sys.executable,
+    from ..agents.prompts import APP_REPO, APP_VERSION
+    env["app"] = {"name": "AI IQ 300", "version": APP_VERSION, "repo": APP_REPO,
+                  "app_folder": str(ROOT), "data_folder": str(DATA_DIR), "app_python": sys.executable,
                   "python_version": platform.python_version(),
                   "pip_rule": "pip install always goes into this app Python (.venv); a project's own venv uses its own pip"}
     if work_root:
@@ -258,10 +287,10 @@ def environment(work_root=None) -> dict:
     env["shells"] = host.get("shells") or {}
     env["cli_tools_on_path"] = host.get("tools") or {}
     try:
-        env["python_packages"] = ", ".join(_python_packages())
+        env["python_packages"] = ", ".join(_cached("pip", SW_TTL, _python_packages))
     except Exception:  # noqa: BLE001 - optional
         pass
-    if g := _npm_globals():
+    if g := _cached("npm", SW_TTL, _npm_globals):
         env["npm_global_packages"] = g
     try:  # MCP servers connected in Settings > MCP and the tools each one offers
         from .. import mcp_client
@@ -271,7 +300,7 @@ def environment(work_root=None) -> dict:
     except Exception:  # noqa: BLE001
         pass
     try:  # Android / Kotlin: the app keeps this toolchain in its data folder, not on the system PATH
-        env["android_kotlin_toolchain"] = _mobile_summary()
+        env["android_kotlin_toolchain"] = _mobile_summary() if mobile else "see mobile_info"
     except Exception:  # noqa: BLE001 - optional
         pass
     try:  # web research: the configured search APIs first, then the free engines, then the real browser
@@ -335,17 +364,104 @@ def now_info() -> dict:
             "tr": f"{now.day} {months_tr[now.month - 1]} {now.year} {days_tr[now.weekday()]}, {now.strftime('%H:%M')}"}
 
 
-def report(part: str = "all", work_root=None) -> str:
-    part = (part or "all").lower()
+# --- cache -------------------------------------------------------------------------------------------------
+# The full hardware query (PowerShell CIM: CPU, GPU, RAM modules, board, BIOS, disks, network, monitors) took 3-7 s
+# on every call, and the package lists ~1 s more. Hardware does not change while the app runs: it is read once in
+# the background at start-up and kept; only the live values (free RAM, free disk space, VRAM use) are read anew.
+import threading
+import time as _time
+
+HW_TTL = 1800  # s
+SW_TTL = 600
+_cache: dict[str, tuple[float, object]] = {}
+_lock = threading.Lock()
+
+
+def _cached(key: str, ttl: float, make):
+    with _lock:
+        hit = _cache.get(key)
+    if hit and _time.time() - hit[0] < ttl:
+        return hit[1]
+    val = make()
+    with _lock:
+        _cache[key] = (_time.time(), val)
+    return val
+
+
+def _details() -> dict:
+    if sys.platform == "win32":
+        return _windows()
+    return _mac() if sys.platform == "darwin" else _linux()
+
+
+def hardware(live_only: bool = False) -> dict:
+    """collect() with the slow, fixed part (details) from the cache."""
+    import copy
+    out = collect(details=False)
+    out["details"] = copy.deepcopy(_cached("details", HW_TTL, _details))
+    if sys.platform == "win32":
+        _label_volumes(out)
+    return out
+
+
+def warm() -> None:
+    """Read the slow parts once in the background (at app start), so the first system_info call is instant."""
+    def go():
+        try:
+            _cached("details", HW_TTL, _details)
+            _cached("pip", SW_TTL, _python_packages)
+            _cached("npm", SW_TTL, _npm_globals)
+        except Exception:  # noqa: BLE001 - a warm-up must never break the app
+            pass
+    threading.Thread(target=go, name="sysinfo-warm", daemon=True).start()
+
+
+def summary(work_root=None) -> dict:
+    """The quick overview (no slow query when the cache is warm): OS, CPU, RAM, GPU/VRAM, drives with their disk
+    type, the app (name, version, repo, folders, model). Enough for most questions; the details are in the other
+    tools."""
+    hw = hardware()
+    d = hw.get("details") or {}
+    cpu = (d.get("cpu") or [{}])[0] if isinstance(d.get("cpu"), list) else {}
+    osd = d.get("os") or {}
+    from ..config import DATA_DIR, ROOT, load_settings
+    from ..agents.prompts import APP_REPO, APP_VERSION
+    s = load_settings()
+    return {
+        "os": osd.get("Caption") and f"{osd.get('Caption')} {osd.get('Version', '')} ({osd.get('OSArchitecture', '')})" or hw.get("os"),
+        "computer": hw.get("hostname"),
+        "cpu": cpu.get("Name") or hw.get("cpu_brand"),
+        "cores_threads": f"{hw.get('cores')} / {hw.get('threads')}",
+        "ram": f"{hw.get('ram_total')} total, {hw.get('ram_free')} free",
+        "gpu": [g.get("Name") for g in d.get("gpu") or [] if isinstance(g, dict)] or d.get("gpu"),
+        "vram": hw.get("vram"),
+        "drives": hw.get("volumes"),
+        "app": {"name": "AI IQ 300", "version": APP_VERSION, "repo": APP_REPO, "app_folder": str(ROOT),
+                "data_folder": str(DATA_DIR), "working_folder": str(work_root) if work_root else None,
+                "active_model": s.get("active_model")},
+        "more": "hardware_info: every hardware detail (RAM modules, board, BIOS, disks, network, monitors) | "
+                "software_info: CLIs, packages, MCP servers, search engines, skills, agents | mobile_info: the "
+                "Android / Kotlin / iOS toolchain",
+    }
+
+
+def report(part: str = "summary", work_root=None) -> str:
+    """One JSON answer that always starts with `now` (date, time, weekday, time zone)."""
+    part = (part or "summary").lower().strip()
     data: dict = {"now": now_info()}
-    if part in ("all", "hardware", "hw", "donanım"):
-        data["hardware"] = _clean(collect())
-    if part in ("all", "software", "sw", "environment", "env", "yazılım"):
-        data["software"] = environment(work_root)
     if part in ("now", "date", "time", "tarih", "saat"):
         return json.dumps(data, ensure_ascii=False, indent=1)
-    if len(data) == 1:
-        data.update({"hardware": _clean(collect()), "software": environment(work_root)})
+    if part in ("hardware", "hw", "donanım"):
+        data["hardware"] = _clean(hardware())
+    elif part in ("software", "sw", "environment", "env", "yazılım"):
+        data["software"] = environment(work_root, mobile=False)
+    elif part in ("mobile", "android", "ios", "mobil"):
+        data["mobile"] = _mobile_summary()
+    elif part in ("all", "full", "tümü", "hepsi"):
+        data["hardware"] = _clean(hardware())
+        data["software"] = environment(work_root)
+    else:
+        data["system"] = summary(work_root)
     return json.dumps(data, ensure_ascii=False, indent=1, default=str)[:30000]
 
 

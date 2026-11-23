@@ -213,23 +213,52 @@ async def my_location(ctx, args, body):
     return ToolResult("error" not in loc, location.describe(loc), {k: loc.get(k) for k in ("lat", "lon", "accuracy_m", "source")})
 
 
-@tool("system_info", '<tool name="system_info" part="all"></tool>',
-      "This computer and this app in one call. part=hardware: CPU, cores, RAM modules, GPU and VRAM, board, BIOS, "
-      "disks and free space, network, monitors, OS. part=software: the working folder of this chat and the "
-      "dependency files in it, shells, CLI tools on PATH (node, npm, git, gh, php, java...), the app Python and every "
-      "package installed in it, global npm packages, connected MCP servers and their tools, active web search engines, "
-      "usable stock-photo / image services, how to find and download a GitHub project, skills, agents and commands, "
-      "providers. Every answer starts with now: today's date, time, weekday and time zone of this computer "
-      "(part=now returns only that). part=all (default): both. Use it for any 'my PC specs / donanım / sistem / what is installed' "
-      "request and before installing something, instead of systeminfo/wmic/findstr/pip list commands.",
-      {"part": {"type": "string", "description": "all (default) | hardware | software | now (date and time only)"}})
-async def system_info(ctx, args, body):
+async def _sysinfo(ctx, part: str, name: str) -> ToolResult:
     from . import sysinfo
     try:
-        text = await asyncio.to_thread(sysinfo.report, str(args.get("part") or body or "all").strip(), ctx.root)
+        text = await asyncio.to_thread(sysinfo.report, part, ctx.root)
     except Exception as e:  # noqa: BLE001 - a missing source must not break the task
-        return ToolResult(False, f"system_info failed: {e}")
+        return ToolResult(False, f"{name} failed: {e}")
     return ToolResult(True, text)
+
+
+NOW_NOTE = "Every answer starts with now: today's date, time, weekday and time zone of this computer."
+
+
+@tool("system_info", '<tool name="system_info"></tool>',
+      "Quick overview of this computer and this app (instant): OS, CPU, cores, RAM total/free, GPU and VRAM, drives "
+      "with free space and disk type (SSD/HDD), the app's name, version, GitHub repo, folders and active model. "
+      + NOW_NOTE + " part=now: date and time only. For details call hardware_info, software_info or mobile_info "
+      "instead of this; never systeminfo/wmic/findstr/pip list commands.",
+      {"part": {"type": "string", "description": "summary (default) | now (date and time only) | all (everything, slow)"}})
+async def system_info(ctx, args, body):
+    return await _sysinfo(ctx, str(args.get("part") or body or "summary").strip(), "system_info")
+
+
+@tool("hardware_info", '<tool name="hardware_info"></tool>',
+      "Every hardware detail of this computer: CPU (cores, cache, base clock), RAM modules (maker, speed, slot), GPU, "
+      "driver and VRAM, motherboard, BIOS, physical disks with health, each drive letter's disk and type (SSD/HDD), "
+      "network adapters, monitors, battery, OS install / boot time. " + NOW_NOTE)
+async def hardware_info(ctx, args, body):
+    return await _sysinfo(ctx, "hardware", "hardware_info")
+
+
+@tool("software_info", '<tool name="software_info"></tool>',
+      "The software side: the working folder of this chat and its dependency files, shells, CLI tools on PATH (node, "
+      "npm, git, gh, php, java, docker, ffmpeg...), the app Python and every package in it, global npm packages, "
+      "connected MCP servers and their tools, active web search engines, usable stock-photo / image services, how to "
+      "find and download a GitHub project, skills, agents, commands and model providers. Use it before installing "
+      "something. " + NOW_NOTE)
+async def software_info(ctx, args, body):
+    return await _sysinfo(ctx, "software", "software_info")
+
+
+@tool("mobile_info", '<tool name="mobile_info"></tool>',
+      "The mobile toolchain the app keeps in its data folder: Android SDK, platforms, build tools, emulator and AVDs, "
+      "Gradle, JDK, Kotlin set, Maestro (iOS simulator on macOS). For setting up or running devices use mobile_env. "
+      + NOW_NOTE)
+async def mobile_info(ctx, args, body):
+    return await _sysinfo(ctx, "mobile", "mobile_info")
 
 
 @tool("places", '<tool name="places" near="Kadıköy, İstanbul" radius="1500" map="true">kahve dükkanı</tool>',
