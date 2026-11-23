@@ -100,7 +100,8 @@ async def _member(ctx: ToolContext, m: dict, board: list[dict], i: int, push, sh
     titles = [c["title"] for c in board]
     tried: set[str] = set()
     log: list[str] = []  # what this member has done so far, whichever model did it (see the switch below)
-    sub = dataclasses.replace(ctx, step=lambda kind, data: None, files_changed=ctx.files_changed, commands=ctx.commands)
+    sub = dataclasses.replace(ctx, step=lambda kind, data: None, files_changed=ctx.files_changed, commands=ctx.commands,
+                              agent=str(m.get("title") or f"member {i + 1}"), seen_sha={})  # its own file versions
     while True:
         if card.get("reserved") and not tried:
             model, why = card.pop("reserved"), ""

@@ -369,6 +369,24 @@ Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasör�
 
 **Nasıl çalışır:** Bir seçim penceresi becerileri listeler (gruplu, aranabilir, açıklamalı; daha önce aktarılanlar işaretli). Seçilen her beceri kaynağıyla kaydedilir; tekrar içe aktarmak kopya oluşturmaz, günceller. Aynı adlı yerleşik bir beceri asla ezilmez (yenisinin önüne sahibinin adı eklenir). Becerinin yanındaki dosyalar (referanslar, betikler) bağlantı olarak eklenir; beceri onlara yönlendirince model açar. Her beceri modelin istemine kısa bir satır ekler (~40 token); pencere toplamı gösterir ve tek seferde en fazla 60 beceriye izin verir - yalnızca kullanacaklarınızı seçin. `--global`, `--force`, `--cursor`, `--claude`, `--dest` gibi bayraklar yok sayılır: beceriler her zaman uygulamanın kendi Beceriler bölümüne gider.
 
+## 🆕 v0.19.0 ile gelenler (iş kaybı yok: güvenli paralel yazım, geri alma, belgelenmiş uç durumlar, CI)
+
+- **Güvenli dosya yazımı:**
+  - Her dosyanın kendi kilidi var; bir ekibin iki ajanı (ya da iki paralel çağrı) bir değişikliği birbirine karıştırmaz.
+  - Dosya önce geçici bir dosyaya yazılıp yerine takılır, sonra diskteki baytlar denetlenir. Çökme ya da elektrik kesintisi eski dosyayı ya da yenisini bırakır, asla yarım yarım değil; uyuşmazlıkta eski içerik geri konur.
+- **Ajanlar arasında kayıp güncelleme yok:** aynı görevin başka bir ajanının, kendisi son okuduktan sonra değiştirdiği dosyanın tamamını yeniden yazmak isteyen ajan reddedilir. Dosyayı yeniden okuması ve yalnızca kendi bölümünü değiştirmesi söylenir. `edit_file` ve ekleme her zaman dosyanın o anki hâline uygulanır.
+- **Kesilen dosyalar bütün kalır:** bağlantı kopunca kaydedilen kısım asla yarım bir karakterle bitmez. Dosyaya tek bir atomik adımda eklenir; yabancı bayt içeren dosya bunları korur.
+- **Durdurulan görevi geri alma:**
+  - Durdurulan ya da hatayla biten görevde **Bu görevin dosya değişikliklerini geri al (N)** düğmesi çıkar. Düzenlenen dosyalar geri döner, yeni dosyalar silinir, silinenler geri gelir.
+  - Yalnızca hâlâ görevin bıraktığı gibi olan dosyalara dokunulur; sonradan değiştirdiğin dosya olduğu gibi kalır ve listelenir.
+  - Görevi durdurmak artık sunucularını da hemen kapatır.
+- **Aynı hata, daha akıllı yardım; devre kesici yine yok:** aynı türden hata 3., 6.… kez geri gelince model daha önce denediklerinin listesini ve kök nedeni nasıl bulacağını alır. Sohbetin önceki bir görevinin de yaşadığı hata belirtilir. Bunun için hiçbir şey durdurulmaz ya da kapatılmaz.
+- **Defter veri olarak gösterilir:** sohbet defterindeki dosya adları, komutlar, hatalar ve mesajlar tırnak içinde veri olarak gösterilir. Böylece bir dosya adına ya da program çıktısına yerleştirilen metin talimat gibi davranamaz.
+- **Uç durumlar belgelendi:** [WORKFLOW.tr.md](WORKFLOW.tr.md#4-uç-durumlar) dört şema içerir: durdurma ve geri alma, aynı dosyada iki ajan, görev ortasında model değişimi ve işe yaramayan düzeltme.
+- **Kalite denetimleri:**
+  - Akış / ayrıştırıcı regresyon paketi: gerçek model akışları 1–64 karakterlik parçalarla verildiğinde aynı çağrıları ve temiz metni üretmeli.
+  - GitHub Actions her push'ta sürüm denetimini, frontend derlemesini ve tüm testleri çalıştırır. Sürüm etiketi `VERSION` ile aynı olmalı.
+
 ## 🆕 v0.18.8 ile gelenler (sohbet defteri: model önceki işi unutmaz)
 
 - **Uygulamanın yazdığı sohbet defteri:** her görevden sonra uygulama gerçekte olanı kaydeder. Defteri model yazmaz; çıktı tokenı harcamaz ve uydurma bilgi içeremez. Kaydedilenler:

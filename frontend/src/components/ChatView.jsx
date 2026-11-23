@@ -19,6 +19,7 @@ import { ErrorNote } from "./Feedback";
 import TodoList from "./TodoList";
 import { DocCard } from "./DocPreview";
 import OutputGallery from "./OutputGallery";
+import UndoCard from "./UndoCard";
 
 // Screenshots already show inline in the step trace, so the gallery under the answer leaves them out.
 const withoutShots = (outputs, steps) => {
@@ -171,6 +172,7 @@ const Message = memo(function Message({ m, last }) {
       {m.meta?.changes?.files?.length > 0 && <ChangesCard changes={m.meta.changes} steps={m.meta?.steps} />}
       {m.meta?.error && <ErrorNote code={m.meta.errorCode} message={m.meta.error} />}
       {m.meta?.status === "cancelled" && <div className="text-[13px] text-subtle">{t("cancelled")}</div>}
+      {m.meta?.undo && <UndoCard undo={m.meta.undo} />}
       {last && (["interrupted", "budget", "cancelled"].includes(m.meta?.status)
         || (m.meta?.status === "error" && RESUMABLE.has(m.meta?.errorCode))) && (
         <button onClick={() => useStore.getState().send(t("continue_prompt"))}

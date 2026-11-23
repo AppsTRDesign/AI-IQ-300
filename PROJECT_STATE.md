@@ -29,6 +29,24 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
 
+## v0.19.0 (2026-11-23): safe parallel writes, undo, edge cases, CI
+- **`tools/safe_io.py`:**
+  - Per-file asyncio locks: write_file and edit_file run under them.
+  - `atomic_write_text`: temp file, fsync, os.replace with Windows retry, sha read-back, restore on mismatch.
+  - `VERSIONS` and `seen_sha` refuse a full overwrite by another agent of the same task. read_file notes the version it saw; the write goes through on the 3rd try.
+  - ToolContext gains `agent` and `seen_sha`; team members get their own.
+- **`continuity.save_partial`:** `clean_tail` drops a broken last character; atomic append; foreign-byte files are appended in place.
+- **`tools/undo.py`:**
+  - The state before a task's first change to each file is kept in `.session/undo/<run>/`, for the last 5 tasks, files up to 5 MB.
+  - `restore` touches only files whose sha is still the task's. The new endpoint is `POST /api/sessions/{sid}/undo/{run}`.
+  - Message meta gets `undo`, and `UndoCard.jsx` shows the button. Cancel stops the task's servers at once.
+- **`tooling.recurring_error`:** the same `ledger.error_sig` on its 3rd, 6th… time adds what was tried and a root-cause guide; errors from earlier tasks come from `run.prior_errs`. Nothing is blocked.
+- **Ledger:** `data()` / `path_data()` quote untrusted fields (no newlines, headings, fences, template or tool markup).
+- **Tests:**
+  - New: `test_safe_io`, `test_undo`, `test_recurring_error`, `test_stream_fixtures` (+ `fixtures/streams.json`), plus a ledger injection test.
+  - CI: `.github/workflows/ci.yml` (windows, Python 3.12, Node 22) and `set_version.py --check [tag]`.
+- **WORKFLOW TR/EN:** section 4, edge cases (4 diagrams).
+
 ## v0.18.8 (2026-11-23): chat ledger
 pytest 322.
 - **`backend/app/agents/ledger.py`:** at task end the orchestrator records the steps into `.session/ledger.json`:

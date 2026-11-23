@@ -1463,6 +1463,29 @@ async def history(sid: str, project_id: str | None = None):
     return [] if root.parent == workspace.CHATS_DIR or not root.exists() else await workspace.git_history(root)
 
 
+@app.post("/api/sessions/{sid}/undo/{run_id}")
+async def undo_task(sid: str, run_id: str):
+    """Put back the files one stopped or failed task changed (only files still as the task left them)."""
+    from .tools import undo
+    if not re.fullmatch(r"[\w-]{4,64}", run_id or ""):
+        raise fail(400, "bad_run", "invalid task id")
+    session = _session(sid)
+    if orchestrator.active_run(sid):
+        raise fail(409, "busy", "A task is running in this chat; stop it first.")
+    res = undo.restore(sessions.path(sid), workspace.session_root(session), run_id)
+    for row in db.query("SELECT id, meta FROM messages WHERE session_id=? AND role='assistant' ORDER BY id DESC LIMIT 50",
+                        (sid,)):
+        try:
+            meta = json.loads(row["meta"] or "{}")
+        except ValueError:
+            continue
+        if (meta.get("undo") or {}).get("run") == run_id:
+            meta["undo"]["done"] = {k: res[k] for k in ("restored", "removed", "skipped")}
+            db.execute("UPDATE messages SET meta=? WHERE id=?", (json.dumps(meta, ensure_ascii=False), row["id"]))
+            break
+    return res
+
+
 @app.post("/api/sessions/{sid}/rollback/{sha}")
 async def rollback(sid: str, sha: str, project_id: str | None = None):
     try:

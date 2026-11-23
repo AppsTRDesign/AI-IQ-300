@@ -369,6 +369,24 @@ A skills install command copies `SKILL.md` instructions into an agent's skills f
 
 **How it works:** a picker lists the skills (grouped, searchable, with descriptions; already imported ones are marked). Each picked skill is saved with its source, so importing again updates it instead of making a copy; a built-in skill with the same name is never overwritten (the new one gets the owner's name in front). Files next to a skill (references, scripts) are listed as links the model opens when the skill points to them. Every skill adds a short line (~40 tokens) to the model's prompt, so the picker shows the total and allows at most 60 at once - pick only what you will use. Flags such as `--global`, `--force`, `--cursor`, `--claude` or `--dest` are ignored: skills always go to the app's own Skills.
 
+## 🆕 New in v0.19.0 (no lost work: safe parallel writes, undo, documented edge cases, CI)
+
+- **Safe file writes:**
+  - Every file has its own lock, so two agents of a team (or two parallel calls) never interleave a change.
+  - A file is written to a temporary file and swapped in, then the bytes on disk are checked. A crash or power cut leaves the old file or the new one, never half of each; a mismatch puts the old content back.
+- **No lost update between agents:** an agent that rewrites a whole file another agent of the same task changed after it last read it is refused. It is told to read the file again and change only its part. `edit_file` and appends always apply to the file as it is now.
+- **Cut-off files stay whole:** a part saved after a dropped connection never ends in a broken character. It is joined to the file in one atomic step, and a file with foreign bytes keeps them.
+- **Undo a stopped task:**
+  - A stopped or failed task shows **Undo this task's file changes (N)**. Edited files go back, new files are removed and deleted files come back.
+  - Only files still exactly as the task left them are touched; a file you changed since is left alone and listed.
+  - Stopping a task now also stops its servers at once.
+- **Same error, smarter help, still no circuit breaker:** when the same kind of error comes back for the 3rd, 6th… time, the model gets the list of what it already tried and how to find the root cause. An error an earlier task of the chat also hit is named. Nothing is stopped or switched off for it.
+- **Ledger as data:** file names, commands, errors and messages in the chat ledger are shown as quoted data, so text planted in a file name or a program's output cannot act as an instruction.
+- **Edge cases documented:** [WORKFLOW.md](WORKFLOW.md#4-edge-cases) has four diagrams: stop and undo, two agents on one file, a model switch mid-task, and a fix that does not work.
+- **Quality checks:**
+  - A stream / parser regression pack: real model streams fed in chunks of 1 to 64 characters must give the same calls and clean text.
+  - GitHub Actions runs the version check, the frontend build and all tests on every push. A release tag must match `VERSION`.
+
 ## 🆕 New in v0.18.8 (chat ledger: the model does not forget earlier work)
 
 - **Chat ledger, written by the app:** after each task the app records what really happened. The model never writes it, so it costs no output tokens and cannot hold made-up facts. It records:

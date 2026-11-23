@@ -280,7 +280,8 @@ def _persist_partial(run: "Run") -> None:
 def save_partial(root, tool: str, args: dict, append: bool) -> tuple[str, int] | None:
     """Writes a cut-off file body: into the file itself (write_file), or as the document's source text (make_doc),
     whole lines only. Returns (path written, characters)."""
-    content = args.get("content") or ""
+    from ..tools import safe_io
+    content = safe_io.clean_tail(args.get("content") or "")  # never end on a half character
     if "\n" in content:
         content = content[:content.rfind("\n") + 1]  # never keep half a line
     from ..tools.editing import collapse_repeats
@@ -305,19 +306,28 @@ def save_partial(root, tool: str, args: dict, append: bool) -> tuple[str, int] |
                 # it was (a second break wiped 36K of game.js down to the 10K of the cut rewrite, seen live). The cut
                 # part is kept beside it, never over it.
                 side = target.with_name(target.name + ".cut-rewrite.txt")
-                side.write_text(content, encoding="utf-8", newline="")
+                safe_io.atomic_write_text(side, content)
                 return rel, len(old), "kept"
             else:
                 _backup(target, old)
         if append and old:
             from ..tools.file_tools import trim_overlap
             content = trim_overlap(old, content)[0]
-            with open(target, "a", encoding="utf-8", newline="") as fh:
-                fh.write(("" if old.endswith("\n") else "\n") + content)
+            # old + the saved part, swapped in whole and checked (an append in place left a half-written file when
+            # the power went during the append itself)
+            try:
+                exact = target.read_bytes().decode("utf-8")  # strict: a file with foreign bytes keeps them as they are
+            except UnicodeDecodeError:
+                exact = None
+            if exact is None:
+                with open(target, "a", encoding="utf-8", newline="") as fh:
+                    fh.write(("" if old.endswith("\n") else "\n") + content)
+            else:
+                safe_io.atomic_write_text(target, exact + ("" if exact.endswith("\n") else "\n") + content)
             return rel, len(content), "appended"
-        target.write_text(content, encoding="utf-8", newline="")
+        safe_io.atomic_write_text(target, content)
         return rel, len(content), "written"
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # WriteError is an OSError: the earlier content was restored
         return None
 
 

@@ -21,6 +21,7 @@ from ..process_manager import manager
 
 from .registry import EMPTY_OK, PREVIEW_LIMIT, S, TEMP_NAME, ToolResult, _current_file_note, _path, _rel, _syntax_note, _text_of, app_placeholder, broken_chars_note, change_preview, clean_file_content, clip, garbled_path, gate, js_check, tool, with_charset  # noqa: F401
 from .shell_tools import _did_you_mean, start
+from . import safe_io, undo
 
 DOC_START = re.compile(r"(?i)\s*(<!doctype|<html\b|<\?php|<\?xml)")
 
@@ -150,7 +151,18 @@ async def write_file(ctx, args, body):
         guessed = next((str(f) for f in reversed(ctx.files_changed) if not is_binary_name(Path(str(f)))), "")
         if guessed:
             args = {**args, "path": guessed}
-    res = await _write_file(ctx, args, body)
+    try:
+        lock = safe_io.lock_for(_path(ctx, args["path"]))
+    except Exception:  # noqa: BLE001 - a bad path is reported by _write_file itself
+        lock = None
+    if lock is None:
+        res = await _write_file(ctx, args, body)
+    else:
+        async with lock:  # one writer per file at a time (team members, parallel calls)
+            try:
+                res = await _write_file(ctx, args, body)
+            except safe_io.WriteError as e:
+                res = ToolResult(False, f"Not written: {e}. Try again.")
     if guessed and res.ok:
         res.output = (f"(path was missing; appended to {guessed}, the file you were writing - always give path) "
                       + res.output)
@@ -214,6 +226,15 @@ async def _write_file(ctx, args, body):
                             "instead of being appended (two copies would have broken it). If it is only the first "
                             "part, continue with write_file append=true from its end - never start over.")
     if existed and str(args.get("append", "")).lower() not in ("true", "1", "yes"):
+        if msg := safe_io.stale_overwrite(ctx, target):
+            # Refused until this agent reads the new version (read_file notes it). Never a dead end: a file too big to
+            # read whole goes through on the third try (its earlier version is kept in the backups below).
+            tries = getattr(ctx, "stale_tries", None)
+            if tries is None:
+                tries = ctx.stale_tries = {}
+            tries[rel0] = tries.get(rel0, 0) + 1
+            if tries[rel0] <= 2:
+                return ToolResult(False, msg)
         if msg := shrink_guard(ctx, target, rel0, content):
             return ToolResult(False, msg)
     if str(args.get("append", "")).lower() in ("true", "1", "yes") and existed:
@@ -230,7 +251,9 @@ async def _write_file(ctx, args, body):
         if looped2 and not looped:
             loop_note = (f" Warning: the appended part repeated a block already in the file ({looped2} times); it is "
                          "kept once. Read the end of the file and continue with what is really missing.")
-        target.write_text(joined, encoding="utf-8", newline="")
+        undo.before(ctx, target)
+        safe_io.wrote(ctx, target, safe_io.atomic_write_text(target, joined))
+        undo.after(ctx, target)
         rel = _rel(ctx, target)
         ctx.files_changed.append(rel)
         added = content.count("\n") + (0 if content.endswith("\n") else 1)
@@ -285,7 +308,9 @@ async def _write_file(ctx, args, body):
                                   f"{old_lines} lines are gone. Check that no feature of the old version was lost "
                                   "(forms, routes, data, scripts)" + (f"; the old version is kept at {bpath}" if bpath
                                                                       else "") + ".")
-    target.write_text(content, encoding="utf-8", newline="")
+    undo.before(ctx, target)
+    safe_io.wrote(ctx, target, safe_io.atomic_write_text(target, content))
+    undo.after(ctx, target)
     ctx.files_changed.append(rel)
     note = restart_note or ((" Note: this file was already written earlier in this task - for further changes use "
                              "edit_file with the changed part only; never recreate a finished file.") if again
@@ -316,6 +341,18 @@ async def _write_file(ctx, args, body):
        "edits": S("Alternative: one or more <<<<<<< SEARCH / ======= / >>>>>>> REPLACE blocks")},
       main="edits", required=("path",))
 async def edit_file(ctx, args, body):
+    try:
+        lock = safe_io.lock_for(_path(ctx, args["path"]))
+    except Exception:  # noqa: BLE001
+        return await _edit_file(ctx, args, body)
+    async with lock:  # the SEARCH/REPLACE applies to the file as it is now, with no other writer in between
+        try:
+            return await _edit_file(ctx, args, body)
+        except safe_io.WriteError as e:
+            return ToolResult(False, f"Not saved: {e}. Try again.")
+
+
+async def _edit_file(ctx, args, body):
     from .editing import EditError, apply_edit, diff, parse_blocks
     target = _path(ctx, args["path"])
     if not target.is_file():
@@ -382,7 +419,9 @@ async def edit_file(ctx, args, body):
     preview = lambda: change_preview("edit", before.replace("\r\n", "\n"), text, _rel(ctx, target))  # noqa: E731
     if msg := await gate(ctx, op, policy.decide_file_write(target, ctx.root, ctx.mode), preview):
         return ToolResult(False, msg)
-    target.write_text(after, encoding="utf-8", newline="")
+    undo.before(ctx, target)
+    safe_io.wrote(ctx, target, safe_io.atomic_write_text(target, after))
+    undo.after(ctx, target)
     rel = _rel(ctx, target)
     ctx.files_changed.append(rel)
     patch = diff(before.replace("\r\n", "\n"), text, rel)
@@ -513,6 +552,8 @@ async def read_file(ctx, args, body):
         part = part[:limit] + f"\n...[{len(part) - limit} more characters on this line]"
     whole = start == 1 and last == len(all_lines)
     ctx.read_seen[key if whole and not m else f"{key}#{start}-{last}"] = (st.st_mtime_ns, st.st_size)
+    if whole and not m:
+        safe_io.note_seen(ctx, target)  # this agent now has the file's current version (parallel-change check)
     if whole:
         return ToolResult(True, again + part, {"path": args["path"]})
     more = (f" - the rest: read_file lines={last + 1}-{end}" if last < end else "")
@@ -581,7 +622,9 @@ async def delete_file(ctx, args, body):
     if msg := await gate(ctx, op, decision, preview):
         return ToolResult(False, msg)
     if target.is_file():
+        undo.before(ctx, target)
         target.unlink()
+        undo.after(ctx, target)
         ctx.files_changed.append(args["path"])
         return ToolResult(True, f"deleted {args['path']}")
     return ToolResult(False, "not a file")

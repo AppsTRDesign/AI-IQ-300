@@ -20,6 +20,7 @@ from .. import approvals, db, netwatch, sessions, tokens, workspace
 from ..config import load_settings, redact
 from ..process_manager import manager as proc_manager
 from . import ledger
+from ..tools import undo
 from ..events import bus
 from ..llm import memguard, modelstats, router
 from ..llm.usage import cooldown as usage_cooldown
@@ -365,6 +366,8 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                       step=lambda kind, data: _step(run, kind, kind, "done", _readable(data), data),
                       live=lambda kind, title, status, data, step_id=None: _step(run, kind, title, status, "", data, step_id))
     run.live_ctx = ctx  # a file streaming in is written into the real file as it comes (see continuity._live_write)
+    # errors earlier tasks of this chat already hit: the same one coming back is named (tooling.recurring_error)
+    run.prior_errs = {f["sig"]: f.get("task") for f in ledger.load(session["id"]).get("failures") or [] if f.get("sig")}
     visible: list[str] = []
     # Images/pages that exist already are not this task's outputs (a folder walk: off the event loop, so other
     # chats keep streaming while a large project folder is scanned).
@@ -2001,6 +2004,10 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
             for p in list(proc_manager.procs.values()):
                 if p.owner == f"{session['id']}:{run.id}" and not p.background and p.state == "running":
                     await asyncio.shield(proc_manager.stop(p.id))
+            if status == "cancelled":  # stopped by the user: its servers go now, not after the countdown
+                for p in list(proc_manager.procs.values()):
+                    if p.owner == f"{session['id']}:{run.id}" and p.state == "running":
+                        await asyncio.shield(proc_manager.stop(p.id))
             # Servers the agent started and did not stop: stopped automatically a while after the task (safety net).
             ttl = float(limits.get("server_ttl_minutes", 10) or 0)
             if ttl > 0 and (left := proc_manager.expire(f"{session['id']}:", ttl * 60)):
@@ -2079,6 +2086,9 @@ async def execute(run: Run, user_text: str, opts: dict) -> None:
                            {"steps": run.steps, "status": status, "model": model, "todos": run.todos, "outputs": outputs,
                             "timing": timing, **({"changes": changed} if changed else {}),
                             **({"docs": docs_made} if docs_made else {}),
+                            # the files this task changed can be put back (offered under a stopped or failed task)
+                            **({"undo": {"run": run.id, "files": undoable}} if (undoable := undo.changed_files(sdir, run.id))
+                               and status in ("cancelled", "error", "budget") else {}),
                             **(failed if status == "error" else {})})
             try:
                 if ctx.files_changed or ctx.commands:

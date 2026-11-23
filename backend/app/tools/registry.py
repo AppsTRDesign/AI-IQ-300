@@ -53,6 +53,8 @@ class ToolContext:
     # against them, so invented numbers are flagged. sourced = a web/file source was read in this task.
     evidence: set = field(default_factory=set)
     read_seen: dict = field(default_factory=dict)  # path -> (mtime, size) of whole-file reads in this task
+    agent: str = ""  # which agent of the task calls the tools: "" the main agent, a team member's title otherwise
+    seen_sha: dict = field(default_factory=dict)  # path -> sha of the version this agent last read or wrote (safe_io)
     started: float = field(default_factory=time.time)  # when this task began (files newer than this are its own)
     read_limit: int = 20000  # characters one read_file returns (set per turn from the model's window)
     sourced: bool = False

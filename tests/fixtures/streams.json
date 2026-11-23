@@ -1,0 +1,46 @@
+[
+  {"name": "tag protocol, body with markup",
+   "stream": "Dosyayı yazıyorum.\n<tool name=\"write_file\" path=\"index.html\"><!doctype html>\n<p class=\"a\">Merhaba</p>\n</tool>\nTamam.",
+   "tools": ["write_file"], "args": {"path": "index.html"}, "body_has": ["<p class=\"a\">Merhaba</p>"],
+   "text_has": ["Dosyayı yazıyorum.", "Tamam."], "text_not": ["<tool", "</tool>", "doctype"]},
+
+  {"name": "two calls in one turn, the first without its closing tag",
+   "stream": "<tool name=\"research\" query=\"Kozan hava durumu\">\n<tool name=\"todo\">[{\"content\": \"Konumu al\", \"status\": \"completed\"}]</tool>",
+   "tools": ["research", "todo"], "text_not": ["<tool", "Konumu al"]},
+
+  {"name": "MiniMax invoke wrapper",
+   "stream": "Bakıyorum <minimax:tool_call><invoke name=\"web_search\"><parameter name=\"query\">istanbul hava</parameter></invoke></minimax:tool_call> tamam",
+   "tools": ["web_search"], "args": {"query": "istanbul hava"}, "text_not": ["invoke", "minimax", "parameter"]},
+
+  {"name": "Kimi section markers",
+   "stream": "Arıyorum.<|tool_calls_section_begin|><|tool_call_begin|>functions.web_search:0<|tool_call_argument_begin|>{\"query\": \"hava\"}<|tool_call_end|><|tool_calls_section_end|>",
+   "tools": ["web_search"], "args": {"query": "hava"}, "text_has": ["Arıyorum."], "text_not": ["<|", "functions."]},
+
+  {"name": "Nemotron template tokens",
+   "stream": "Önce raporu okuyorum.\n\n<|close|>think<|sep|><|close|>message<|sep|><|close|>message<|sep|>",
+   "tools": [], "text_has": ["Önce raporu okuyorum."], "text_not": ["<|", "message", "think"]},
+
+  {"name": "think block then answer",
+   "stream": "<think>Kullanıcı bir liste istiyor. write_file gerekmez.</think>İşte liste:\n- bir\n- iki",
+   "tools": [], "text_has": ["İşte liste:", "- iki"], "text_not": ["<think>", "Kullanıcı bir liste istiyor"]},
+
+  {"name": "plain chat with tool names in prose",
+   "stream": "write_file aracıyla kaydedebilirsin, sonra run ile çalıştır. <b>kalın</b> değil.",
+   "tools": [], "text_has": ["write_file aracıyla kaydedebilirsin", "<b>kalın</b>"]},
+
+  {"name": "mermaid answer is text, not a call",
+   "stream": "Akış:\n```mermaid\nflowchart TD\n  A[\"Başla\"] -->|Evet| B{\"Bitti mi?\"}\n```\nBitti.",
+   "tools": [], "text_has": ["```mermaid", "flowchart TD", "-->|Evet|", "Bitti."]},
+
+  {"name": "code block with a tag-like string stays text",
+   "stream": "Örnek:\n```html\n<div id=\"app\"></div>\n<script src=\"main.js\"></script>\n```",
+   "tools": [], "text_has": ["<div id=\"app\"></div>", "<script src=\"main.js\"></script>"]},
+
+  {"name": "arguments wrapper inside a tag call",
+   "stream": "<tool name=\"write_file\"><arguments>{\"path\": \"a.txt\", \"content\": \"merhaba\"}</arguments></tool>",
+   "tools": ["write_file"], "text_not": ["arguments", "merhaba"]},
+
+  {"name": "Turkish text with special characters around a call",
+   "stream": "Şimdi çalıştırıyorum → \"ğüşıöç\" ✅\n<tool name=\"run\">python -c \"print('çalıştı')\"</tool>\nSonuç geldi: çalıştı ✅",
+   "tools": ["run"], "body_has": ["print('çalıştı')"], "text_has": ["Şimdi çalıştırıyorum → \"ğüşıöç\" ✅", "Sonuç geldi: çalıştı ✅"]}
+]

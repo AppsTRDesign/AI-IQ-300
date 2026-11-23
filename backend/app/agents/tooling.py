@@ -492,6 +492,7 @@ async def _exec(run: Run, ctx: ToolContext, name: str, args: dict, body: str,
         sig = (run.turn_idx, name, re.sub(r"[\w./\\-]+\.\w{1,5}\b|\d+", "#", res.output)[:160])
         run.turn_fail_sigs = {k: v for k, v in run.turn_fail_sigs.items() if k[0] == run.turn_idx}
         run.turn_fail_sigs[sig] = run.turn_fail_sigs.get(sig, 0) + 1
+        res = recurring_error(run, name, args, body, res)
     bumped = False
     if res.ok:
         run.fail_streak = 0
@@ -918,6 +919,39 @@ READ_RUN = re.compile(r"^\s*(?:start-sleep[^;]*;\s*|sleep\s+\d+\s*[;&]+\s*)?(?:g
                       r"--version|-v|-V|--help|-h|help|logs?|get|doctor)\b(?!\s*\S*\s*(?:--fix|--set)))", re.I)
 STATE_TOOLS = {"write_file", "edit_file", "delete_file", "move_file", "start", "stop", "make_doc", "mcp_add",
                "browser_click", "browser_type", "browser_fill", "google"}
+
+
+from .ledger import error_sig  # noqa: E402 - the same signature the chat ledger stores for earlier tasks
+
+
+def recurring_error(run: Run, name: str, args: dict, body: str, res: ToolResult) -> ToolResult:
+    """The same error coming back after changes ("fixed" three times, the same error each time) is a fix that does not
+    reach the cause. Nothing is stopped or switched off for it (the user's rule: every error is shown and worked on,
+    no circuit breaker); the model is told plainly that its fixes miss, what it already tried, and how to find the
+    cause - from the 3rd time on, and again every 3 more. An error an earlier task of the chat also hit is named too."""
+    sig = error_sig(res.output)
+    if len(sig) < 8:
+        return res
+    e = run.err_sigs.setdefault(sig, {"n": 0, "tries": []})
+    e["n"] += 1
+    e["tries"].append(f"{name} {(body or json.dumps(args, ensure_ascii=False, default=str))[:90]}".strip())
+    e["tries"] = e["tries"][-6:]
+    notes = []
+    if e["n"] == 1 and sig in run.prior_errs:
+        notes.append(f"This same error also stopped task {run.prior_errs[sig]} of this chat: what was done then did not "
+                     "remove it. Look for its cause first instead of repeating that fix.")
+    if e["n"] >= 3 and e["n"] % 3 == 0:
+        tried = "\n".join(f"  - {t}" for t in e["tries"][:-1])
+        notes.append(f"This error has come back {e['n']} times in this task, after your changes. Your fixes are not "
+                     f"reaching its cause. Already tried:\n{tried}\nBefore the next change: read the whole error and "
+                     "the exact file and line it names; say the root cause in one sentence; change THAT. If the cause is "
+                     "unclear, search the exact error message (web_search) or add a check that prints the failing value. "
+                     "Keep working on it - just not the same way.")
+        if hint := error_playbook(res.output):
+            notes.append(hint)
+    if not notes:
+        return res
+    return ToolResult(False, res.output + "\n\n[App note] " + "\n".join(notes), res.data)
 
 
 def changes_state(name: str, args: dict | None, body: str) -> bool:

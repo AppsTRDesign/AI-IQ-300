@@ -62,6 +62,8 @@ class Run:
     tools_off: bool = False  # stuck in a loop: no tools are offered or run any more, the model must answer
     turn_counts: dict = field(default_factory=dict)  # calls in the current turn
     turn_fail_sigs: dict = field(default_factory=dict)  # (turn, tool, error kind) -> failures in that turn
+    err_sigs: dict = field(default_factory=dict)  # error signature -> {"n": times in this task, "tries": [calls before it]}
+    prior_errs: dict = field(default_factory=dict)  # error signature -> earlier task number (from the chat ledger)
     outcomes: dict = field(default_factory=dict)  # call -> (result digest, times in a row): same call, same result
     fail_turn: int = -1
     file_loops: int = 0  # files that turned into a generation loop in this task (see _file_loop_check)

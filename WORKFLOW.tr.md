@@ -119,7 +119,108 @@ flowchart LR
 Her üye havuzdaki bir modelde kendi araç döngüsünü çalıştırır. Aynı aşamanın üyeleri paralel çalışır; sonraki aşama
 öncekilerin dosyalarını okur. Kotası dolan model havuzdaki başka bir modelle değiştirilir.
 
-## 4. Kodda nerede
+## 4. Uç durumlar
+
+İşler plana göre gitmediğinde uygulamanın ne yaptığı. Her şema kodun bugünkü davranışını izler; modül adları aşağıdaki
+tablodadır.
+
+### 4.1 Görev ortasında durdurma
+
+```mermaid
+flowchart TD
+  S(["⏹ Kullanıcı Durdur'a basar"]) --> C["Model akışı iptal edilir"]
+  C --> K["Hemen temizlenir:<br/>bekleyen onaylar · görünür tarayıcı ·<br/>çalışan komutlar · bu görevin sunucuları"]
+  K --> R["Çalışan adımlar durduruldu olarak işaretlenir<br/>yapılan adımlar Devam için saklanır"]
+  R --> L["Sohbet defteri görevi iptal edildi olarak kaydeder"]
+  L --> M(["Mesaj: Durduruldu<br/>düğmeler: Devam · Bu görevin dosya değişikliklerini geri al"])
+  M -->|"Devam"| RES["Devam: yapılan adımların kaydı<br/>modele gider, hiçbiri tekrarlanmaz"]
+  M -->|"Geri al"| U{"Dosya hâlâ görevin<br/>bıraktığı gibi mi?"}
+  U -->|"Evet"| B["Geri konur: eski içerik döner,<br/>yeni dosyalar silinir, silinenler geri gelir"]
+  U -->|"Hayır, sonra değişmiş"| KEEP["Olduğu gibi bırakılır ve listelenir"]
+  classDef warn fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+  class KEEP warn
+  class B,RES ok
+```
+
+- **Geri alınanlar:** `write_file`, `edit_file` ve `delete_file` ile değişen dosyalar. Her dosyanın görevin ilk
+  değişikliğinden önceki hâli, sohbetin son 5 görevi için saklanır.
+- **Geri alınmayanlar:** kabuk komutlarının yaptığı değişiklikler (derleme, `npm install`, bir betik). Projelerde
+  bunları Dosyalar altındaki git zaman makinesi karşılar.
+- Görevden sonra kullanıcının (ya da sonraki bir görevin) değiştirdiği dosyanın üzerine geri alma asla yazmaz.
+
+### 4.2 İki ajan aynı dosyayı değiştirir
+
+```mermaid
+flowchart TD
+  A["Ajan A app.js'i yazar"] --> V["Uygulama not eder: app.js sürüm 2, yazan A"]
+  B["Ajan B (sürüm 1'i okumuştu) app.js'in tamamını yeniden yazar"] --> CHK{"B sürüm 2'yi gördü mü?"}
+  V --> CHK
+  CHK -->|"Hayır"| REF["Reddedilir: sen okuduktan sonra A değiştirdi<br/>yeniden oku, yalnızca kendi bölümünü değiştir"]
+  REF --> RD["B: read_file, ardından edit_file"]
+  RD --> LOCK
+  CHK -->|"Evet"| LOCK["Dosya başına kilit: aynı anda tek yazar"]
+  LOCK --> AT["Atomik değiştirme: geçici dosya, sonra takas<br/>diskteki baytlar denetlenir; uyuşmazsa eski içerik döner"]
+  AT --> OK(["İki değişiklik de korunur"])
+  classDef warn fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+  class REF warn
+  class OK ok
+```
+
+- `edit_file` ve `write_file append` her zaman dosyanın kilit altındaki o anki hâline uygulanır; başka ajanın
+  değişikliğini kaybettirmez.
+- Tam yeniden yazım yalnızca **aynı görevin** başka bir ajanı dosyayı, bu ajan son okuduktan sonra değiştirdiyse
+  reddedilir. Sohbetin sonraki bir görevi paralel yazar sayılmaz.
+- Yeniden yazım üçüncü denemede geçer; böylece tamamı okunamayacak kadar büyük bir dosya çıkmaza girmez. Eski sürümü
+  `.aiiq/backups` klasöründe durur.
+
+### 4.3 Görev ortasında model değişir
+
+```mermaid
+flowchart TD
+  E{"Kota bitti, sağlayıcı meşgul<br/>ya da bağlantı koptu"} -->|"Çoklu model açık, otomatik geçiş"| P["En müsait havuz modeli seçilir<br/>(görev başına en çok 3 geçiş)"]
+  E -->|"Kapalı"| W["Bekle ve aynı modeli yeniden dene<br/>ya da devam ettirilebilir hatayla dur"]
+  P --> H["Aynı konuşma + devir notu:<br/>yapılacaklar listesi aynen, [x] olanlar bitti"]
+  H --> D["Yapılmış çağrıların kaydı<br/>+ yazılan dosyalar (diskte var)"]
+  D --> G["Tekrar korumaları: aynı sonucu veren aynı çağrı<br/>yeniden çalıştırılmaz"]
+  G --> CUT{"Dosya yazılırken mi koptu?"}
+  CUT -->|"Evet"| SV["Yazılan kısım kaydedilir<br/>yeni model append ile devam eder"]
+  CUT -->|"Hayır"| GO(["Yeni model kaldığı maddeden devam eder"])
+  SV --> GO
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+  class GO ok
+```
+
+### 4.4 İşe yaramayan düzeltme
+
+Kullanıcının kuralı: **devre kesici yok**. Hata kodlamanın parçasıdır; hata sayısı görevi asla durdurmaz, dosya ve
+komut araçlarını kapatmaz. Uygulamanın engellediği şey *aynı* şeyin tekrar tekrar olmasıdır.
+
+```mermaid
+flowchart TD
+  F["Bir araç çağrısı başarısız olur"] --> S1{"Aynı çağrı aynı hatayla<br/>iki kez başarısız oldu mu?"}
+  S1 -->|"Evet"| NR["Üçüncü kez çalıştırılmaz:<br/>bayrakları değil yolu değiştir"]
+  S1 -->|"Hayır"| S2{"Aynı hata türü 3., 6., 9.…<br/>kez mi geri geldi?"}
+  S2 -->|"Evet"| EX["Modele söylenir: düzeltmelerin nedene ulaşmıyor.<br/>Denediklerin şunlar. Hatayı ve satırını oku,<br/>kök nedeni söyle, tam mesajı ara"]
+  S2 -->|"Hayır"| S3{"Bu sohbetin önceki bir<br/>görevinde görüldü mü?"}
+  S3 -->|"Evet"| PR["Belirtilir: bu hata N. görevi de durdurmuştu"]
+  S3 -->|"Hayır"| ON(["Model hatayı görür ve çalışmaya devam eder"])
+  NR --> ON
+  EX --> ON
+  PR --> ON
+  classDef warn fill:#fef3c7,stroke:#d97706,color:#78350f
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+  class NR,EX,PR warn
+  class ON ok
+```
+
+- **Art arda her 4 başarısız turda:** "takıldın, başka bir yol izle".
+- **Aynı çağrı aynı sonucu 3 kez verirse:** açıklamalı bir hataya çevrilir.
+- **İşin kendisi için gerekmeyen araçlar** (örneğin sürekli reddeden bir arama API'si) aynı hatayı 3 kez verince o görev için kapanır. Dosya, komut ve okuma araçları asla kapanmaz.
+- **Adım sınırı** (Ayarlar > Ajan, varsayılan 60, sınırsız da olabilir) görevi bitirir; "Devam" yapılanların kaydıyla sürdürür.
+
+## 5. Kodda nerede
 
 | Adım | Modül |
 |---|---|
@@ -131,6 +232,10 @@ Her üye havuzdaki bir modelde kendi araç döngüsünü çalıştırır. Aynı 
 | Çıktı korumaları (tekrar, saçmalama, kelime salatası) | `agents/guards.py` |
 | Kontrol noktaları, devam, kesilen dosyalar | `agents/continuity.py` |
 | Sohbet defteri (önceki görevler ne yaptı; `recall`) | `agents/ledger.py` |
+| Dosya kilitleri, atomik yazım, paralel değişiklik denetimi | `tools/safe_io.py` |
+| Bir görevin dosya değişikliklerini geri alma | `tools/undo.py` |
+| Tekrarlayan hata notları, tekrar korumaları | `agents/tooling.py` |
+| Model değişiminden sonra devir | `agents/continuity.py` (`_handover`), `agents/orchestrator.py` |
 | Ajan ekipleri | `agents/team.py` |
 | Sağlayıcılar, yönlendirme, kotalar, model aileleri | `llm/providers.py`, `llm/router.py`, `llm/usage.py`, `llm/families.py` |
 | Yerel modeller için RAM / VRAM koruması | `llm/memguard.py` |

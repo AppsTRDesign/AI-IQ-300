@@ -11,6 +11,24 @@ Otonom, çoklu ajan destekli, yerel ve bulut LLM'leri ile çalışan tam kapsaml
 - **Son Başarılı İşlem:** v0.10.0 — profesyonel belge motoru (Chromium PDF/HTML + KaTeX, tasarımlı DOCX/PPTX/XLSX), ayarlanabilir akış zaman aşımları ve parçalı yazma, run_state.json ile kesinti sonrası devam, paralel araç yürütme, canlı todos, çok dilli niyet tablosu, zengin mesaj kutusu, mesaj sayfalama/kopyala/sil/alıntı, sağ tık menüleri, gruplu değişiklik kartı, medya oynatıcılar, servis kartları, kota/bakiye ekranı.
 - **Önceki:** v0.6 — kesintisiz orkestrasyon (devam ettirme, sessiz araç yazımında heartbeat, görev içi bağlam kırpma/özetleme, canlı bağlam sayımı, takılı adım temizliği, tekrar eden çağrı koruması, asılsız dosya iddiası koruması), todo aracı + canlı yapılacaklar listesi, otomatik yetenek algılama (use_skill), bilgi sorularında salt-okuma araçlar, arama alaka filtresi + Bing URL çözümü, canlı gruplu adımlar, model seçiciden bağlam düzenleme (ayarlarla senkron), aç/kapat popover'lar, çizim ekranı, klasör yükleme, hedef modu, belge kartları ve önizleme (xlsx/docx/pdf/pptx), kökteki gereksiz docs/ kaldırıldı.
 
+## v0.19.0 (2026-11-23): güvenli paralel yazım, geri alma, uç durumlar, CI
+- **`tools/safe_io.py`:**
+  - Dosya başına asyncio kilidi: write_file ve edit_file bunun altında çalışır.
+  - `atomic_write_text`: geçici dosya, fsync, Windows yeniden denemeli os.replace, sha ile geri okuma, uyuşmazlıkta geri yükleme.
+  - `VERSIONS` ve `seen_sha`, aynı görevin başka bir ajanının tam üzerine yazmasını reddeder. read_file gördüğü sürümü not eder; yazım 3. denemede geçer.
+  - ToolContext'e `agent` ve `seen_sha` eklendi; ekip üyeleri kendi kopyalarını alır.
+- **`continuity.save_partial`:** `clean_tail` bozuk son karakteri atar; ekleme atomiktir; yabancı bayt içeren dosyalara yerinde eklenir.
+- **`tools/undo.py`:**
+  - Görevin her dosyadaki ilk değişikliğinden önceki hâl `.session/undo/<run>/` içinde saklanır; son 5 görev, 5 MB'a kadar dosyalar.
+  - `restore` yalnızca sha'sı hâlâ görevinki olan dosyalara dokunur. Yeni uç: `POST /api/sessions/{sid}/undo/{run}`.
+  - Mesaj meta'sına `undo` eklenir, düğmeyi `UndoCard.jsx` gösterir. İptal, görevin sunucularını hemen kapatır.
+- **`tooling.recurring_error`:** aynı `ledger.error_sig` 3., 6.… kez gelince denenenleri ve kök neden rehberini ekler; önceki görevlerin hataları `run.prior_errs`'ten gelir. Hiçbir şey engellenmez.
+- **Defter:** `data()` / `path_data()` güvenilmeyen alanları tırnaklar (satır sonu, başlık, kod çiti, şablon ya da araç etiketi kalmaz).
+- **Testler:**
+  - Yeni: `test_safe_io`, `test_undo`, `test_recurring_error`, `test_stream_fixtures` (+ `fixtures/streams.json`), ayrıca defter enjeksiyon testi.
+  - CI: `.github/workflows/ci.yml` (windows, Python 3.12, Node 22) ve `set_version.py --check [etiket]`.
+- **WORKFLOW TR/EN:** bölüm 4, uç durumlar (4 şema).
+
 ## v0.18.8 (2026-11-23): sohbet defteri
 pytest 322.
 - **`backend/app/agents/ledger.py`:** görev sonunda orkestratör adımları `.session/ledger.json` dosyasına kaydeder:
