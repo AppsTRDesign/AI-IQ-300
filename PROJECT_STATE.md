@@ -29,6 +29,19 @@ A full-scale software development and command center: autonomous, multi-agent, w
   - document cards and preview (xlsx/docx/pdf/pptx)
   - removal of the unneeded docs/ folder from the project root
 
+## v0.21.0 (2026-11-26): local Turkish voice packs
+- **`backend/app/voice/packs.py`:** the 18-pack registry (tier, env, size, needs, licence, clone, emotion), `hardware()` / `fit()`, `install()` / `remove()` with uv, `Worker` (JSON lines, 600 s idle stop) and `voices(lang)`.
+- **`backend/app/voice/pack_worker.py`:** runs inside a pack's venv, one adapter per engine. Its stdout carries only JSON.
+- **`backend/voice_packs.py`:** CLI used by the installers (`light|medium|gpu|all|<names>`, `--force`, `--remove`, `--list`).
+- **Wiring:** `engines.synth`, `catalog` (voices, install, remove, `voice_id_ok`), `render` (moods), `/api/voices` (hardware), the `VoicePacks` card in the Voices pane, `installer.py` `step_tts` + `install.sh`.
+- **Memory guard (`packs.py`):** `RAM_SEEN` (measured RSS per engine), `make_room()` (LRU stop of idle workers, `MAX_LOADED=3`, `HEADROOM_GB=1.5`, a clear error when it still does not fit), `_reaper` thread (idle stop every 60 s), lazy `_learn_gender`, `ref_text()` (faster-whisper transcript cached as `refs/<name>.txt` for F5-style engines).
+- **`backend/app/voice/clone.py`:** the clone studio (analyse + score, highpass, declick, spectral denoise, de-ess, trim, normalise; `_studio-*` work files are never listed as voices). Endpoints `/api/voices/studio[...]` in `main.py`, UI `CloneStudio.jsx`. `voice/studio.py` stays the video-studio finish module.
+- **Translator jobs:** `i18n.plan_parts` / `translate_parts` (1,800-char parts, 3 at once), `POST /api/languages` returns a job, `GET /api/languages/jobs/{code}` is polled by the Languages tab.
+- **Pack voice IDs:** `catalog.voice_id_ok` allows spaces and apostrophes for pack voices; `tts.synthesize` accepts any valid `<engine>:<voice>`.
+- **`backend/app/voice/cloud.py`:** `CLOUD` (elevenlabs, openai, google, gemini, azure), `voices(lang)` (keyed + switched-on services, lists cached 1 h, errors in `ERRORS`), `synth`, `test` (key check, nothing spoken), `status`. Settings section `voice_cloud` (`disabled`, `models`, `azure_region`). Endpoints `/api/voices/cloud`, `/cloud/models/{sid}`, `/cloud/test/{sid}`. Multilingual voices carry `langs`; the frontend's `speaks(v, lang)` uses it. Cloud voices are never picked by `defaultVoiceOf` or `render.candidates`.
+- **Engine filter:** `VoicePicker` builds its engine options from the voices (groups, packs by `pack_name`, cloud services, counts).
+- **Tests:** `tests/test_voice_packs.py`, `tests/test_clone_studio.py`, `tests/test_cloud_voices.py`. **Benchmark:** `eval/tts_bench.py`, `eval/tts_report.py`, `eval/TTS_BENCHMARK(.tr).md`.
+
 ## v0.20.1 (2026-11-23): two-model benchmark, stream and memory fixes
 - **Benchmark (4th round, one model at a time):** 3.5 Super and 550B both 9/9 tasks, 65/65 checks, no app errors. The results, charts and report are in `eval/benchmark/` and in the root READMEs.
 - **`streaming.py`:**

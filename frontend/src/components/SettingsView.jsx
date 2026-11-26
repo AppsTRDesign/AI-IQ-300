@@ -1039,23 +1039,46 @@ const VIDEO_SERVICES = [
   { id: "hf_wan2", name: "Wan 2.2 Lightning · Hugging Face", desc: "ve_free_desc", free: true, doc: "https://huggingface.co/spaces/Saravutw/WAN2.2_I2V_LIGHTNING_4-8step_custom" },
   { id: "hf_svd", name: "AnimateLCM-SVD · Hugging Face", desc: "ve_free_svd_desc", free: true, doc: "https://huggingface.co/spaces/wangfuyun/AnimateLCM-SVD" },
 ];
+// Cloud voices with the user's own key: their voices join every voice picker; used only when chosen (never by the
+// automatic fallback), since each sentence spends the service's credits.
+const CLOUD_TTS = [
+  { id: "elevenlabs", name: "ElevenLabs", secret: "elevenlabs_api_key", ph: "sk_…", desc: "ct_elevenlabs_desc", doc: "https://elevenlabs.io/app/settings/api-keys" },
+  { id: "openai", name: "OpenAI TTS (gpt-4o-mini-tts)", secret: "openai_api_key", ph: "sk-…", desc: "ct_openai_desc", doc: "https://platform.openai.com/docs/guides/text-to-speech" },
+  { id: "google", name: "Google Cloud Text-to-Speech", secret: "google_tts_api_key", ph: "AIza…", desc: "ct_google_desc", doc: "https://cloud.google.com/text-to-speech/docs" },
+  { id: "gemini", name: "Gemini TTS", secret: "gemini_api_key", ph: "AIza…", desc: "ct_gemini_desc", doc: "https://ai.google.dev/gemini-api/docs/speech-generation" },
+  { id: "azure", name: "Azure AI Speech", secret: "azure_speech_key", ph: "…", desc: "ct_azure_desc", doc: "https://learn.microsoft.com/azure/ai-services/speech-service/",
+    fields: [{ field: "azure_region", label: "ct_azure_region", desc: "ct_azure_region_desc", ph: "westeurope" }] },
+];
+
+function CloudVoices({ onChanged }) {
+  const t = useT();
+  return (
+    <Card title={<span className="flex items-center gap-2"><Cloud size={15} className="text-indigo-500" />{t("ct_title")} <span className="text-xs font-normal text-subtle">{CLOUD_TTS.length}</span></span>} desc={t("ct_desc")}>
+      {CLOUD_TTS.map((svc) => <ServiceCard key={svc.id} svc={svc} section="voice_cloud" kind="voice" onTested={onChanged} />)}
+    </Card>
+  );
+}
+const Voices = () => <VoicesPane CloudCard={CloudVoices} />;
+
 // Services whose model the user may pick (only models of that kind: image models for images, video models for video)
-const PICKS_MODEL = { media: new Set(["gemini", "cloudflare", "huggingface", "together", "openai", "stability"]), video: new Set(["veo", "fal", "replicate", "runway"]) };
+const PICKS_MODEL = { media: new Set(["gemini", "cloudflare", "huggingface", "together", "openai", "stability"]), video: new Set(["veo", "fal", "replicate", "runway"]),
+  voice_cloud: new Set(["elevenlabs", "openai", "gemini"]) };
 
 function ModelPick({ kind, section, sid }) {
   const t = useT();
   const [d, setD] = useState(null);
   const chosen = useStore((x) => x.settings?.[section]?.models?.[sid]) || "";
-  useEffect(() => { api.get(`/api/media/models/${kind}/${sid}`).then(setD).catch(() => setD({ choices: [] })); }, [kind, sid, chosen]);
+  useEffect(() => { api.get(kind === "voice" ? `/api/voices/cloud/models/${sid}` : `/api/media/models/${kind}/${sid}`).then(setD).catch(() => setD({ choices: [] })); }, [kind, sid, chosen]);
   if (!d) return null;
   const list = d.choices || [];
   const cur = chosen || d.current || d.default;
   const opts = list.includes(cur) || !cur ? list : [cur, ...list];
+  const label = t(kind === "video" ? "media_model_video" : kind === "voice" ? "ct_model" : "media_model_image");
   return (
-    <div className="text-xs text-muted">{t(kind === "video" ? "media_model_video" : "media_model_image")}
+    <div className="text-xs text-muted">{label}
       <span className="text-subtle"> · {t("media_model_desc", { d: d.default || "-" })}</span>
       <div className="mt-1">
-        <Select value={cur || ""} mono searchable={opts.length > 6} ariaLabel={t(kind === "video" ? "media_model_video" : "media_model_image")}
+        <Select value={cur || ""} mono searchable={opts.length > 6} ariaLabel={label}
           onChange={(v) => useStore.getState().updateSettings({ [section]: { models: { [sid]: v === d.default ? "" : v } } })}
           options={opts.map((m) => {
             const preview = /preview|exp|beta/i.test(m);
@@ -1105,7 +1128,7 @@ function ServiceCard({ svc, section, kind, status, onTested }) {
     setBusy(true); setTest(null); setOpen(true);
     try {
       await saveKey(); await saveFields();
-      const path = kind === "maps" ? "maps" : kind === "media" ? "media" : kind === "stock" ? "stock" : kind === "video" ? "video" : "web";
+      const path = kind === "maps" ? "maps" : kind === "media" ? "media" : kind === "stock" ? "stock" : kind === "video" ? "video" : kind === "voice" ? "voices/cloud" : "web";
       setTest(await api.post(`/api/${path}/test/${svc.test || svc.id}${real === true ? "?real=true" : ""}`, { q: "" }));
     } catch (e) { setTest({ ok: false, error: e.message }); }
     setBusy(false);
@@ -1159,7 +1182,7 @@ function ServiceCard({ svc, section, kind, status, onTested }) {
               </div>
             </label>
           )}
-          {PICKS_MODEL[section]?.has(svc.id) && has && <ModelPick kind={section === "video" ? "video" : "image"} section={section} sid={svc.id} />}
+          {PICKS_MODEL[section]?.has(svc.id) && has && <ModelPick kind={section === "video" ? "video" : section === "voice_cloud" ? "voice" : "image"} section={section} sid={svc.id} />}
           {kind === "video" && ready && (
             <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-subtle">
               <Button onClick={() => runTest(true)} disabled={busy} className="!px-2.5 !py-1"><Film size={13} />{t("video_real_test")}</Button>
@@ -1340,16 +1363,35 @@ function LanguagesTab() {
   const [langs, setLangs] = useState([]);
   const [f, setF] = useState({ code: "", name: "" });
   const [busy, setBusy] = useState(false);
+  const [job, setJob] = useState(null);
   const load = () => api.get("/api/languages").then(setLangs);
   useEffect(() => { load(); }, []);
   const st = useStore.getState();
+  // the translation runs on the server part by part; this follows it until it ends
+  const follow = async (code, name) => {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1000));
+      let j;
+      try { j = await api.get(`/api/languages/jobs/${code}`); } catch { continue; }
+      setJob(j);
+      if (["done", "partial", "failed"].includes(j.state)) {
+        if (j.state === "failed") st.notify(t("translate_failed"), "error", j.error);
+        else { await load(); st.notify(t(j.state === "done" ? "lang_translate_done" : "lang_translate_partial", { name }), j.state === "done" ? "ok" : "info"); }
+        return j;
+      }
+    }
+  };
   const add = async (e) => {
     e.preventDefault();
     setBusy(true);
-    try { await api.post("/api/languages", f); await load(); st.notify(t("lang_added", { name: f.name }), "ok"); setF({ code: "", name: "" }); }
+    setJob(null);
+    try { await api.post("/api/languages", f); const name = f.name; setF({ code: "", name: "" }); await follow(f.code, name); }
     catch (x) { st.notify(t("translate_failed"), "error", x.message); }
     setBusy(false);
   };
+  const parts = job?.parts || [];
+  const doneN = parts.filter((p) => p.state === "done" || p.state === "failed").length;
+  const pct = job ? (job.state === "done" || job.state === "partial" ? 100 : parts.length ? Math.round((doneN / parts.length) * 95) : 2) : 0;
   const del = async (l) => {
     if (!(await st.confirm({ title: t("delete"), message: t("confirm_delete_item", { name: l.name }), confirmLabel: t("delete"), danger: true }))) return;
     await api.del(`/api/languages/${l.code}`); load(); st.notify(t("deleted", { name: l.name }), "ok");
@@ -1374,6 +1416,38 @@ function LanguagesTab() {
             onChange={(e) => setF({ ...f, name: e.target.value.replace(/[^A-Za-z ()-]/g, "") })} />
           <Button variant="primary" disabled={busy}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Languages size={14} />} {t("translate_add")}</Button>
         </form>
+        {job && (
+          <div className="space-y-3 border-t border-line px-5 py-4">
+            <div className="flex items-center justify-between text-[13px]">
+              <span className="font-medium">
+                {job.state === "done" ? t("lang_translate_done", { name: job.name })
+                  : job.state === "partial" ? t("lang_translate_partial", { name: job.name })
+                  : job.state === "failed" ? t("translate_failed")
+                  : job.state === "catalog" ? t("lang_job_catalog")
+                  : t("lang_job_running", { done: doneN, total: parts.length || "…" })}
+              </span>
+              <span className="font-mono text-xs text-subtle">{pct}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-hover">
+              <div className={`h-full rounded-full transition-all ${job.state === "failed" ? "bg-danger" : job.state === "partial" ? "bg-warn" : "bg-accent"}`} style={{ width: `${pct}%` }} />
+            </div>
+            {parts.length > 0 && (
+              <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+                {parts.map((p, i) => (
+                  <div key={i} className="flex items-center gap-2 rounded-md px-2 py-1 text-xs hover:bg-hover">
+                    {p.state === "done" ? <CheckCircle2 size={13} className="text-ok" />
+                      : p.state === "failed" ? <AlertCircle size={13} className="text-danger" />
+                      : p.state === "running" ? <Loader2 size={13} className="animate-spin text-accent" />
+                      : <span className="inline-block h-[13px] w-[13px] rounded-full border border-line" />}
+                    <span className="flex-1">{t("lang_part", { n: i + 1, total: parts.length })} · {t("lang_part_texts", { n: p.n })}</span>
+                    <span className={p.state === "failed" ? "text-danger" : "text-subtle"} title={p.error}>{t(`lang_part_${p.state}`)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {job.error && <div className="text-xs text-danger">{job.error}</div>}
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -2009,7 +2083,7 @@ function McpServers() {
 
 
 
-const PANES = { general: General, models: Models, multi: MultiModel, providers: Providers, context: Context, web: Web, voices: VoicesPane, connections: ConnectionsPane, mcp: McpServers, security: Security, languages: LanguagesTab };
+const PANES = { general: General, models: Models, multi: MultiModel, providers: Providers, context: Context, web: Web, voices: Voices, connections: ConnectionsPane, mcp: McpServers, security: Security, languages: LanguagesTab };
 
 export default function SettingsView() {
   const t = useT();

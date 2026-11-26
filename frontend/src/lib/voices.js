@@ -15,9 +15,19 @@ export const LANG_NAMES = { tr: "Türkçe", en: "English", de: "Deutsch", fr: "F
   ru: "Русский", pt: "Português", ja: "日本語", zh: "中文", nl: "Nederlands", ko: "한국어", hi: "हिन्दी", pl: "Polski", sv: "Svenska",
   uk: "Українська", az: "Azərbaycan", fa: "فارسی", el: "Ελληνικά", da: "Dansk", fi: "Suomi", no: "Norsk", he: "עברית",
   cs: "Čeština", hu: "Magyar", ro: "Română", ka: "ქართული", kk: "Қазақ", vi: "Tiếng Việt", id: "Indonesia", ms: "Melayu", sw: "Kiswahili" };
-export const ENGINE_LABEL = { piper: "Piper", kokoro: "Kokoro", chatterbox: "Chatterbox", edge: "Online" };
+export const ENGINE_LABEL = { piper: "Piper", kokoro: "Kokoro", chatterbox: "Chatterbox", edge: "Online",
+  // Turkish voice packs (each in its own environment; Settings > Voices > Turkish voice packs)
+  seda: "Seda", clarvia: "Clarvia", supertonic: "Supertonic", ema: "EMA", ahenkcep: "Ahenk Cep", pocket: "Pocket",
+  mms: "MMS", turkvits: "TR VITS", openbible: "OpenBible", xtts: "XTTS", anka: "Anka", freya: "Freya",
+  drifting: "Drifting", kizagan: "Kızagan", trendyol: "Trendyol", ahenk: "Ahenk", nefes: "Nefes", fish: "Fish S2",
+  // cloud voices with the user's own key (Settings > Voices > Cloud voices)
+  elevenlabs: "ElevenLabs", openai: "OpenAI", google: "Google Cloud", gemini: "Gemini", azure: "Azure" };
+export const CLOUD_ENGINES = ["elevenlabs", "openai", "google", "gemini", "azure"];
+// A voice speaks a language: its own, or one of a multilingual cloud voice's languages
+export const speaks = (v, l) => (v.langs ? v.langs.includes(l) : (v.lang || v.locale?.slice(0, 2) || "").toLowerCase() === l);
 export const QUALITY_ORDER = { studio: 0, high: 1, standard: 2, basic: 3 };
-export const isLocalVoice = (id) => /^(piper|kokoro|chatterbox):/.test(id || "");
+// Every local voice id is "<engine>:<voice>"; Microsoft's online ids have no colon (tr-TR-EmelNeural)
+export const isLocalVoice = (id) => /^[a-z]+:/.test(id || "") && !/^edge:/.test(id || "");
 export const clampRate = (r) => Math.min(2, Math.max(0.5, +r || 1));
 
 let cache = null;
@@ -56,9 +66,9 @@ export async function previewVoice({ text, voice, rate = 1, pitch, emotion, pres
 // local voice (female first), else an online one.
 export function defaultVoiceOf(list, lang, settings) {
   const own = settings?.defaults?.[lang];
-  const inLang = list.filter((v) => (v.lang || v.locale?.slice(0, 2)) === lang && v.installed !== false);
-  if (own && inLang.some((v) => v.id === own)) return own;
-  const local = inLang.filter((v) => v.engine !== "edge" && v.engine !== "chatterbox")
+  if (own && list.some((v) => v.id === own && speaks(v, lang))) return own;
+  const inLang = list.filter((v) => (v.lang || v.locale?.slice(0, 2)) === lang && v.installed !== false && !v.cloud); // never a paid voice by itself
+  const local = inLang.filter((v) => v.engine !== "edge" && v.engine !== "chatterbox" && v.speed !== "slow")
     .sort((a, b) => (a.gender !== "female") - (b.gender !== "female") || (QUALITY_ORDER[a.quality] ?? 3) - (QUALITY_ORDER[b.quality] ?? 3));
   return (local[0] || inLang.find((v) => v.gender === "female") || inLang[0])?.id || "";
 }

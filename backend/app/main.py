@@ -1774,7 +1774,8 @@ async def _all_voices(lang: str = "") -> tuple[list[dict], str | None]:
                  "quality": "high", "offline": False, "installed": True} for v in await tts.voices(lang)]
     except tts.TTSError as e:  # offline: the local voices still work
         edge, err = [], str(e)
-    return local + edge, err
+    from .voice import cloud
+    return local + edge + await cloud.voices(lang), err
 
 
 @app.get("/api/tts/voices")
@@ -1790,13 +1791,39 @@ def _studio_presets():
 
 @app.get("/api/voices")
 async def voices_list(lang: str = ""):
-    from .voice import catalog, render
+    from .voice import catalog, cloud, packs, render
     voices, err = await _all_voices(lang)
+    packs.stop_idle()
     return {"voices": voices, "online_error": err, "progress": catalog.PROGRESS, "settings": render.settings(),
-            "presets": list(_studio_presets()),
+            "presets": list(_studio_presets()), "hardware": packs.hardware(), "cloud": cloud.status(),
+            "order": render.engine_order(), "off": sorted(render.engine_off()),
             "engines": {"piper": sum(1 for v in voices if v["engine"] == "piper" and v["installed"]),
                         "kokoro": catalog.kokoro_installed(), "chatterbox": catalog.cbx_python() is not None,
                         "edge": not err}}
+
+
+@app.get("/api/voices/cloud")
+def voices_cloud():
+    from .voice import cloud
+    return {"services": cloud.status()}
+
+
+@app.get("/api/voices/cloud/models/{sid}")
+def voices_cloud_models(sid: str):
+    from .voice import cloud
+    if sid not in cloud.CLOUD:
+        raise fail(404, "not_found", "Unknown voice service")
+    models = cloud.CLOUD[sid]["models"]
+    return {"choices": models, "default": models[0] if models else "", "current": cloud.model_of(sid)}
+
+
+@app.post("/api/voices/cloud/test/{sid}")
+async def voices_cloud_test(sid: str):
+    """The key of a cloud voice service works (its voice list or model is fetched; nothing is spoken)."""
+    from .voice import cloud
+    if sid not in cloud.CLOUD:
+        raise fail(404, "not_found", "Unknown voice service")
+    return await cloud.test(sid)
 
 
 class VoiceIdIn(BaseModel):
@@ -1809,9 +1836,12 @@ _VOICE_TASKS: set = set()
 @app.post("/api/voices/install")
 async def voices_install(body: VoiceIdIn):
     """Download a local voice in the background; GET /api/voices shows the progress."""
-    from .voice import catalog
-    if not re.fullmatch(r"(piper|kokoro|chatterbox):[\w.@-]{1,80}", body.id):
+    from .voice import catalog, packs
+    if not catalog.voice_id_ok(body.id):
         raise fail(400, "bad_voice", "Unknown voice")
+    engine = body.id.split(":", 1)[0]
+    if engine in packs.PACKS and packs.fit(engine)["state"] == "no":
+        raise fail(400, "voice_hardware", "This voice pack needs an NVIDIA GPU this computer does not have")
     cur = catalog.PROGRESS.get(body.id)
     if cur and cur.get("state") in ("downloading", "measuring", "installing"):
         return {"ok": True, "progress": cur}
@@ -1836,9 +1866,10 @@ def voices_remove(vid: str):
         name = vid[4:]
         if not re.fullmatch(r"[\w-]{1,40}", name):
             raise fail(400, "bad_voice", "Unknown voice")
-        (catalog.REFS_DIR / f"{name}.wav").unlink(missing_ok=True)
+        for ext in (".wav", ".txt"):  # the clip and its transcript
+            (catalog.REFS_DIR / f"{name}{ext}").unlink(missing_ok=True)
         return {"ok": True}
-    if not re.fullmatch(r"(piper|kokoro|chatterbox):[\w.@-]{1,80}", vid):
+    if not catalog.voice_id_ok(vid):
         raise fail(400, "bad_voice", "Unknown voice")
     if vid.startswith("chatterbox:"):
         engines.CBX.stop()
@@ -1902,6 +1933,113 @@ async def voices_reference(file: UploadFile, name: str = Form(...), consent: boo
         w.writeframes((np.clip(x / max(1e-6, float(np.abs(x).max())) * 0.9, -1, 1) * 32767).astype(np.int16).tobytes())
     hz = catalog.pitch_hz(x, sr)
     return {"ok": True, "name": name, "seconds": round(min(secs, 30), 1), "gender": catalog.save_reference(name, catalog.REFS_DIR / f"{name}.wav", hz)}
+
+
+# ---------- clone studio: analyse + clean a reference, listen before/after, try it on cloning engines, save ----------
+@app.get("/api/voices/studio")
+def studio_info():
+    from .voice import catalog, clone
+    meta = catalog._meta()
+    return {"engines": clone.clone_engines(), "defaults": clone.DEFAULTS,
+            "refs": [{"name": p.stem, "seconds": round(p.stat().st_size / 2 / clone.SR, 1),
+                      "gender": (meta.get(f"ref:{p.stem}") or {}).get("gender") or "unknown"} for p in catalog.own_refs()]}
+
+
+@app.post("/api/voices/studio")
+async def studio_start(file: UploadFile, options: str = Form("{}"), consent: bool = Form(False)):
+    from .voice import clone, engines
+    if not consent:
+        raise fail(400, "consent_required", "Confirm that this is your voice or that you have permission to use it")
+    data = await file.read()
+    if len(data) > 60 * 1024 * 1024:
+        raise fail(400, "too_large", "The recording is too large")
+    try:
+        x, _ = await asyncio.to_thread(engines.decode, data, clone.SR)
+    except Exception as e:  # noqa: BLE001
+        raise fail(400, "bad_audio", f"Could not read the audio: {str(e)[:200]}")
+    if len(x) < clone.SR * 3:
+        raise fail(400, "too_short", "The recording must be at least 5 seconds of speech")
+    try:
+        opts = json.loads(options or "{}")
+    except ValueError:
+        opts = {}
+    return await asyncio.to_thread(clone.start, x, opts if isinstance(opts, dict) else {})
+
+
+class StudioRedoIn(BaseModel):
+    options: dict = {}
+
+
+@app.post("/api/voices/studio/{sid}/clean")
+async def studio_redo(sid: str, body: StudioRedoIn):
+    from .voice import clone
+    if not clone.ok_id(sid):
+        raise HTTPException(404)
+    try:
+        return await asyncio.to_thread(clone.redo, sid, body.options)
+    except FileNotFoundError:
+        raise fail(404, "studio_gone", "This recording is no longer in the studio; add it again")
+
+
+@app.get("/api/voices/studio/{sid}/{kind}.wav")
+def studio_audio(sid: str, kind: str):
+    from .voice import clone
+    if not clone.ok_id(sid) or kind not in ("raw", "clean"):
+        raise HTTPException(404)
+    f = clone.file_of(sid, kind)
+    if not f.exists():
+        raise HTTPException(404)
+    return FileResponse(f, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+class StudioTryIn(BaseModel):
+    engine: str
+    text: str
+    kind: str = "clean"
+    mood: str = ""
+
+
+@app.post("/api/voices/studio/{sid}/try")
+async def studio_try(sid: str, body: StudioTryIn):
+    """The studio clip spoken by a cloning engine, before it is saved."""
+    from . import tts
+    from .voice import clone
+    if not clone.ok_id(sid) or body.kind not in ("raw", "clean"):
+        raise HTTPException(404)
+    if not clone.file_of(sid, body.kind).exists():
+        raise fail(404, "studio_gone", "This recording is no longer in the studio; add it again")
+    if body.engine not in {e["engine"] for e in clone.clone_engines()}:
+        raise fail(400, "bad_engine", "This engine is not installed or does not clone voices")
+    name = clone.voice_name(sid, body.kind)
+    vid = f"chatterbox:{name}@tr" if body.engine == "chatterbox" else f"{body.engine}:{name}"
+    try:
+        audio = await tts.synthesize(body.text[:600], vid, 1.0, {"preset": "natural"})
+    except tts.TTSError as e:
+        raise fail(502, "tts_failed", str(e))
+    return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+class StudioSaveIn(BaseModel):
+    name: str
+    kind: str = "clean"
+
+
+@app.post("/api/voices/studio/{sid}/save")
+async def studio_save(sid: str, body: StudioSaveIn):
+    """Keep the clip as the user's own narrator voice: every cloning engine lists it (xtts:ref-<name> ...)."""
+    from .voice import clone
+    if not clone.ok_id(sid) or body.kind not in ("raw", "clean"):
+        raise HTTPException(404)
+    name = re.sub(r"[^\w-]+", "-", body.name.strip())[:40].strip("-_")
+    if not name:
+        raise fail(400, "bad_name", "Give the voice a name")
+    try:
+        res = await asyncio.to_thread(clone.save, sid, name, body.kind)
+    except FileNotFoundError:
+        raise fail(404, "studio_gone", "This recording is no longer in the studio; add it again")
+    res["voices"] = [{"engine": e["engine"], "id": f"chatterbox:ref-{name}@tr" if e["engine"] == "chatterbox"
+                      else f"{e['engine']}:ref-{name}"} for e in clone.clone_engines()]
+    return res
 
 
 # ---------- document templates (make_doc template=<id>; the gallery above the composer) ----------
@@ -2738,25 +2876,59 @@ class LangIn(BaseModel):
     name: str
 
 
+LANG_JOBS: dict[str, dict] = {}  # code -> translation job (parts with their state), polled by the Languages tab
+
+
+def _lang_job(code: str, name: str) -> None:
+    """Translate en.json part by part (a few parts at a time), then write the file. Parts that fail keep English."""
+    job = LANG_JOBS[code]
+    try:
+        src = json.loads((LANG_DIR / "en.json").read_text(encoding="utf-8"))
+        keys = [k for k in src if not k.startswith("_")]
+        texts = [str(src[k]) for k in keys]
+        parts = i18n.plan_parts(texts)
+        job["parts"] = [{"n": len(p), "state": "waiting", "error": ""} for p in parts]
+        job["total"] = len(texts)
+
+        def on_part(k: int, state: str, error: str) -> None:
+            job["parts"][k].update(state=state, error=error)
+
+        values = i18n.translate_parts(texts, code, on_part=on_part)
+        out = {"_meta": {"name": name, "code": code}} | dict(zip(keys, values))
+        (LANG_DIR / f"{code}.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        job["state"] = "catalog"
+        try:  # agent/skill titles and descriptions in the new language too
+            catalog.localize([code])
+        except Exception:
+            pass  # the language is usable; catalog items fall back to their generic text
+        failed = sum(1 for p in job["parts"] if p["state"] == "failed")
+        job["state"] = "partial" if failed else "done"
+    except Exception as e:  # noqa: BLE001
+        job.update(state="failed", error=str(e)[:300])
+    job["ended"] = time.time()
+
+
 @app.post("/api/languages")
 async def add_language(body: LangIn):
-    """Auto-translate en.json into a new language with deep-translator (needs internet)."""
+    """Start translating en.json into a new language (needs internet). Progress: GET /api/languages/jobs/{code}."""
     import re
     if not re.fullmatch(r"[a-z]{2,3}(-[A-Za-z]{2,4})?", body.code):
         raise fail(400, "invalid_language", "Invalid language code")
-    src = json.loads((LANG_DIR / "en.json").read_text(encoding="utf-8"))
-    keys = [k for k in src if not k.startswith("_")]
-    try:
-        values = await asyncio.to_thread(i18n.translate_all, [src[k] for k in keys], body.code)
-    except Exception as e:
-        raise fail(502, "translate_failed", f"Translation failed: {e}")
-    out = {"_meta": {"name": body.name, "code": body.code}} | dict(zip(keys, values))
-    (LANG_DIR / f"{body.code}.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:  # agent/skill titles and descriptions in the new language too
-        await asyncio.to_thread(catalog.localize, [body.code])
-    except Exception:
-        pass  # the language is usable; catalog items fall back to their generic text
-    return {"code": body.code, "name": body.name}
+    old = LANG_JOBS.get(body.code)
+    if old and old["state"] in ("running", "catalog"):
+        return {"code": body.code, "name": body.name, "job": body.code}
+    LANG_JOBS[body.code] = {"code": body.code, "name": body.name, "state": "running", "parts": [], "total": 0,
+                            "error": "", "started": time.time()}
+    asyncio.get_running_loop().run_in_executor(None, _lang_job, body.code, body.name)
+    return {"code": body.code, "name": body.name, "job": body.code}
+
+
+@app.get("/api/languages/jobs/{code}")
+def language_job(code: str):
+    job = LANG_JOBS.get(code)
+    if not job:
+        raise HTTPException(404)
+    return job
 
 
 @app.delete("/api/languages/{code}")

@@ -25,8 +25,10 @@ class VoiceError(Exception):
 
 
 def engine_of(vid: str) -> str:
-    return vid.split(":", 1)[0] if ":" in vid and vid.split(":", 1)[0] in ("piper", "kokoro", "chatterbox", "edge") \
-        else "edge"
+    from .cloud import CLOUD
+    from .packs import PACKS
+    e = vid.split(":", 1)[0] if ":" in vid else ""
+    return e if e in ("piper", "kokoro", "chatterbox", "edge") or e in PACKS or e in CLOUD else "edge"
 
 
 # ------------------------------------------------------------------ Piper
@@ -205,5 +207,16 @@ async def synth(vid: str, text: str, opts: dict) -> tuple[np.ndarray, int]:
     name = vid.split(":", 1)[1] if ":" in vid else vid
     if engine == "edge":
         return await _edge(name, text, opts)
+    from . import cloud, packs
+    if engine in cloud.CLOUD:
+        try:
+            return await cloud.synth(engine, name, text, opts)
+        except cloud.CloudError as e:
+            raise VoiceError(str(e)) from e
+    if engine in packs.PACKS:
+        try:
+            return await asyncio.to_thread(packs.synth, engine, name, text, opts)
+        except RuntimeError as e:
+            raise VoiceError(str(e)) from e
     fn = {"piper": _piper, "kokoro": _kokoro, "chatterbox": _chatterbox}[engine]
     return await asyncio.to_thread(fn, name, text, opts)

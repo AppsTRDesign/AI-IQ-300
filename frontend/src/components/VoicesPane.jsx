@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, Download, Loader2, Mic, Pause, Play, Sparkles, Trash2, Upload } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, Download, Loader2, Pause, Play, Sparkles, Trash2 } from "lucide-react";
 import { useStore, useT } from "../lib/store";
 import { api } from "../lib/api";
-import { ENGINE_LABEL, LANG_NAMES, SAMPLES, installVoice, loadVoices, previewVoice, stopPreview } from "../lib/voices";
-import { Button, Toggle, inputCls } from "./ui";
+import { CLOUD_ENGINES, ENGINE_LABEL, LANG_NAMES, SAMPLES, installVoice, loadVoices, previewVoice, stopPreview } from "../lib/voices";
+import { Button, Toggle } from "./ui";
 import Select from "./Select";
 import { EngineBadge, GenderIcon, ToneSliders, VoicePicker } from "./VoiceLibrary";
+import VoicePacks from "./VoicePacks";
+import CloneStudio from "./CloneStudio";
 
 // Settings > Voices: the default voice per language, tone and studio finish for everything the app says, the
 // engine order (one at a time; the next only when one fails), Chatterbox's own environment and the user's own voice.
@@ -26,7 +28,9 @@ const Row = ({ label, desc, children }) => (
   </div>
 );
 
-export default function VoicesPane() {
+const BUILTIN_ENGINES = ["piper", "kokoro", "chatterbox", "edge"];
+
+export default function VoicesPane({ CloudCard }) {
   const t = useT();
   const st = useStore.getState();
   const cfg = useStore((s) => s.settings?.voice) || {};
@@ -42,12 +46,25 @@ export default function VoicesPane() {
   const save = (patch) => st.updateSettings({ voice: patch }).then(() => loadVoices(true).then(setData));
   const voices = data?.voices || [];
   const engines = data?.engines || {};
-  const order = cfg.order || ["piper", "kokoro", "chatterbox", "edge"];
-  const off = new Set(cfg.disabled || []);
+  // every engine: the saved order plus the voice packs installed and the cloud services keyed since (the server adds them)
+  const order = data?.order || cfg.order || ["piper", "kokoro", "chatterbox", "edge"];
+  const off = new Set(data?.off || cfg.disabled || []);
+  const toggleEngine = (e, on) => (CLOUD_ENGINES.includes(e)
+    ? save({ cloud_on: on ? [...new Set([...(cfg.cloud_on || []), e])] : (cfg.cloud_on || []).filter((x) => x !== e) })
+    : save({ disabled: on ? (cfg.disabled || []).filter((x) => x !== e) : [...new Set([...(cfg.disabled || []), e])] }));
+  const engineNote = (e) => {
+    if (e === "piper") return t("vp_n_installed", { n: engines.piper || 0 });
+    if (e === "edge") return engines.edge ? t("vp_online_ok") : t("vp_online_off");
+    if (["kokoro", "chatterbox"].includes(e)) return engines[e] ? t("vp_ready") : t("vp_not_installed");
+    const vs = voices.filter((v) => v.engine === e && v.installed !== false);
+    return CLOUD_ENGINES.includes(e) ? t("vp_cloud_n", { n: vs.length }) : t("vp_pack_n", { n: vs.length });
+  };
+  const engineDesc = (e) => (BUILTIN_ENGINES.includes(e) ? t(`vp_engine_${e}`)
+    : CLOUD_ENGINES.includes(e) ? t("vp_engine_cloud")
+      : [voices.find((v) => v.engine === e)?.license, t(voices.find((v) => v.engine === e)?.speed === "slow" ? "vp_engine_pack_slow" : "vp_engine_pack")].filter(Boolean).join(" · "));
   const langs = useMemo(() => [...new Set(voices.map((v) => v.lang || v.locale.slice(0, 2)))]
     .sort((a, b) => (a === ui ? -1 : b === ui ? 1 : (LANG_NAMES[a] || a).localeCompare(LANG_NAMES[b] || b))), [voices, ui]);
-  const installedLocal = voices.filter((v) => v.engine !== "edge" && v.installed !== false && !v.own);
-  const refs = voices.filter((v) => v.own && v.id.endsWith(`@${ui}`));
+  const installedLocal = voices.filter((v) => v.engine !== "edge" && !v.cloud && v.installed !== false && !v.own && !v.pack);
   const move = (i, d) => { const o = [...order]; [o[i], o[i + d]] = [o[i + d], o[i]]; save({ order: o }); };
   const saveTone = (v) => { setTone(v); };
   const commitTone = () => tone && save({ rate: tone.rate, pitch: tone.pitch, emotion: tone.emotion, studio: tone.studio || "natural" });
@@ -84,7 +101,7 @@ export default function VoicesPane() {
               hint: cfg.defaults?.[l] ? voices.find((v) => v.id === cfg.defaults[l])?.name : t("vl_auto") }))} />
         </Row>
         <div className="px-4 py-3.5 @md:px-5">
-          <VoicePicker key={lang} value={{ voice: cfg.defaults?.[lang], rate: tone.rate }} height="max-h-80"
+          <VoicePicker key={`${lang}:${voices.length}`} value={{ voice: cfg.defaults?.[lang], rate: tone.rate }} height="max-h-80"
             onChange={(v) => save({ defaults: { ...(cfg.defaults || {}), [lang]: v.voice || "" } })} />
         </div>
       </Card>
@@ -112,16 +129,15 @@ export default function VoicesPane() {
           <div key={e} className="flex items-center gap-3 px-4 py-3 @md:px-5">
             <span className="grid h-6 w-6 shrink-0 place-items-center rounded-lg bg-hover text-[11px] font-semibold text-muted">{i + 1}</span>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-[13px] font-medium">{ENGINE_LABEL[e]}<EngineBadge engine={e} /></div>
-              <div className="text-[11.5px] leading-snug text-muted">{t(`vp_engine_${e}`)}
-                <span className="text-subtle"> · {e === "piper" ? t("vp_n_installed", { n: engines.piper || 0 }) : e === "edge" ? (engines.edge ? t("vp_online_ok") : t("vp_online_off"))
-                  : engines[e] ? t("vp_ready") : t("vp_not_installed")}</span></div>
+              <div className="flex items-center gap-2 text-[13px] font-medium">{voices.find((v) => v.engine === e)?.pack_name || ENGINE_LABEL[e] || e}<EngineBadge engine={e} /></div>
+              <div className="text-[11.5px] leading-snug text-muted">{engineDesc(e)}
+                <span className="text-subtle"> · {engineNote(e)}</span></div>
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
               <button disabled={i === 0} onClick={() => move(i, -1)} className="rounded-lg p-1.5 text-subtle hover:bg-hover disabled:opacity-30" title={t("vp_up")}><ArrowUp size={14} /></button>
               <button disabled={i === order.length - 1} onClick={() => move(i, 1)} className="rounded-lg p-1.5 text-subtle hover:bg-hover disabled:opacity-30" title={t("vp_down")}><ArrowDown size={14} /></button>
             </div>
-            <Toggle checked={!off.has(e)} onChange={(v) => save({ disabled: v ? [...off].filter((x) => x !== e) : [...off, e] })} />
+            <Toggle checked={!off.has(e)} onChange={(v) => toggleEngine(e, v)} />
           </div>
         ))}
       </Card>
@@ -130,13 +146,21 @@ export default function VoicesPane() {
         action={engines.chatterbox ? <span className="rounded-md bg-ok/12 px-2 py-1 text-[11px] font-medium text-ok">{t("vp_ready")}</span>
           : cbx !== null ? <span className="flex items-center gap-1.5 text-[12px] text-accent"><Loader2 size={13} className="animate-spin" />{Math.round(cbx * 100)}%</span>
             : <Button variant="primary" className="text-xs" onClick={installCbx}><Download size={14} />{t("vp_cbx_install")}</Button>}>
-        {engines.chatterbox && <OwnVoice t={t} refs={refs} onDone={reload} onRemove={remove} />}
         {engines.chatterbox && (
           <Row label={t("vp_cbx_remove")} desc={t("vp_cbx_remove_desc")}>
             <Button variant="danger" onClick={() => remove(`chatterbox:default@${ui}`, "Chatterbox")}><Trash2 size={14} />{t("delete")}</Button>
           </Row>
         )}
       </Card>
+
+      <VoicePacks voices={voices} hardware={data.hardware} moods={cfg.moods} onSaveMoods={(m) => save({ moods: m })}
+        onChanged={reload} onRemove={remove} />
+
+      {CloudCard && <CloudCard onChanged={reload} />}
+
+      <CloneStudio key={voices.filter((v) => v.installed && (v.pack || v.engine === "chatterbox")).length}
+        defaults={cfg.defaults} onSaved={reload}
+        onMakeDefault={(vid) => save({ defaults: { ...(cfg.defaults || {}), tr: vid } })} />
 
       <Card title={t("vp_installed_title")} desc={t("vp_installed_desc")}>
         {installedLocal.filter((v, i, a) => v.engine !== "chatterbox" && (v.engine !== "kokoro" || a.findIndex((x) => x.engine === "kokoro") === i)).map((v) => (
@@ -150,73 +174,6 @@ export default function VoicesPane() {
         ))}
         {!installedLocal.length && <div className="px-5 py-4 text-[12.5px] text-muted">{t("vp_none_installed")}</div>}
       </Card>
-    </div>
-  );
-}
-
-// The user's own voice for Chatterbox: 5-30 s of clear speech, only with consent (own voice or permission).
-function OwnVoice({ t, refs, onDone, onRemove }) {
-  const st = useStore.getState();
-  const [name, setName] = useState("");
-  const [file, setFile] = useState(null);
-  const [ok, setOk] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [rec, setRec] = useState(null);
-  const chunks = useRef([]);
-  const upload = async (f = file) => {
-    if (!f || !name.trim() || !ok) return;
-    setBusy(true);
-    const fd = new FormData();
-    fd.append("file", f); fd.append("name", name.trim()); fd.append("consent", "true");
-    try {
-      const r = await fetch("/api/voices/reference", { method: "POST", body: fd });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail?.message || `HTTP ${r.status}`);
-      st.notify(t("vp_own_saved", { name: d.name, s: d.seconds }), "ok");
-      setName(""); setFile(null); onDone();
-    } catch (e) { st.notify(t("vp_own_failed"), "error", e.message); }
-    setBusy(false);
-  };
-  const record = async () => {
-    if (rec) { rec.stop(); return; }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream);
-      chunks.current = [];
-      mr.ondataavailable = (e) => chunks.current.push(e.data);
-      mr.onstop = () => { stream.getTracks().forEach((x) => x.stop()); setFile(new File([new Blob(chunks.current, { type: mr.mimeType })], "voice.webm", { type: mr.mimeType })); setRec(null); };
-      mr.start(); setRec(mr);
-    } catch (e) { st.notify(t("vl_mic_failed"), "error", e.message); }
-  };
-  return (
-    <div className="space-y-2.5 px-4 py-3.5 @md:px-5">
-      <div className="text-[13px] font-medium">{t("vp_own_title")}</div>
-      <p className="text-xs leading-snug text-muted">{t("vp_own_desc")}</p>
-      <div className="flex flex-wrap gap-2">
-        <input className={`${inputCls} !w-48`} value={name} onChange={(e) => setName(e.target.value)} placeholder={t("vp_own_name")} maxLength={40} />
-        <label className="flex cursor-pointer items-center gap-1.5 rounded-xl border border-dashed border-line px-3 py-2 text-[12.5px] hover:bg-hover">
-          <Upload size={14} /><span className="max-w-[160px] truncate">{file ? file.name : t("vl_pick_file")}</span>
-          <input type="file" accept="audio/*,video/*" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        </label>
-        <button onClick={record} className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12.5px] ${rec ? "bg-danger text-white" : "bg-hover hover:bg-active"}`}>
-          <Mic size={14} />{rec ? t("vl_stop_rec") : t("vl_record")}</button>
-      </div>
-      <label className="flex items-start gap-2 text-[12px] leading-snug text-muted">
-        <input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} className="mt-0.5" />{t("vp_own_consent")}
-      </label>
-      <Button variant="primary" disabled={!file || !name.trim() || !ok || busy} onClick={() => upload()}>
-        {busy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}{t("vp_own_add")}</Button>
-      {refs.length > 0 && (
-        <div className="divide-y divide-line rounded-xl border border-line">
-          {refs.map((v) => (
-            <div key={v.id} className="flex items-center gap-2 px-3 py-2 text-[12.5px]">
-              <GenderIcon g={v.gender} /><span className="min-w-0 flex-1 truncate font-medium">{v.name.replace(/ \(\w+\)$/, "")}</span>
-              <button onClick={() => previewVoice({ text: SAMPLES.tr, voice: v.id })} className="rounded-lg p-1.5 text-subtle hover:bg-hover"><Play size={13} /></button>
-              <button onClick={() => onRemove(`ref:${v.id.split(":")[1].split("@")[0].slice(4)}`, v.name)} className="rounded-lg p-1.5 text-subtle hover:bg-hover hover:text-danger"><Trash2 size={13} /></button>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

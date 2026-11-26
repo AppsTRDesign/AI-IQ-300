@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/sürüm-0.20.1-2563eb" alt="sürüm">
+  <img src="https://img.shields.io/badge/sürüm-0.21.0-2563eb" alt="sürüm">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -162,6 +162,9 @@ Tek cümleden çalışan uygulamaya: komut yazılır, ajan planlar, bütün dosy
 - **Proje hafızası:** Proje başına `AIIQ.md` kuralları (proje menüsü > Proje kuralları) ve Ayarlar'daki genel kurallar her sohbete eklenir; "bunu hatırla" dediğinizde model kuralı kendisi kaydeder.
 - **Resim ve sayfalar:** Üretilen resimler yakınlaştırılabilir görüntüleyicide, HTML sayfaları uygulama içi tarayıcıda açılır.
 - **Ses ile yönetim:** Cevaplar otomatik ya da her cevabın altındaki hoparlörle okunur. Doğal Microsoft sinir ağı sesleri (edge-tts, ücretsiz, anahtarsız) kadın/erkek etiketiyle listelenir ve her dil için ayrı seçilir; çevrimdışıyken tarayıcı sesleri kullanılır. Emojiler, semboller ve metin ifadeleri okunmaz. Sesli komut modunda konuşma kutuya yazılır, sesli komutlar uygulamayı yönetir: "gönder", "durdur", "onayla", "reddet", "yeni sohbet", "oku", "sus".
+- **Yerel Türkçe ses paketleri:** 18 açık kaynak Türkçe TTS motoru (Seda, Supertonic 3, Pocket-TTS, XTTS v2, Kızagan, Fish S2 Pro ...) Ayarlar > Sesler'den ya da kurulumdan, her biri kendi ortamına kuruluyor; uygulama bilgisayarın onları çalıştırıp çalıştıramayacağına bakıyor. Sesler kurulumda ölçülüyor (kadın/erkek gerçek perdeden), bazılarında duygu ya da referans sesten klonlama var, lisanslar görünüyor. Ölçülmüş sonuçlar: [eval/TTS_BENCHMARK.tr.md](eval/TTS_BENCHMARK.tr.md). Aynı anda en fazla üç ses modeli yüklü kalıyor; en uzun süredir boşta olan önce kapatılıyor.
+- **Bulut sesleri:** kendi anahtarınızla ElevenLabs, OpenAI TTS, Google Cloud TTS, Gemini TTS ve Azure AI Speech (sohbet sağlayıcıları gibi anahtar, test ve model). Sesleri tüm ses seçicilere katılıyor ve yalnızca seçildiğinde kullanılıyor. Her seçici motora göre süzüyor: her yerel motor, her kurulu ses paketi ve her bulut servisi, ses sayılarıyla.
+- **Ses klonlama stüdyosu:** sesinizi kaydedin ya da yükleyin, kalite puanını görün (gürültü, kırpılma, süre, perde), temizleyin (gürültü, uğultu, tık, sert s, sessizlikler, seviye), orijinalle temizlenmişi karşılaştırın, her klonlama motorunda dinleyin, sonra seslendirici olarak saklayın ya da varsayılan ses yapın.
 - **Oturum sistemi:** Her sohbet için `chat/<id>-session/` klasöründe transcript, özetler, durum dosyası ve yüklemeler.
 - **Güvenlik:** Üç izin modu (Onay iste / Benim için onayla / Tam erişim). Tam erişimde bile yıkıcı komutlar için akıllı güvenlik çiti. **Onaydan önce fark:** bir dosya değişikliği onay istediğinde kart, karar vermeden önce tam olarak neyin değişeceğini gösterir (eklenecek satırlar yeşil, silinecekler kırmızı; yeni dosyada tüm içerik, silmede silinecek içerik).
 - **Arayüz:** Gece/gündüz teması, tam mobil uyum (ayarlar ve paneller kendi sütun genişliğine göre düzenlenir; dar pencerede metin sıkışmaz), tıklayınca açılıp kapanan menüler, yukarı kaydırınca en son mesaja indiren düğme ve otomatik düzen denetimi (4 genişlik × TR/EN: taşma, üst üste binme ve yapışık düğme yok); TR/EN hazır, yeni diller tek tıkla otomatik çevrilir (ajan ve yetenek metinleri dahil).
@@ -387,7 +390,7 @@ Beceri kurulum komutları `SKILL.md` talimatlarını bir ajanın beceri klasör�
 
 ## 🆕 Sürüm notları
 
-Son sürüm: **v0.20.1 ile gelenler (modeller uygulamaya uyuyor: başıboş tur yok, tahmin edilen yol yok, dokuz görevli benchmark)**
+Son sürüm: **v0.21.0 ile gelenler (18 yerel Türkçe ses paketi, bulut sesleri, ses klonlama stüdyosu, sonuna kadar çalışan dil çevirici, ölçülmüş ses benchmark'ı)**
 
 v0.6'dan bugüne her sürümün getirdikleri: **[CHANGELOG.tr.md](CHANGELOG.tr.md)**. İndirmeler: [GitHub sürümleri](https://github.com/AppsTRDesign/AI-IQ-300/releases).
 

@@ -4,6 +4,38 @@
 
 AI IQ 300'ün her sürümünün getirdikleri, en yenisi üstte. Projenin tam durumu [PROJECT_STATE.tr.md](PROJECT_STATE.tr.md) dosyasında.
 
+## v0.21.0 ile gelenler (18 yerel Türkçe ses paketi, bulut sesleri, ses klonlama stüdyosu, sonuna kadar çalışan dil çevirici, ölçülmüş ses benchmark'ı)
+
+- **Ses paketleri ([eval/TTS_BENCHMARK.tr.md](eval/TTS_BENCHMARK.tr.md)):** 18 açık kaynak Türkçe TTS motoru Ayarlar > Sesler'den ya da kurulumdan kurulabiliyor:
+  - hafif (CPU): Seda, Clarvia Tiny, Supertonic 3, EMA Lightning, Ahenk Cep, Pocket-TTS Türkçe
+  - orta: MMS-TTS (Meta), Türkçe VITS, VITS-OpenBible, XTTS v2, Anka-TTS, Freya-TTS, Drifting-TTS
+  - GPU: Kızagan, Trendyol-TTS, Ahenk (VoxCPM), Nefes 0.5, Fish S2 Pro
+- **Her paket kendi ortamında:** `data/tts/<ortam>/venv`, uv ile kuruluyor. PyTorch bilgisayara göre seçiliyor (CUDA, Apple MPS ya da CPU); aynı kütüphaneleri kullanan paketler tek ortamı paylaşıyor. Uygulamanın kendi Python'una dokunulmuyor.
+- **Her bilgisayara uyuyor:** uygulama NVIDIA GPU'yu ve belleğini denetliyor. CUDA isteyen paket, CUDA olmayan bilgisayarda işaretleniyor ve kurulmuyor (`--force` yine de kurar). GPU'da daha iyi olan paketlerde "burada yavaş" yazıyor.
+- **Kurulumda ölçülüyor:** paketin her sesi bir deneme cümlesi okuyor. Perdesi ölçülüyor; kadın/erkek etiketleri tahmin değil, gerçek.
+- **Duygular ve klonlama:** duygu destekleyen paketlere (Seda, Pocket, Ahenk, Kızagan ...) duygu seçici geldi. Klonlayan paketler (XTTS, Anka, Pocket, Kızagan) kendi referans seslerinizi kullanabiliyor.
+- **Lisanslar görünüyor:** ticari kullanıma kapalı paketler (MMS, XTTS, Anka, Fish) işaretli. Şartları olan paketler kurulmadan önce onay istiyor.
+- **Kurulum:** `install.bat` / `install.sh` hangi ses paketlerinin kurulacağını soruyor:
+  - hiçbiri, hafif, hafif + orta, uyan hepsi, GPU paketleri CPU'da da ya da seçilenler (boyut, lisans ve bu bilgisayara uyumla numaralı liste)
+  - ilerleme çubuğu ve kalan süre gerçek indirme boyutunu izliyor; kurulu paketler atlanıyor, diske sığmayan paket atlanıyor, kopan indirme bir kez daha deneniyor
+  - paketler tek tek kuruluyor, her birinin modeli sonrakinden önce kapatılıyor
+  - `AIIQ_TTS` soruyu sormadan cevaplıyor. Komut satırından: `python backend/voice_packs.py light|medium|gpu|all|<adlar> [--force] [--remove] [--measure]`.
+- **Ses klonlama stüdyosu (Ayarlar > Sesler):** kendi sesinizin kaydını getirin (dosya ya da mikrofon, onayla):
+  - stüdyo kaydı ölçüyor: konuşma süresi, sinyal/gürültü, gürültü tabanı, kırpılma, perde ve 0-100 klon kalitesi puanı; öneriler de veriyor (çok kısa, gürültülü, kırpılmış, kısık)
+  - kaydı temizliyor: uğultu filtresi, tık giderme, gürültü azaltma (güç ayarıyla), sert s giderme, sessizlik kırpma ve ses seviyesi; her biri açılıp kapatılabiliyor. Canlı testte gürültü tabanı -31'den -51 dB'e, puan 55'ten 97'ye çıktı
+  - orijinali ve temizlenmişi dinliyorsunuz, sonra kurulu her klonlama motorunun (Chatterbox, XTTS v2, Anka, Pocket, Kızagan) istediğiniz metni sizin sesinizle okumasını dinliyorsunuz
+  - "Sakla" onu seslendirici olarak ekliyor: her klonlama motoru listeliyor (`xtts:ref-<ad>` ...); "Sakla ve varsayılan yap" onu Türkçe ses yapıyor
+  - Anka'ya (F5-TTS) kaydın kendi metni veriliyor (faster-whisper ile bir kez yazıya çevriliyor), böylece sesi gerçekten klonluyor
+- **Bulut sesleri (Ayarlar > Sesler):** ElevenLabs, OpenAI TTS, Google Cloud Text-to-Speech, Gemini TTS ve Azure AI Speech; her biri sohbet sağlayıcıları gibi bir kart (API anahtarı, test, ses modeli, aç/kapa; Azure bölgesini de soruyor). Anahtarı girilen servis seslerini tüm ses seçicilere ekliyor, ElevenLabs'teki kendi klonlarınız dahil. Test hiçbir şey okutmadan anahtarı denetliyor. Bulut sesleri yalnızca siz seçtiğinizde kullanılıyor: otomatik yedek sıralama kredinizi asla harcamıyor. Anahtarlar `secrets.json`'da kalıyor ve yalnızca başlıkta gönderiliyor.
+- **Her ses seçicide motor filtresi:** gruplu (tüm yerel, ses paketleri, klonlanmış seslerim, bulut, çevrimiçi / Piper, Kokoro, Chatterbox / adıyla her kurulu ses paketi / her bulut servisi), aranabilir ve dil listesi gibi seçili dildeki ses sayısıyla.
+- **Motor sırası her motoru listeliyor:** kurulan ses paketleri yedek sıraya kendiliğinden giriyor (çevrimiçi seslerden önce), kaldırılınca çıkıyor; anahtarı girilen bulut servisleri sona ekleniyor ama açılana kadar orada kapalı kalıyor, böylece yedek sıralama kendi başına kredi harcamıyor. "Hızlı" kalitede yavaş büyük paketler, Chatterbox gibi, yedekte atlanıyor.
+- **Paket sesleri her yerde:** önizlemede, sesli yanıtlarda, seslendirmede ve video stüdyosunda çalışıyor. Ses seçici "Türkçe ses paketleri" ve "Klonlanmış seslerim" diye süzebiliyor. Adında boşluk olan XTTS konuşmacıları ("Ana Florence") artık "unknown voice" hatası vermiyor; kurulumda perdesi ölçülemeyen ses, ilk konuştuğunda ölçülüyor.
+- **Ses modelleri için bellek koruması:** aynı anda en fazla üç model yüklü kalıyor. Yeni model yüklenmeden önce en uzun süredir boşta duran kapatılıyor; yine sığmayan model açık bir mesajla reddediliyor. Aynı anda yüklenen büyük modeller 32 GB'lık bir bilgisayarın belleğini bitirip mavi ekrana yol açmıştı. Boştaki modeller 10 dakika sonra arka planda da kapanıyor.
+- **Dil çevirici sonuna kadar çalışıyor:** dil eklemek ~2.000 metni tek istekte çeviriyordu ve istek zaman aşımına uğruyordu. Artık sunucuda parça parça, aynı anda üç parça çevriliyor. Ayarlar > Diller'de ilerleme çubuğu ve alt alta parçalar görünüyor (sırada / çevriliyor / tamam / başarısız), sonunda "Çeviri tamamlandı" yazıyor. Sürekli başarısız olan parça tüm dili bozmak yerine İngilizce kalıyor (Almanca: 44 parça, 2.000 metin, 35 sn).
+- **Paket başına bir işçi:** paketin modeli cümleler arasında yüklü kalıyor. Seslendirme ya da `text_to_speech` onu diğer sesler gibi kullanıyor (`seda:v03`, `pocket:female_1`, `supertonic:M1`, `xtts:ref-<ad>`).
+- **TTS benchmark:** `eval/tts_bench.py` kurulu her sesle aynı beş cümleyi okutuyor. Doğruluğu (faster-whisper CER), hızı (RTF), ilk cümleyi ve perdeyi ölçüyor; `eval/tts_report.py` tabloları yazıyor.
+- **Sürüm notları taşındı:** README'ler her sürümü taşımak yerine CHANGELOG.md / CHANGELOG.tr.md'ye bağlantı veriyor.
+
 ## v0.20.1 ile gelenler (modeller uygulamaya uyuyor: başıboş tur yok, tahmin edilen yol yok, dokuz görevli benchmark)
 
 İki NVIDIA modeliyle yapılan dört benchmark turunun bulduğu sorunlar aşağıda. Hepsi düzeltildi; son turda iki model de 9/9 görevi geçti.

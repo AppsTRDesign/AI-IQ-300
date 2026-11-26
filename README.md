@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.20.1-2563eb" alt="version">
+  <img src="https://img.shields.io/badge/version-0.21.0-2563eb" alt="version">
   <img src="https://img.shields.io/badge/python-3.12-3776ab" alt="python">
   <img src="https://img.shields.io/badge/node-20%2B-339933" alt="node">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555" alt="platform">
@@ -162,6 +162,9 @@ From one sentence to a working app: the command is typed, the agent plans, write
 - **Project memory:** Per-project rules in `AIIQ.md` (Project rules in the project menu) and global rules in Settings are added to every chat; say "remember this" and the model saves the rule itself.
 - **Images and pages:** Generated images open in a zoomable viewer; HTML pages open in an in-app browser.
 - **Voice control:** Answers are read aloud automatically or with the speaker under each answer. Natural Microsoft neural voices (edge-tts, free, no key) are listed with a female/male label and chosen per language; offline the browser's voices are used. Emoji, symbols and text emoticons are not read. In voice command mode speech is typed into the box and spoken commands run the app: "send", "stop", "approve", "deny", "new chat", "read", "quiet".
+- **Local Turkish voice packs:** 18 open-source Turkish TTS engines (Seda, Supertonic 3, Pocket-TTS, XTTS v2, Kızagan, Fish S2 Pro ...) install from Settings > Voices or the installer, each in its own environment, with the app checking whether the computer can run them. Voices are measured at install (female/male from real pitch), some have moods or clone a reference voice, and licences are shown. Measured results: [eval/TTS_BENCHMARK.md](eval/TTS_BENCHMARK.md). At most three voice models stay loaded; the least recently used idle one is closed first.
+- **Cloud voices:** ElevenLabs, OpenAI TTS, Google Cloud TTS, Gemini TTS and Azure AI Speech with your own key (key, test and model like the chat providers). Their voices join every voice picker and are used only when chosen. Every picker filters by engine: each local engine, each installed voice pack and each cloud service, with voice counts.
+- **Voice clone studio:** record or upload your voice, see its quality score (noise, clipping, length, pitch), clean it (noise, hum, clicks, harsh s, silences, loudness), compare the original with the cleaned one, hear it on each cloning engine, then keep it as a narrator or make it the default voice.
 - **Sessions:** Every chat keeps its transcript, summaries, state file and uploads in `chat/<id>-session/`.
 - **Safety:** Three permission modes (Ask / Approve for me / Full access). Even in full access, a smart fence guards destructive commands. **Diff before approval:** when a file change needs approval, the card shows exactly what will change (added lines green, removed red; full content for a new file, the content to be deleted for a deletion) before you decide.
 - **UI:** Light/dark themes, fully responsive (settings and panels adapt to the width of their own column, so a narrow window never squeezes the text), menus that toggle open/closed on click, a jump-to-latest button while you scroll up, and an automated layout audit (4 widths × TR/EN: no overflow, overlap or controls stuck together); TR/EN built in and new languages translated automatically in one click (agent and skill texts included).
@@ -387,7 +390,7 @@ A skills install command copies `SKILL.md` instructions into an agent's skills f
 
 ## 🆕 Release notes
 
-Latest: **New in v0.20.1 (models follow the app: no runaway turns, no guessed paths, nine-task benchmark)**
+Latest: **New in v0.21.0 (18 local Turkish voice packs, cloud voices, a voice clone studio, a translator that finishes, a measured voice benchmark)**
 
 What every version brought, from v0.6 to today: **[CHANGELOG.md](CHANGELOG.md)**. Downloads: [GitHub releases](https://github.com/AppsTRDesign/AI-IQ-300/releases).
 

@@ -67,6 +67,39 @@ echo "Python: $($PY --version) | Node: $(node --version)"
 
 (cd frontend && npm install && npm run build)
 
+# Turkish voice packs (TTS): each in its own environment, PyTorch picked for this computer (CUDA / Apple / CPU).
+# AIIQ_TTS=0|light|medium|all|"seda xtts" answers without asking. Settings > Voices adds or removes them later.
+TTS="${AIIQ_TTS:-}"
+if [ -z "$TTS" ] && [ -t 0 ]; then
+  echo
+  echo "Turkce yerel ses paketleri (TTS) kurulsun mu? / Install the local Turkish voice packs (TTS)?"
+  echo "  0) Hayir / No"
+  echo "  1) Hafif / Light: Seda, Clarvia, Supertonic, EMA Lightning, Ahenk Cep, Pocket TTS (~3 GB) - onerilen / recommended"
+  echo "  2) Hafif + Orta / Light + Medium: + MMS, Turkish VITS, OpenBible, XTTS v2, Anka, Freya, Drifting (~17 GB)"
+  echo "  3) Hepsi / All: + Kizagan, Trendyol, Ahenk, Nefes, Fish S2 Pro (NVIDIA GPU, ~53 GB)"
+  echo "  4) Kendim secerim / Let me choose"
+  echo "  5) Hepsi, GPU paketleri NVIDIA olmadan da (CPU'da cok yavas) / All, GPU packs on the CPU too (very slow)"
+  echo "  Not / Note: MMS, XTTS v2, Anka, Fish S2 Pro: ticari kullanim yok / non-commercial licences"
+  read -r -p "Secim / Choice [0-5, Enter=1]: " TTS || TTS=""
+  [ -z "$TTS" ] && TTS=1
+  if [ "$TTS" = "4" ]; then
+    .venv/bin/python backend/voice_packs.py --list || true
+    read -r -p "Paketler, ornek / Packs, e.g. seda pocket xtts: " TTS || TTS=""
+  fi
+fi
+case "$TTS" in
+  ""|0|n|N|no) TTS_ARGS="" ;;
+  1|light) TTS_ARGS="light" ;;
+  2|medium) TTS_ARGS="light medium" ;;
+  3|all) TTS_ARGS="all" ;;
+  5|force) TTS_ARGS="all --force" ;;
+  *) TTS_ARGS="$TTS" ;;
+esac
+if [ -n "$TTS_ARGS" ]; then
+  # shellcheck disable=SC2086 - the pack names are separate arguments
+  .venv/bin/python backend/voice_packs.py $TTS_ARGS || echo "[UYARI/WARN] bazi ses paketleri kurulamadi / some voice packs failed (Settings > Voices)"
+fi
+
 # Mobile app testing (Android emulator + Maestro; iOS simulator on macOS with Xcode): several GB, so asked
 # (AIIQ_MOBILE=1 yes, AIIQ_MOBILE=0 no). The agent can also set it up later (mobile_env action=setup).
 MOB="${AIIQ_MOBILE:-}"

@@ -4,6 +4,38 @@
 
 What each AI IQ 300 version brought, newest first. The full state of the project is in [PROJECT_STATE.md](PROJECT_STATE.md).
 
+## New in v0.21.0 (18 local Turkish voice packs, cloud voices, a voice clone studio, a translator that finishes, a measured voice benchmark)
+
+- **Voice packs ([eval/TTS_BENCHMARK.md](eval/TTS_BENCHMARK.md)):** 18 open-source Turkish TTS engines can be installed from Settings > Voices or the installer:
+  - light (CPU): Seda, Clarvia Tiny, Supertonic 3, EMA Lightning, Ahenk Cep, Pocket-TTS Türkçe
+  - medium: MMS-TTS (Meta), Turkish VITS, VITS-OpenBible, XTTS v2, Anka-TTS, Freya-TTS, Drifting-TTS
+  - GPU: Kızagan, Trendyol-TTS, Ahenk (VoxCPM), Nefes 0.5, Fish S2 Pro
+- **Each pack in its own environment:** `data/tts/<env>/venv`, made with uv. PyTorch is chosen for the machine (CUDA, Apple MPS or CPU), and packs that share libraries share one environment. Your app's own Python is never touched.
+- **Fits any computer:** the app checks the NVIDIA GPU and its memory. A pack that needs CUDA is marked and not installed on a computer without one (`--force` installs it anyway). "Slow here" is shown for packs that are better on a GPU.
+- **Measured at install:** every voice of a pack speaks a test sentence. Its pitch is measured, so female/male labels are real, not guessed.
+- **Moods and cloning:** packs with emotions (Seda, Pocket, Ahenk, Kızagan ...) get a mood picker. Packs that clone (XTTS, Anka, Pocket, Kızagan) can use your own reference voices.
+- **Licences shown:** non-commercial packs (MMS, XTTS, Anka, Fish) are marked. Packs with terms ask you to accept them before installing.
+- **Installer:** `install.bat` / `install.sh` ask which voice packs to install:
+  - none, light, light + medium, all that fit, the GPU packs on the CPU too, or chosen ones (a numbered list with size, licence and whether each fits this computer)
+  - the progress bar and the time left follow the real download size; installed packs are skipped, a pack that does not fit the disk is skipped, and a dropped download is tried once more
+  - one pack at a time, its model closed before the next
+  - `AIIQ_TTS` answers it without a prompt. From the command line: `python backend/voice_packs.py light|medium|gpu|all|<names> [--force] [--remove] [--measure]`.
+- **Voice clone studio (Settings > Voices):** bring a recording of your own voice (a file or the microphone, with consent) and:
+  - the studio measures it: speech seconds, signal-to-noise, noise floor, clipping, pitch, and a 0-100 clone quality score, with tips (too short, noisy, clipped, quiet)
+  - it cleans it: rumble filter, click repair, noise reduction (with a strength slider), de-esser, silence trim and loudness, each one switchable; in a live test the noise floor went from -31 to -51 dB and the score from 55 to 97
+  - you listen to the original and the cleaned one, then hear any text spoken in your voice by each installed cloning engine (Chatterbox, XTTS v2, Anka, Pocket, Kızagan)
+  - "Keep" adds it as a narrator: every cloning engine lists it (`xtts:ref-<name>` ...), and "Keep and make default" makes it the Turkish voice
+  - Anka (F5-TTS) gets the clip's own transcript (faster-whisper, once), so it really clones the voice
+- **Cloud voices (Settings > Voices):** ElevenLabs, OpenAI TTS, Google Cloud Text-to-Speech, Gemini TTS and Azure AI Speech, each a card like the chat providers (API key, test, voice model, on/off; Azure also asks for its region). A keyed service adds its voices to every voice picker, your own ElevenLabs clones included. The test checks the key without speaking. Cloud voices are used only when you pick one: the automatic fallback never spends your credits. Keys stay in `secrets.json` and are sent only in headers.
+- **Engine filter in every voice picker:** grouped (all local, voice packs, my cloned voices, cloud, online / Piper, Kokoro, Chatterbox / each installed voice pack by name / each cloud service), searchable, with the voice count of the chosen language, like the language list.
+- **Engine order lists every engine:** installed voice packs join the fallback order by themselves (before the online voices) and leave it when removed; keyed cloud services join at the end but stay off there until switched on, so the fallback never spends credits on its own. In "fast" quality the slow big packs are skipped by the fallback, like Chatterbox.
+- **Voice packs everywhere:** pack voices work in previews, spoken replies, voice-overs and the video studio. The voice picker can filter "Turkish voice packs" and "My cloned voices". XTTS speakers with spaces in their names ("Ana Florence") no longer fail with "unknown voice", and a voice installed without a measured gender gets one the first time it speaks.
+- **Memory guard for voice models:** at most three models stay loaded. Before a new one loads, the least recently used idle model is closed, and a model that still does not fit is refused with a clear message. Several big models at once had used up a 32 GB computer's memory and ended in a blue screen. Idle models are also closed in the background after 10 minutes.
+- **Language translator finishes:** adding a language translated all ~2,000 texts inside one request, which timed out. Now it runs on the server part by part, three parts at a time. Settings > Languages shows a progress bar and the parts one below the other (waiting / translating / done / failed), then "Translation complete". A part that keeps failing stays in English instead of failing the whole language (German: 44 parts, 2,000 texts, 35 s).
+- **One worker per pack:** a pack's model stays loaded between sentences. A voice-over or `text_to_speech` call uses it like any other voice (`seda:v03`, `pocket:female_1`, `supertonic:M1`, `xtts:ref-<name>`).
+- **TTS benchmark:** `eval/tts_bench.py` reads the same five sentences with every installed voice. It measures accuracy (faster-whisper CER), speed (RTF), the first sentence and pitch, and `eval/tts_report.py` writes the tables.
+- **Release notes moved:** the READMEs link to CHANGELOG.md / CHANGELOG.tr.md instead of carrying every version.
+
 ## New in v0.20.1 (models follow the app: no runaway turns, no guessed paths, nine-task benchmark)
 
 Four benchmark rounds on two NVIDIA models found these. Each is fixed, and the last round passed 9/9 tasks on both models.

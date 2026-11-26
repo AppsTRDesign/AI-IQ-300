@@ -57,7 +57,10 @@ async def synthesize(text: str, voice: str, rate: float = 1.0, tone: dict | None
     if not SPEAKABLE.search(text):
         raise TTSError("nothing to read")
     voice = (voice or "").removeprefix("edge:")
-    if not (LOCAL_ID.fullmatch(voice) or re.fullmatch(r"[a-z]{2,3}-[A-Za-z0-9-]+Neural", voice)):
+    from .voice import catalog as _cat
+    from .voice import cloud as _cloud
+    if not (LOCAL_ID.fullmatch(voice) or re.fullmatch(r"[a-z]{2,3}-[A-Za-z0-9-]+Neural", voice)
+            or (":" in voice and (_cat.voice_id_ok(voice) or _cloud.voice_ok(voice)))):  # packs, cloud voices
         raise TTSError("unknown voice")
     tone = tone or {}
     key = hashlib.sha1(f"{voice}|{rate}|{sorted(tone.items())}|{text}".encode()).hexdigest()

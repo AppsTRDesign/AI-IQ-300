@@ -20,7 +20,7 @@ QUALITY_RANK = {"studio": 0, "high": 1, "standard": 2, "basic": 3}
 
 def settings() -> dict:
     return {"defaults": {}, "rate": 1.0, "pitch": 0.0, "emotion": 0.5, "pause": 0.3, "studio": "natural",
-               "room": False, "order": ["piper", "kokoro", "chatterbox", "edge"], "disabled": [], "quality": "fast",
+               "room": False, "order": ["piper", "kokoro", "chatterbox", "edge"], "disabled": [], "cloud_on": [], "quality": "fast",
             **(load_settings().get("voice") or {})}
 
 
@@ -45,18 +45,54 @@ def lang_of(vid: str) -> str:
         return catalog.KOKORO_LANG.get(vid[7:8], ("en", "en-US"))[1][:2]
     if vid.startswith("chatterbox:"):
         return vid.rsplit("@", 1)[-1][:2]
+    from .packs import PACKS
+    if vid.split(":", 1)[0] in PACKS:  # voice packs are Turkish voices ("seda:default" is not German)
+        return "tr"
+    from .cloud import CLOUD
+    sid = vid.split(":", 1)[0]
+    if sid in CLOUD:  # Google / Azure names start with their locale; the multilingual ones speak any language
+        name = vid.split(":", 1)[1]
+        return "" if CLOUD[sid]["multi"] or not re.match(r"[a-z]{2,3}-[A-Z]{2}", name) else name[:2]
     name = vid.split(":", 1)[-1]
     return name[:2].lower()
+
+
+BUILTIN = ["piper", "kokoro", "chatterbox", "edge"]
+
+
+def engine_order(cfg: dict | None = None) -> list[str]:
+    """The saved engine order plus every engine added since: an installed voice pack goes before the online voices,
+    a keyed cloud service at the end. Packs that were removed drop out."""
+    from . import cloud, packs
+    cfg = cfg or settings()
+    known = BUILTIN + [e for e in packs.PACKS if packs.installed(e)] + [s for s in cloud.CLOUD if cloud.ready(s)]
+    order = [e for e in dict.fromkeys(cfg.get("order") or BUILTIN) if e in known]
+    for e in known:
+        if e not in order:
+            order.insert(order.index("edge") if e not in cloud.CLOUD and "edge" in order else len(order), e)
+    return order
+
+
+def engine_off(cfg: dict | None = None) -> set[str]:
+    """Switched-off engines. A cloud service is off in the fallback order until switched on there (cloud_on): the
+    automatic fallback must not spend credits nobody asked it to."""
+    from .cloud import CLOUD
+    cfg = cfg or settings()
+    return set(cfg.get("disabled") or []) | {s for s in CLOUD if s not in (cfg.get("cloud_on") or [])}
 
 
 async def candidates(lang: str, gender: str = "", installed_only: bool = True) -> list[dict]:
     """Voices for a language, best first by the engine order and quality; gender preferred, not required."""
     cfg = settings()
-    order = [e for e in cfg["order"] if e not in cfg["disabled"]]
+    off = engine_off(cfg)
+    order = [e for e in engine_order(cfg) if e not in off]
     local = [v for v in await catalog.local_voices(lang) if (v["installed"] or not installed_only)
              and v["engine"] in order and not v.get("own")]
-    if cfg["quality"] != "best":  # Chatterbox is slow on a CPU: only when chosen or "best quality" is set
-        local = [v for v in local if v["engine"] != "chatterbox"]
+    if cfg["quality"] != "best":  # Chatterbox and the big packs are slow on a CPU: only when chosen or "best quality"
+        local = [v for v in local if v["engine"] != "chatterbox" and not (v.get("pack") and v.get("speed") == "slow")]
+    from . import cloud
+    if any(e in cloud.CLOUD for e in order):
+        local += [v for v in await cloud.voices(lang) if v["engine"] in order]
     local.sort(key=lambda v: (gender and v["gender"] != gender, order.index(v["engine"]),
                               QUALITY_RANK.get(v["quality"], 3)))
     edge = []
@@ -205,7 +241,8 @@ async def render(text: str, target: Path, voice: str = "", lang: str = "", gende
         raise engines.VoiceError("nothing to read")
     lang = (lang or (lang_of(voice) if voice else "") or load_settings().get("language") or "tr")[:2].lower()
     opts = {"rate": float(rate or cfg["rate"]), "emotion": float(cfg["emotion"] if emotion is None else emotion),
-            "pause": float(cfg["pause"] if pause is None else pause), "lang": lang, "_chains": {}}
+            "pause": float(cfg["pause"] if pause is None else pause), "lang": lang, "_chains": {},
+            "moods": dict(cfg.get("moods") or {})}  # voice packs: the style chosen per pack (Settings > Voices)
     dialog = parse_dialog(text, speakers or {})
     pieces: list[tuple[str, bool, str]] = []
     if dialog:

@@ -509,7 +509,10 @@ async def speech_to_text(ctx, args, body):
 @tool("text_to_speech", '<tool name="text_to_speech" path="audio/intro.mp3" language="tr" gender="female" srt="true">text to read</tool>',
       "Turn text into natural speech with a studio finish: writes an .mp3 (or .wav/.m4a) into the working folder, any "
       "length. Voices (Settings > Voices): local and offline first (piper:tr_TR-fettah-medium, kokoro:af_heart, "
-      "chatterbox:default@tr for the most natural / emotional), then Microsoft's online voices (tr-TR-EmelNeural). "
+      "chatterbox:default@tr for the most natural / emotional; installed Turkish voice packs such as seda:v03, "
+      "pocket:female_1, supertonic:M1, xtts:<speaker> - only ids the user installed; the user's own cloned voices are "
+      "<engine>:ref-<name>, e.g. xtts:ref-onur), then Microsoft's online voices "
+      "(tr-TR-EmelNeural). "
       "Leave voice empty: the user's default voice for the language (gender female/male picks one). Tone: rate "
       "0.5-2.0, pitch -6..+6 semitones, emotion 0-1, pause (seconds between sentences), studio natural|podcast|"
       "broadcast|video|warm|none. Dialogs: lines 'Name: text' with speakers {\"Ayşe\": \"female\", \"Can\": "

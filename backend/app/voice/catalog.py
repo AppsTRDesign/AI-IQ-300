@@ -187,12 +187,14 @@ async def local_voices(lang: str = "") -> list[dict]:
                     "lang": code, "locale": f"{code}-{COUNTRY.get(code, code.upper())}", "country": COUNTRY.get(code, ""),
                     "gender": "female", "quality": "studio", "offline": True, "installed": cbx, "mb": 3500,
                     "shared_download": True, "emotion": True, "speed": "slow"})
-        for ref in sorted(REFS_DIR.glob("*.wav")) if REFS_DIR.is_dir() else []:
+        for ref in own_refs():
             rid = f"chatterbox:ref-{ref.stem}@{code}"
             out.append({"id": rid, "engine": "chatterbox", "name": f"{ref.stem} ({code})", "lang": code,
                         "locale": f"{code}-{COUNTRY.get(code, code.upper())}", "country": COUNTRY.get(code, ""),
                         "gender": (meta.get(f"ref:{ref.stem}") or {}).get("gender") or "unknown", "quality": "studio",
                         "offline": True, "installed": cbx, "own": True, "emotion": True, "speed": "slow"})
+    from . import packs
+    out += packs.voices(lang)
     return out
 
 
@@ -243,6 +245,9 @@ async def install(vid: str) -> dict:
                     await _download(url, KOKORO_DIR / fname, lambda f, i=i: on((i + f) / 2))
         elif engine == "chatterbox":
             await install_chatterbox(on)
+        elif engine in _packs().PACKS:  # one install per pack: every voice of the pack comes with it
+            st["state"] = "installing"
+            await _packs().install(engine, on)
         else:
             raise ValueError("this voice needs no download")
         st.update(state="done", frac=1.0)
@@ -261,7 +266,23 @@ def remove(vid: str) -> None:
         shutil.rmtree(KOKORO_DIR, ignore_errors=True)
     elif engine == "chatterbox":
         shutil.rmtree(CBX_DIR, ignore_errors=True)
+    elif engine in _packs().PACKS:
+        _packs().remove(engine)
     PROGRESS.pop(vid, None)
+
+
+def _packs():
+    from . import packs
+    return packs
+
+
+def voice_id_ok(vid: str) -> bool:
+    """A local voice id the install / remove endpoints accept: a built-in engine or a voice pack."""
+    engine, _, name = vid.partition(":")
+    if engine in ("piper", "kokoro", "chatterbox"):
+        return bool(re.fullmatch(r"[\w.@#-]{1,80}", name))
+    # pack voices keep their engine's own names: XTTS speakers are "Ana Florence", "Alma María"
+    return engine in _packs().PACKS and bool(re.fullmatch(r"[\w.@#' -]{1,80}", name)) and name.strip() == name
 
 
 def _folder_mb(p: Path) -> float:
@@ -364,6 +385,11 @@ async def measure_gender(vid: str) -> str:
     m[vid] = {**(m.get(vid) or {}), "gender": gender_of(hz), "pitch_hz": round(hz)}
     _save_meta(m)
     return m[vid]["gender"]
+
+
+def own_refs() -> list[Path]:
+    """The user's saved reference clips (clone studio work files start with "_" and are not voices)."""
+    return sorted(p for p in REFS_DIR.glob("*.wav") if not p.stem.startswith("_")) if REFS_DIR.is_dir() else []
 
 
 def save_reference(name: str, wav: Path, gender_hz: float) -> str:

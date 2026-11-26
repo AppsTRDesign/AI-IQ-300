@@ -70,6 +70,36 @@ T = {
                 "Set up / update the mobile app test environment? [Y/n]: "),
     "mob_new": ("Android SDK bulunamadı: kullanıcı klasörüne kurulur (yönetici izni gerekmez, birkaç GB, bir kez).",
                 "No Android SDK found: it is installed in the user folder (no admin, several GB, once)."),
+    "tts": ("Türkçe ses paketleri (TTS, seçilenler)", "Turkish voice packs (TTS, the chosen ones)"),
+    "tts_title": ("Türkçe yerel ses paketleri (TTS) kurulsun mu? Her paket kendi ortamına kurulur; sonradan "
+                  "Ayarlar > Sesler'den de eklenip silinebilir.",
+                  "Install the local Turkish voice packs (TTS)? Each pack gets its own environment; they can also be "
+                  "added or removed later in Settings > Voices."),
+    "tts_hw_cuda": ("Bu bilgisayar: NVIDIA GPU ({gb} GB) - GPU paketleri kurulabilir.",
+                    "This computer: NVIDIA GPU ({gb} GB) - the GPU packs can be installed."),
+    "tts_hw_cpu": ("Bu bilgisayar: NVIDIA GPU yok - GPU paketleri atlanır, orta paketler CPU'da yavaş çalışır.",
+                   "This computer: no NVIDIA GPU - the GPU packs are skipped; the medium packs are slow on a CPU."),
+    "tts_0": ("Hayır, şimdi değil", "No, not now"),
+    "tts_1": ("Hafif: Seda, Clarvia, Supertonic, EMA Lightning, Ahenk Cep, Pocket TTS (~3 GB, her bilgisayar) - önerilen",
+              "Light: Seda, Clarvia, Supertonic, EMA Lightning, Ahenk Cep, Pocket TTS (~3 GB, any computer) - recommended"),
+    "tts_2": ("Hafif + Orta: + MMS, Türkçe VITS, OpenBible, XTTS v2, Anka, Freya, Drifting (~17 GB)",
+              "Light + Medium: + MMS, Turkish VITS, OpenBible, XTTS v2, Anka, Freya, Drifting (~17 GB)"),
+    "tts_3": ("Hepsi: + Kızagan, Trendyol, Ahenk, Nefes, Fish S2 Pro (NVIDIA GPU; ~53 GB)",
+              "All: + Kizagan, Trendyol, Ahenk, Nefes, Fish S2 Pro (NVIDIA GPU; ~53 GB)"),
+    "tts_4": ("Kendim seçeyim (listeden numara ya da ad)", "Let me choose (numbers or names from the list)"),
+    "tts_5": ("Hepsi, GPU paketleri NVIDIA olmadan da (CPU'da çalışır ama çok yavaş; deneme için)",
+              "All, the GPU packs without NVIDIA too (they run on the CPU, very slowly; for trying them)"),
+    "tts_needs_gpu": ("NVIDIA GPU ister - yoksa atlanır", "needs an NVIDIA GPU - skipped without one"),
+    "tts_nc": ("ticari değil", "non-commercial"),
+    "tts_names": ("seda clarvia supertonic ema ahenkcep pocket mms turkvits openbible xtts anka freya drifting "
+                  "kizagan trendyol ahenk nefes fish", "seda clarvia supertonic ema ahenkcep pocket mms turkvits "
+                  "openbible xtts anka freya drifting kizagan trendyol ahenk nefes fish"),
+    "tts_lic": ("Not: MMS, XTTS v2, Anka ve Fish S2 Pro ticari kullanıma kapalı lisanslıdır; XTTS v2 Coqui CPML "
+                "koşullarının kabulüyle kurulur.",
+                "Note: MMS, XTTS v2, Anka and Fish S2 Pro are licensed for non-commercial use only; XTTS v2 is "
+                "installed by accepting the Coqui CPML terms."),
+    "tts_ask": ("Seçim [0-5, Enter=1]: ", "Choice [0-5, Enter=1]: "),
+    "tts_pick": ("Paketler (ör. 1 2 10 ya da seda xtts): ", "Packs (e.g. 1 2 10 or seda xtts): "),
     "done": ("Kurulum tamamlandı", "Setup complete"),
     "done_warn": ("Kurulum tamamlandı (uyarılarla)", "Setup complete (with warnings)"),
     "failed": ("Kurulum durdu", "Setup stopped"),
@@ -519,6 +549,86 @@ def step_voices(ui: UI) -> str:
     return "ok" if code == 0 else "warn"
 
 
+TTS_PICK: list[str] = []  # what ask_tts chose: tiers (light / medium / all) or pack names
+
+
+def step_tts(ui: UI) -> str:
+    """The chosen Turkish voice packs (backend/voice_packs.py): each pack in its own environment, PyTorch picked for
+    this computer by uv. A pack that fails is a warning; the app works without it."""
+    me = next(s for s in ui.steps if s.key == "tts")
+    if OFFLINE:
+        me.note = tr("offline")
+        return "warn"
+    code = sh(ui, [str(VENV_PY), str(ROOT / "backend" / "voice_packs.py"), *TTS_PICK])
+    if code != 0:
+        me.note = (ui.err or "")[:120]
+    return "ok" if code == 0 else "warn"
+
+
+def nvidia_gb() -> float:
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return 0.0
+    try:
+        out = subprocess.run([exe, "--query-gpu=memory.total", "--format=csv,noheader,nounits"], capture_output=True,
+                             text=True, timeout=10).stdout
+        return round(max(float(x) for x in out.split() if x.replace(".", "").isdigit()) / 1024, 1)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0.0
+
+
+def ask_tts() -> list[str]:
+    """The voice-pack question: none, a tier, everything, or chosen packs. AIIQ_TTS=light|medium|all|0|"seda xtts"
+    answers it without asking (unattended installs)."""
+    names = tr("tts_names").split()
+    pre = os.environ.get("AIIQ_TTS", "").strip().lower()
+    choice = {"0": [], "no": [], "1": ["light"], "light": ["light"], "2": ["light", "medium"],
+              "medium": ["light", "medium"], "3": ["all"], "all": ["all"], "5": ["all", "--force"],
+              "force": ["all", "--force"]}
+    if pre:
+        return choice.get(pre, [x for x in pre.split() if x in names or x == "--force"])
+    gb = nvidia_gb()
+    print(f"\n {C['b']}{tr('tts_title')}{C['r']}")
+    print(f"   {C['d']}{tr('tts_hw_cuda', gb=gb) if gb else tr('tts_hw_cpu')}{C['r']}")
+    for i in range(6):
+        if i == 5 and gb:
+            continue  # with an NVIDIA GPU "all" already installs the GPU packs
+        print(f"   {C['cy']}{i}{C['r']}) {tr(f'tts_{i}')}")
+    print(f"   {C['d']}{tr('tts_lic')}{C['r']}")
+    if not sys.stdin or not sys.stdin.isatty():
+        return []
+    try:
+        ans = input(" " + tr("tts_ask")).strip() or "1"
+        if ans == "4":
+            info = pack_table()
+            for i, n in enumerate(names, 1):
+                row = info.get(n, {})
+                mark = "" if row.get("fit", "ok") != "no" else f"  {C['ye']}{tr('tts_needs_gpu')}{C['r']}"
+                print(f"   {C['cy']}{i:>2}{C['r']}) {n:11} {row.get('label', '')}{mark}")
+            raw = input(" " + tr("tts_pick")).strip().lower().replace(",", " ").split()
+            out = [names[int(x) - 1] if x.isdigit() and 0 < int(x) <= len(names) else x for x in raw]
+            return list(dict.fromkeys(x for x in out if x in names))
+    except EOFError:
+        return []
+    return choice.get(ans, ["light"])
+
+
+def pack_table() -> dict:
+    """Every pack's size, licence and whether it fits this computer, from backend/app/voice/packs.py (the same
+    registry the app uses), so the list here never drifts from it."""
+    try:
+        sys.path.insert(0, str(ROOT / "backend"))
+        from app.voice import packs  # noqa: PLC0415
+        out = {}
+        for e, p in packs.PACKS.items():
+            f = packs.fit(e)
+            nc = "" if p.get("commercial", True) else f", {tr('tts_nc')}"
+            out[e] = {"fit": f["state"], "label": f"{p['name']} ({p['mb'] / 1000:.1f} GB, {p['license']}{nc})"}
+        return out
+    except Exception:  # noqa: BLE001 - the venv is not ready yet: names alone still work
+        return {}
+
+
 def step_mobile(ui: UI) -> str:
     if OFFLINE:
         ui.steps[-1].note = tr("offline")
@@ -615,7 +725,13 @@ def main() -> int:
             print(f"   {C['d']}{tr('net_proxy', px=next(iter(NET_ENV.values())))}{C['r']}")
     steps = [Step("tools", 60, step_tools), Step("venv", 15, step_venv), Step("pip", 240, step_pip),
              Step("browser", 90, step_browser), Step("npm", 120, step_npm), Step("build", 45, step_build),
-             Step("voices", 90, step_voices), Step("mobile", 600, step_mobile)]
+             Step("voices", 90, step_voices), Step("tts", 900, step_tts), Step("mobile", 600, step_mobile)]
+    TTS_PICK[:] = ask_tts()
+    tts_step = next(s for s in steps if s.key == "tts")
+    if not TTS_PICK:
+        tts_step.state = "skip"
+    else:  # the weight follows the download: about 3 GB light, 17 GB with medium, 53 GB with everything
+        tts_step.weight = 900 if TTS_PICK == ["light"] else 3600 if "all" not in TTS_PICK else 9000
     info = mobile_check()
     mobile = ask_mobile(info)
     if not mobile:

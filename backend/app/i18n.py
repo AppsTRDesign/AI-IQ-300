@@ -13,6 +13,48 @@ def installed_languages() -> list[str]:
     return sorted(f.stem for f in LANG_DIR.glob("*.json"))
 
 
+def plan_parts(texts: list[str], limit: int = 1800) -> list[list[int]]:
+    """Split strings into parts of at most `limit` characters (one line per string). Small parts keep Google's line
+    structure intact and let a long file show its progress part by part."""
+    parts: list[list[int]] = [[]]
+    size = 0
+    for i, t in enumerate(texts):
+        n = len(t) + 1
+        if parts[-1] and size + n > limit:
+            parts.append([])
+            size = 0
+        parts[-1].append(i)
+        size += n
+    return [p for p in parts if p]
+
+
+def translate_parts(texts: list[str], target: str, source: str = "en", on_part=None, workers: int = 3) -> list[str]:
+    """Translate part by part, a few parts at a time. on_part(index, state, error) reports each part
+    ("running" / "done" / "failed"). A part that keeps failing keeps its source text, so the rest still lands."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    parts = plan_parts(texts)
+    out = list(texts)
+
+    def run(k: int) -> None:
+        idx = parts[k]
+        if on_part:
+            on_part(k, "running", "")
+        try:
+            res = translate_all([texts[i] for i in idx], target, source)
+            for i, r in zip(idx, res):
+                out[i] = r or texts[i]
+            if on_part:
+                on_part(k, "done", "")
+        except Exception as e:  # noqa: BLE001
+            if on_part:
+                on_part(k, "failed", str(e)[:200])
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        list(pool.map(run, range(len(parts))))
+    return out
+
+
 def translate_all(texts: list[str], target: str, source: str = "en") -> list[str]:
     """Translate in a few large requests (one line per string) instead of one request per string, which
     triggers Google's rate limit. Placeholders like {project} are protected. source="auto" detects the language."""
@@ -62,7 +104,7 @@ def translate_all(texts: list[str], target: str, source: str = "en") -> list[str
         time.sleep(0.4)
 
     for t in protected:
-        if sum(len(c) + 1 for c in chunk) + len(t) > 3500:
+        if chunk and sum(len(c) + 1 for c in chunk) + len(t) > 1800:
             flush()
         chunk.append(t)
     flush()
